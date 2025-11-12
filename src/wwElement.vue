@@ -67,6 +67,7 @@ import {
 import ActionCellRenderer from "./components/ActionCellRenderer.vue";
 import ImageCellRenderer from "./components/ImageCellRenderer.vue";
 import WewebCellRenderer from "./components/WewebCellRenderer.vue";
+import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -78,6 +79,7 @@ export default {
     ActionCellRenderer,
     ImageCellRenderer,
     WewebCellRenderer,
+    SelectCellRenderer,
   },
   props: {
     content: {
@@ -424,6 +426,53 @@ export default {
               },
             };
           }
+          case "select": {
+            const selectParams = {
+              options: col?.options || [],
+              optionsValueFormula: col?.optionsValueFormula,
+              optionsLabelFormula: col?.optionsLabelFormula,
+              optionsColorFormula: col?.optionsColorFormula,
+              resolveMappingFormula: this.resolveMappingFormula,
+            };
+            
+            // Helper function to get label from value
+            const getLabelFromValue = (value) => {
+              const options = col?.options || [];
+              
+              // Process options with formula mapping if needed
+              const processedOptions = options.map(option => {
+                const optionValue = this.resolveMappingFormula(col?.optionsValueFormula, option) ?? option.value;
+                const optionLabel = this.resolveMappingFormula(col?.optionsLabelFormula, option) ?? option.label;
+                return {
+                  value: optionValue || '',
+                  label: optionLabel || optionValue || '',
+                };
+              });
+              
+              const foundOption = processedOptions.find(opt => opt.value === value);
+              return foundOption?.label || value || '';
+            };
+            
+            return {
+              ...commonProperties,
+              headerName: col?.headerName,
+              field: col?.field,
+              cellRenderer: "SelectCellRenderer",
+              cellRendererParams: selectParams,
+              cellEditor: "SelectCellRenderer",
+              cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
+              editable: col?.editable !== false,
+              sortable: col?.sortable,
+              filter: col?.filter,
+              // Use label for filtering and sorting instead of value
+              valueGetter: (params) => {
+                return getLabelFromValue(params.data?.[col?.field]);
+              },
+              filterValueGetter: (params) => {
+                return getLabelFromValue(params.data?.[col?.field]);
+              },
+            };
+          }
           default: {
             const result = {
               ...commonProperties,
@@ -570,11 +619,13 @@ export default {
       });
     },
     onCellValueChanged(event) {
+      // For select columns: oldValue and newValue contain the actual ID/value, not the label
+      // The label is only used for display, sorting, and filtering
       this.$emit("trigger-event", {
         name: "cellValueChanged",
         event: {
           oldValue: event.oldValue,
-          newValue: event.newValue,
+          newValue: event.newValue, // Actual ID/value is stored here
           columnId: event.column.getColId(),
           row: event.data,
         },
@@ -780,6 +831,12 @@ export default {
       .ag-cell-value {
         justify-content: flex-start;
       }
+    }
+    
+    // Remove default padding for select column cells
+    &:has(.select-cell) {
+      padding-left: 0 !important;
+      padding-right: 0 !important;
     }
   }
   /* wwEditor:start */

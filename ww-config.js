@@ -1011,6 +1011,7 @@ export default {
                     { value: "dateString", label: "Date" },
                     { value: "image", label: "Image" },
                     { value: "action", label: "Action" },
+                    { value: "select", label: "Select" },
                     { value: "custom", label: "Custom" },
                   ],
                 },
@@ -1035,6 +1036,7 @@ export default {
                 hidden:
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
+                  array?.item?.cellDataType === "select" ||
                   array?.item?.cellDataType === "custom",
               },
               displayLabelFormula: {
@@ -1049,6 +1051,7 @@ export default {
                 hidden:
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
+                  array?.item?.cellDataType === "select" ||
                   !array?.item?.useCustomLabel ||
                   array?.item?.cellDataType === "custom",
               },
@@ -1229,6 +1232,101 @@ export default {
                 },
                 hidden: array?.item?.cellDataType !== "image",
               },
+              options: {
+                label: "Options",
+                type: "Array",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "select",
+                options: {
+                  expandable: true,
+                  getItemLabel(item) {
+                    return item?.label || item?.value || "Option";
+                  },
+                  item: {
+                    type: "Object",
+                    defaultValue: { value: "", label: "", color: "#f0f0f0" },
+                    options: {
+                      item: {
+                        value: {
+                          label: "Value",
+                          type: "Text",
+                        },
+                        label: {
+                          label: "Label",
+                          type: "Text",
+                        },
+                        color: {
+                          label: "Color",
+                          type: "Color",
+                        },
+                      },
+                    },
+                  },
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "array",
+                  tooltip: "Array of options with value, label, and color",
+                },
+                /* wwEditor:end */
+              },
+              optionsValueFormula: {
+                label: "Value Field",
+                type: "Formula",
+                hidden: (content, sidepanelContent, boundProps, wwProps, array) =>
+                  array?.item?.cellDataType !== "select" ||
+                  !Array.isArray(array?.item?.options) ||
+                  !array?.item?.options?.length ||
+                  !boundProps?.["columns." + wwProps?.index + ".options"],
+                options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                  template:
+                    Array.isArray(array?.item?.options) && array?.item?.options.length > 0
+                      ? array.item.options[0]
+                      : null,
+                }),
+                defaultValue: {
+                  type: "f",
+                  code: "context.mapping?.['value']",
+                },
+              },
+              optionsLabelFormula: {
+                label: "Label Field",
+                type: "Formula",
+                hidden: (content, sidepanelContent, boundProps, wwProps, array) =>
+                  array?.item?.cellDataType !== "select" ||
+                  !Array.isArray(array?.item?.options) ||
+                  !array?.item?.options?.length ||
+                  !boundProps?.["columns." + wwProps?.index + ".options"],
+                options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                  template:
+                    Array.isArray(array?.item?.options) && array?.item?.options.length > 0
+                      ? array.item.options[0]
+                      : null,
+                }),
+                defaultValue: {
+                  type: "f",
+                  code: "context.mapping?.['label']",
+                },
+              },
+              optionsColorFormula: {
+                label: "Color Field",
+                type: "Formula",
+                hidden: (content, sidepanelContent, boundProps, wwProps, array) =>
+                  array?.item?.cellDataType !== "select" ||
+                  !Array.isArray(array?.item?.options) ||
+                  !array?.item?.options?.length ||
+                  !boundProps?.["columns." + wwProps?.index + ".options"],
+                options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                  template:
+                    Array.isArray(array?.item?.options) && array?.item?.options.length > 0
+                      ? array.item.options[0]
+                      : null,
+                }),
+                defaultValue: {
+                  type: "f",
+                  code: "context.mapping?.['color']",
+                },
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -1239,7 +1337,10 @@ export default {
               "actionLabel",
               "imageWidth",
               "imageHeight",
-              ,
+              "options",
+              "optionsValueFormula",
+              "optionsLabelFormula",
+              "optionsColorFormula",
               "useCustomLabel",
               "displayLabelFormula",
               {
