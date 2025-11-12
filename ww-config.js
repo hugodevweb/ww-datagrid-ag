@@ -207,6 +207,34 @@ export default {
       },
       getTestEvent: "getColumnMovedTestEvent",
     },
+    {
+      name: "cellEditStart",
+      label: { en: "On Cell Edit Start" },
+      event: {
+        columnId: "id",
+        field: "field",
+        value: null,
+        row: null,
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      },
+      getTestEvent: "getCellEditStartTestEvent",
+    },
+    {
+      name: "cellEditEnd",
+      label: { en: "On Cell Edit End" },
+      event: {
+        columnId: "id",
+        field: "field",
+        value: null,
+        row: null,
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      },
+      getTestEvent: "getCellEditEndTestEvent",
+    },
   ],
   actions: [
     { label: "Reset filters", action: "resetFilters" },
@@ -259,7 +287,41 @@ export default {
     {
       label: "Force Datagrid refresh",
       action: "refreshData",
-    }
+    },
+    {
+      label: "Trigger cell value changed",
+      action: "triggerCellValueChanged",
+      args: [
+        {
+          name: "Row id",
+          type: "string",
+        },
+        {
+          name: "Column id",
+          type: "string",
+        },
+        {
+          name: "New value",
+          type: "string",
+        },
+      ],
+    },
+    {
+      label: "Stop cell editing",
+      action: "stopCellEditing",
+      args: [
+        {
+          name: "Cancel",
+          type: "OnOff",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "boolean",
+            tooltip: "If true, cancels the edit and reverts to the original value. If false, saves the current value.",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
   ],
   properties: {
     layout: {
@@ -1030,6 +1092,28 @@ export default {
                 type: "Text",
                 hidden: array?.item?.cellDataType === "action",
               },
+              customFilterType: {
+                label: "Data Type",
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "agTextColumnFilter", label: "Text", default: true },
+                    { value: "agNumberColumnFilter", label: "Number" },
+                    { value: "agDateColumnFilter", label: "Date" },
+                  ],
+                },
+                hidden: array?.item?.cellDataType !== "custom",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Data type for filtering and sorting: agTextColumnFilter | agNumberColumnFilter | agDateColumnFilter",
+                },
+                propertyHelp: {
+                  tooltip: "Specifies the data type for proper filtering and sorting behavior",
+                },
+                /* wwEditor:end */
+              },
               useCustomLabel: {
                 label: "Custom display value",
                 type: "OnOff",
@@ -1186,8 +1270,7 @@ export default {
                 type: "OnOff",
                 hidden:
                   array?.item?.cellDataType === "action" ||
-                  array?.item?.cellDataType === "image" ||
-                  array?.item?.cellDataType === "custom",
+                  array?.item?.cellDataType === "image",
                 bindable: true,
               },
               filter: {
@@ -1333,6 +1416,7 @@ export default {
               "field",
               "cellDataType",
               "info",
+              "customFilterType",
               "actionName",
               "actionLabel",
               "imageWidth",

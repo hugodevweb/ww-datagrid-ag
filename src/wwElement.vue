@@ -352,10 +352,15 @@ export default {
         resizable: this.content.resizableColumns,
         autoHeaderHeight: this.content.headerHeightMode === "auto",
         wrapHeaderText: this.content.headerHeightMode === "auto",
+        singleClickEdit: true,
         cellClass:
           this.content.cellAlignmentMode === "custom"
             ? `-${this.content.cellAlignment || "left"} ||`
             : null,
+        filterParams: {
+          buttons: ['reset', 'apply'],
+          closeOnApply: true,
+        },
       };
     },
     columnDefs() {
@@ -380,9 +385,9 @@ export default {
           width,
           flex,
           hide: !!col?.hide,
-          headerClass: col.headerAlignment ? `-${col.headerAlignment}` : null,
+          headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
           ...(this.content.cellAlignmentMode !== "custom"
-            ? { cellClass: col.cellAlignment ? `-${col.cellAlignment}` : null }
+            ? { cellClass: col?.cellAlignment ? `-${col?.cellAlignment}` : null }
             : {}),
         };
         switch (col?.cellDataType) {
@@ -402,18 +407,48 @@ export default {
               colId: col?.actionName,
             };
           }
-          case "custom":
-            return {
+          case "custom": {
+            const customColumn = {
               ...commonProperties,
               headerName: col?.headerName,
               field: col?.field,
               cellRenderer: "WewebCellRenderer",
               cellRendererParams: {
                 containerId: col?.containerId,
+                trigger: this.onCustomCellEdit,
               },
+              cellEditor: "WewebCellRenderer",
+              cellEditorParams: {
+                containerId: col?.containerId,
+                trigger: this.onCustomCellEdit,
+              },
+              editable: col?.editable !== false,
               sortable: col?.sortable,
-              filter: col?.filter,
+              filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
             };
+            
+            // Add custom comparator based on filter type for proper sorting
+            if (col?.sortable && col?.customFilterType) {
+              if (col.customFilterType === "agDateColumnFilter") {
+                customColumn.comparator = (valueA, valueB) => {
+                  const dateA = valueA ? new Date(valueA).getTime() : 0;
+                  const dateB = valueB ? new Date(valueB).getTime() : 0;
+                  return dateA - dateB;
+                };
+              } else if (col.customFilterType === "agNumberColumnFilter") {
+                customColumn.comparator = (valueA, valueB) => {
+                  const numA = valueA != null ? parseFloat(valueA) : 0;
+                  const numB = valueB != null ? parseFloat(valueB) : 0;
+                  if (isNaN(numA) && isNaN(numB)) return 0;
+                  if (isNaN(numA)) return 1;
+                  if (isNaN(numB)) return -1;
+                  return numA - numB;
+                };
+              }
+            }
+            
+            return customColumn;
+          }
           case "image": {
             return {
               ...commonProperties,
@@ -453,6 +488,16 @@ export default {
               return foundOption?.label || value || '';
             };
             
+            // Get all available option labels for the filter
+            const getFilterValues = () => {
+              const options = col?.options || [];
+              return options.map(option => {
+                const optionLabel = this.resolveMappingFormula(col?.optionsLabelFormula, option) ?? option.label;
+                const optionValue = this.resolveMappingFormula(col?.optionsValueFormula, option) ?? option.value;
+                return optionLabel || optionValue || '';
+              });
+            };
+            
             return {
               ...commonProperties,
               headerName: col?.headerName,
@@ -463,7 +508,13 @@ export default {
               cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
               editable: col?.editable !== false,
               sortable: col?.sortable,
-              filter: col?.filter,
+              // Use Set Filter with available options
+              filter: col?.filter ? 'agSetColumnFilter' : false,
+              filterParams: col?.filter ? {
+                values: getFilterValues(),
+                buttons: ['reset', 'apply'],
+                closeOnApply: true,
+              } : undefined,
               // Use label for filtering and sorting instead of value
               valueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
@@ -642,6 +693,57 @@ export default {
         },
       });
     },
+    onCustomCellEdit(event) {
+      this.$emit("trigger-event", {
+        name: event.type,
+        event: {
+          columnId: event.columnId,
+          field: event.field,
+          value: event.value,
+          row: event.row,
+          id: event.id,
+          index: event.index,
+          displayIndex: event.displayIndex,
+        },
+      });
+    },
+    triggerCellValueChanged(rowId, columnId, newValue) {
+      if (!this.gridApi) return;
+      const rowNode = this.gridApi.getRowNode(rowId);
+      if (!rowNode) {
+        wwLib.logStore.warning(`Row with id "${rowId}" not found`);
+        return;
+      }
+      
+      const oldValue = rowNode.data?.[columnId];
+      
+      // Update the data directly
+      if (rowNode.data) {
+        rowNode.data[columnId] = newValue;
+      }
+      
+      // Refresh the cells to show the updated value
+      this.gridApi.refreshCells({
+        rowNodes: [rowNode],
+        columns: [columnId],
+        force: true,
+      });
+      
+      // Manually trigger the event (bypassing AG Grid's event)
+      this.$emit("trigger-event", {
+        name: "cellValueChanged",
+        event: {
+          oldValue: oldValue,
+          newValue: newValue,
+          columnId: columnId,
+          row: rowNode.data,
+        },
+      });
+    },
+    stopCellEditing(cancel = false) {
+      if (!this.gridApi) return;
+      this.gridApi.stopEditing(cancel);
+    },
     resetFilters() {
       if (!this.gridApi) return;
       this.gridApi.setFilterModel(null);
@@ -756,6 +858,40 @@ export default {
         toIndex: 1,
         columnId: data[0].field,
         columnsOrder: data.map((col) => col.field),
+      };
+    },
+    getCellEditStartTestEvent() {
+      const data = this.rowData;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = this.columnDefs;
+      const customColumn = columns.find(
+        (col) => col.cellRenderer === "WewebCellRenderer"
+      );
+      return {
+        columnId: customColumn?.field || "field",
+        field: customColumn?.field || "field",
+        value: data[0]?.[customColumn?.field],
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      };
+    },
+    getCellEditEndTestEvent() {
+      const data = this.rowData;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = this.columnDefs;
+      const customColumn = columns.find(
+        (col) => col.cellRenderer === "WewebCellRenderer"
+      );
+      return {
+        columnId: customColumn?.field || "field",
+        field: customColumn?.field || "field",
+        value: data[0]?.[customColumn?.field],
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
       };
     },
     /* wwEditor:end */
