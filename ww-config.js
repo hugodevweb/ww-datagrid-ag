@@ -139,6 +139,7 @@ export default {
         newValue: null,
         columnId: "id",
         row: null,
+        isDirectUpdate: false,
       },
       getTestEvent: "getOnCellValueChangedTestEvent",
     },
@@ -1273,6 +1274,24 @@ export default {
                   array?.item?.cellDataType === "image",
                 bindable: true,
               },
+              isDirectUpdate: {
+                label: "Direct Update",
+                type: "OnOff",
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image",
+                bindable: true,
+                defaultValue: false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "If true, indicates this column should be directly updated in the data source",
+                },
+                propertyHelp: {
+                  tooltip: "Use this to flag columns that should be directly updated versus those requiring special handling",
+                },
+                /* wwEditor:end */
+              },
               filter: {
                 label: "Filter",
                 type: "OnOff",
@@ -1445,6 +1464,7 @@ export default {
                   "pinned",
                   "hide",
                   "editable",
+                  "isDirectUpdate",
                   "filter",
                   "sortable",
                 ],

@@ -488,16 +488,6 @@ export default {
               return foundOption?.label || value || '';
             };
             
-            // Get all available option labels for the filter
-            const getFilterValues = () => {
-              const options = col?.options || [];
-              return options.map(option => {
-                const optionLabel = this.resolveMappingFormula(col?.optionsLabelFormula, option) ?? option.label;
-                const optionValue = this.resolveMappingFormula(col?.optionsValueFormula, option) ?? option.value;
-                return optionLabel || optionValue || '';
-              });
-            };
-            
             return {
               ...commonProperties,
               headerName: col?.headerName,
@@ -508,13 +498,7 @@ export default {
               cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
               editable: col?.editable !== false,
               sortable: col?.sortable,
-              // Use Set Filter with available options
-              filter: col?.filter ? 'agSetColumnFilter' : false,
-              filterParams: col?.filter ? {
-                values: getFilterValues(),
-                buttons: ['reset', 'apply'],
-                closeOnApply: true,
-              } : undefined,
+              filter: col?.filter,
               // Use label for filtering and sorting instead of value
               valueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
@@ -672,13 +656,21 @@ export default {
     onCellValueChanged(event) {
       // For select columns: oldValue and newValue contain the actual ID/value, not the label
       // The label is only used for display, sorting, and filtering
+      
+      // Find the column configuration to get isDirectUpdate
+      const columnId = event.column.getColId();
+      const columnConfig = this.content.columns.find(
+        (col) => col?.field === columnId || col?.actionName === columnId
+      );
+      
       this.$emit("trigger-event", {
         name: "cellValueChanged",
         event: {
           oldValue: event.oldValue,
           newValue: event.newValue, // Actual ID/value is stored here
-          columnId: event.column.getColId(),
+          columnId: columnId,
           row: event.data,
+          isDirectUpdate: columnConfig?.isDirectUpdate || false,
         },
       });
     },
@@ -708,19 +700,64 @@ export default {
       });
     },
     triggerCellValueChanged(rowId, columnId, newValue) {
-      if (!this.gridApi) return;
-      const rowNode = this.gridApi.getRowNode(rowId);
+      if (!this.gridApi) {
+        console.log("Grid API is not initialized yet");
+        return;
+      }
+      
+      // Try to get the row node
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found and rowId is a number, try converting to string and vice versa
       if (!rowNode) {
-        wwLib.logStore.warning(`Row with id "${rowId}" not found`);
+        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
+        if (!isNaN(alternativeId)) {
+          rowNode = this.gridApi.getRowNode(alternativeId);
+        }
+      }
+      
+      // If still not found, search through all rows by matching the ID formula
+      if (!rowNode) {
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode) {
+            // Get the ID using the same formula as getRowId
+            const nodeId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // Try exact match first
+            if (nodeId === rowId) {
+              rowNode = node;
+            }
+            // Try string comparison
+            else if (String(nodeId) === String(rowId)) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
+      if (!rowNode) {
+        console.log(`Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
+        return;
+      }
+      
+      if (!rowNode.data) {
+        console.log(`Row node found but has no data`);
         return;
       }
       
       const oldValue = rowNode.data?.[columnId];
       
-      // Update the data directly
-      if (rowNode.data) {
-        rowNode.data[columnId] = newValue;
+      // Find the column configuration to get isDirectUpdate
+      const columnConfig = this.content.columns.find(
+        (col) => col?.field === columnId || col?.actionName === columnId
+      );
+      
+      if (!columnConfig) {
+        console.log(`Column "${columnId}" not found in column configuration`);
       }
+      
+      // Update the data directly
+      rowNode.data[columnId] = newValue;
       
       // Refresh the cells to show the updated value
       this.gridApi.refreshCells({
@@ -737,6 +774,7 @@ export default {
           newValue: newValue,
           columnId: columnId,
           row: rowNode.data,
+          isDirectUpdate: columnConfig?.isDirectUpdate || false,
         },
       });
     },
@@ -809,11 +847,16 @@ export default {
     getOnCellValueChangedTestEvent() {
       const data = this.rowData;
       if (!data || !data[0]) throw new Error("No data found");
+      const columns = this.content.columns || [];
+      const firstEditableColumn = columns.find(
+        (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
+      );
       return {
         oldValue: "oldValue",
         newValue: "newValue",
-        columnId: "columnId",
+        columnId: firstEditableColumn?.field || "columnId",
         row: data[0],
+        isDirectUpdate: firstEditableColumn?.isDirectUpdate || false,
       };
     },
     getSelectionTestEvent() {
