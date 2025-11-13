@@ -503,6 +503,14 @@ export default {
               valueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
               },
+              // Ensure the raw value (ID) is stored, not the label
+              valueSetter: (params) => {
+                if (params.newValue !== params.oldValue) {
+                  params.data[col?.field] = params.newValue;
+                  return true;
+                }
+                return false;
+              },
               filterValueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
               },
@@ -654,20 +662,22 @@ export default {
       });
     },
     onCellValueChanged(event) {
-      // For select columns: oldValue and newValue contain the actual ID/value, not the label
-      // The label is only used for display, sorting, and filtering
-      
       // Find the column configuration to get isDirectUpdate
       const columnId = event.column.getColId();
       const columnConfig = this.content.columns.find(
         (col) => col?.field === columnId || col?.actionName === columnId
       );
       
+      // For select columns: read the value directly from the data to ensure we get the ID, not the label
+      // The valueSetter ensures the actual value (ID) is stored in the data field
+      const newValue = event.data?.[columnId];
+      const oldValue = event.oldValue;
+      
       this.$emit("trigger-event", {
         name: "cellValueChanged",
         event: {
-          oldValue: event.oldValue,
-          newValue: event.newValue, // Actual ID/value is stored here
+          oldValue: oldValue,
+          newValue: newValue, // Actual ID/value from the data field
           columnId: columnId,
           row: event.data,
           isDirectUpdate: columnConfig?.isDirectUpdate || false,
