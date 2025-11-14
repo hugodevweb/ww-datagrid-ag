@@ -1,6 +1,11 @@
 <template>
     <div ref="cellElement" class="select-cell">
-        <span class="select-label" :style="cellStyle">{{ displayLabel }}</span>
+        <!-- Loading skeleton -->
+        <div v-if="isLoadingState" class="select-skeleton">
+            <div class="skeleton-shimmer"></div>
+        </div>
+        <!-- Normal display -->
+        <span v-else class="select-label" :style="cellStyle">{{ displayLabel }}</span>
         
         <Teleport :to="teleportTarget" v-if="isEditMode && teleportTarget">
             <div 
@@ -60,6 +65,13 @@ export default {
             // When AG Grid uses this as an editor, it's in edit mode
             // We detect this by checking if we're being used as a cell editor
             return this.params?.api && this.params?.stopEditing;
+        },
+        // Detect loading state from params
+        isLoadingState() {
+            // Check both editor and renderer params for isLoading
+            const editorParams = this.params?.colDef?.cellEditorParams || {};
+            const rendererParams = this.params?.colDef?.cellRendererParams || {};
+            return this.params?.isLoading || editorParams?.isLoading || rendererParams?.isLoading || false;
         },
         processedOptions() {
             // AG Grid editor params are nested - try both locations
@@ -393,6 +405,38 @@ export default {
     &:hover {
         filter: brightness(0.95);
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    }
+}
+
+.select-skeleton {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 8px 12px;
+    
+    .skeleton-shimmer {
+        width: 80%;
+        height: 20px;
+        background: linear-gradient(
+            90deg,
+            #e2e8f0 0%,
+            #f1f5f9 50%,
+            #e2e8f0 100%
+        );
+        background-size: 200% 100%;
+        border-radius: 6px;
+        animation: shimmer 1.5s ease-in-out infinite;
+    }
+}
+
+@keyframes shimmer {
+    0% {
+        background-position: -200% 0;
+    }
+    100% {
+        background-position: 200% 0;
     }
 }
 

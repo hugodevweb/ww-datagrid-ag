@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing, loading: isLoading }" :style="cssVars">
+  <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars">
     <ag-grid-vue
       :rowData="rowData"
       :columnDefs="columnDefs"
@@ -38,36 +38,6 @@
       @column-moved="onColumnMoved"
     >
     </ag-grid-vue>
-    
-    <!-- Loading Skeleton Overlay -->
-    <div v-if="isLoading && columnDefs && columnDefs.length > 0" class="loading-skeleton">
-      <div class="skeleton-header">
-        <div 
-          v-for="(col, index) in columnDefs" 
-          :key="index"
-          class="skeleton-header-cell"
-          :style="getSkeletonCellStyle(col)"
-        >
-          <div class="skeleton-shimmer"></div>
-        </div>
-      </div>
-      <div class="skeleton-body">
-        <div 
-          v-for="rowIndex in skeletonRowCount" 
-          :key="rowIndex"
-          class="skeleton-row"
-        >
-          <div 
-            v-for="(col, colIndex) in columnDefs" 
-            :key="colIndex"
-            class="skeleton-cell"
-            :style="getSkeletonCellStyle(col)"
-          >
-            <div class="skeleton-shimmer"></div>
-          </div>
-        </div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -163,12 +133,28 @@ export default {
       });
 
     const gridReady = ref(false);
-    
+    const dataRendered = ref(false);
+    const dataLoadingTimeout = ref(null);
+
     const onGridReady = (params) => {
       gridApi.value = params.api;
       gridReady.value = true;
       const columns = params.api.getAllGridColumns();
       setColumnOrder(columns.map((col) => col.getColId()));
+      
+      // If data is already present when grid is ready, mark as rendered after a short delay
+      nextTick(() => {
+        if (rowData.value && rowData.value.length > 0) {
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              dataRendered.value = true;
+            }, 200);
+          });
+        } else {
+          // Empty data means it's loaded
+          dataRendered.value = true;
+        }
+      });
     };
 
     let initialFilter = "";
@@ -331,29 +317,51 @@ export default {
       const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
       return Array.isArray(data) ? data ?? [] : [];
     });
-    
-    // Detect loading state - show skeleton when grid is not ready or data is not yet available
+
+    // Watch for data changes to detect loading state
+    watch(() => rowData.value, (newData, oldData) => {
+      // If data changed (new data loaded), reset the rendered state
+      if (newData !== oldData && Array.isArray(newData) && newData.length > 0) {
+        dataRendered.value = false;
+        // Clear any existing timeout
+        if (dataLoadingTimeout.value) {
+          clearTimeout(dataLoadingTimeout.value);
+        }
+        // Wait for AG Grid to render, then mark as rendered
+        nextTick(() => {
+          if (gridApi.value) {
+            // Use requestAnimationFrame to wait for render cycle
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                dataRendered.value = true;
+              }, 200); // Give time for all cells (especially select cells) to render
+            });
+          }
+        });
+      } else if (Array.isArray(newData) && newData.length === 0) {
+        // Empty data means it's loaded (just empty)
+        dataRendered.value = true;
+      }
+    }, { deep: true, immediate: true });
+
+    // Detect loading state - show skeleton when grid is not ready or data is not yet rendered
     const isLoading = computed(() => {
       // Check if grid API is ready
       if (!gridReady.value) return true;
       
       // Check if rowData source is undefined/null (not loaded yet)
-      // This handles the case where data is bound but not yet available
       const rawData = props.content?.rowData;
       if (rawData === undefined || rawData === null) {
         return true;
       }
       
-      // If we have columns but no data yet, and the data source suggests it's loading
-      // (empty array might mean loaded but empty, so we only show skeleton if undefined/null)
+      // If we have data but it hasn't been rendered yet, show skeleton
+      const data = rowData.value;
+      if (Array.isArray(data) && data.length > 0 && !dataRendered.value) {
+        return true;
+      }
+      
       return false;
-    });
-    
-    // Number of skeleton rows to show
-    const skeletonRowCount = computed(() => {
-      return props.content?.pagination 
-        ? (props.content?.paginationPageSize || 10)
-        : 8; // Default to 8 rows if no pagination
     });
 
     function refreshData() {
@@ -397,7 +405,6 @@ export default {
       refreshData,
       rowData,
       isLoading,
-      skeletonRowCount,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -527,6 +534,7 @@ export default {
               optionsLabelFormula: col?.optionsLabelFormula,
               optionsColorFormula: col?.optionsColorFormula,
               resolveMappingFormula: this.resolveMappingFormula,
+              isLoading: this.isLoading,
             };
             
             // Helper function to get label from value
@@ -713,21 +721,6 @@ export default {
   methods: {
     getRowId(params) {
       return this.resolveMappingFormula(this.content.idFormula, params.data);
-    },
-    getSkeletonCellStyle(col) {
-      const style = {};
-      if (col.flex) {
-        style.flex = col.flex;
-        style.minWidth = col.minWidth || '100px';
-        if (col.maxWidth) {
-          style.maxWidth = col.maxWidth;
-        }
-      } else if (col.width) {
-        style.width = col.width;
-      } else {
-        style.width = '150px';
-      }
-      return style;
     },
     onActionTrigger(event) {
       this.$emit("trigger-event", {
@@ -1141,120 +1134,5 @@ export default {
     }
   }
   /* wwEditor:end */
-  
-  // Hide grid content when loading
-  &.loading {
-    :deep(.ag-root-wrapper) {
-      opacity: 0;
-      pointer-events: none;
-    }
-  }
-  
-  // Loading skeleton overlay
-  .loading-skeleton {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 100;
-    background: var(--ag-background-color, #ffffff);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    
-    .skeleton-header {
-      display: flex;
-      border-bottom: 1px solid var(--ag-border-color, #e2e8f0);
-      background: var(--ag-header-background-color, #f8fafc);
-      min-height: var(--ag-header-height, 48px);
-      width: 100%;
-      
-      .skeleton-header-cell {
-        padding: 12px 16px;
-        border-right: 1px solid var(--ag-border-color, #e2e8f0);
-        display: flex;
-        align-items: center;
-        flex-shrink: 0;
-        
-        &:last-child {
-          border-right: none;
-        }
-        
-        .skeleton-shimmer {
-          width: 60%;
-          height: 16px;
-          background: linear-gradient(
-            90deg,
-            var(--ag-header-background-color, #f8fafc) 0%,
-            #e2e8f0 50%,
-            var(--ag-header-background-color, #f8fafc) 100%
-          );
-          background-size: 200% 100%;
-          border-radius: 4px;
-          animation: shimmer 1.5s ease-in-out infinite;
-        }
-      }
-    }
-    
-    .skeleton-body {
-      flex: 1;
-      overflow-y: auto;
-      
-      .skeleton-row {
-        display: flex;
-        border-bottom: 1px solid var(--ag-border-color, #e2e8f0);
-        min-height: calc(var(--ag-row-height, 42px) * var(--ag-row-vertical-padding-scale, 1));
-        background: var(--ag-background-color, #ffffff);
-        width: 100%;
-        
-        &:nth-child(even) {
-          background: var(--ag-odd-row-background-color, var(--ag-background-color, #ffffff));
-        }
-        
-        .skeleton-cell {
-          padding: 12px 16px;
-          border-right: 1px solid var(--ag-border-color, #e2e8f0);
-          display: flex;
-          align-items: center;
-          flex-shrink: 0;
-          
-          &:last-child {
-            border-right: none;
-          }
-          
-          .skeleton-shimmer {
-            height: 14px;
-            background: linear-gradient(
-              90deg,
-              var(--ag-background-color, #ffffff) 0%,
-              #e2e8f0 50%,
-              var(--ag-background-color, #ffffff) 100%
-            );
-            background-size: 200% 100%;
-            border-radius: 4px;
-            animation: shimmer 1.5s ease-in-out infinite;
-          }
-          
-          // Vary the width for visual interest
-          &:nth-child(1) .skeleton-shimmer { width: 80%; }
-          &:nth-child(2) .skeleton-shimmer { width: 60%; }
-          &:nth-child(3) .skeleton-shimmer { width: 90%; }
-          &:nth-child(4) .skeleton-shimmer { width: 50%; }
-          &:nth-child(5) .skeleton-shimmer { width: 75%; }
-          &:nth-child(n+6) .skeleton-shimmer { width: 70%; }
-        }
-      }
-    }
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    background-position: -200% 0;
-  }
-  100% {
-    background-position: 200% 0;
-  }
 }
 </style>
