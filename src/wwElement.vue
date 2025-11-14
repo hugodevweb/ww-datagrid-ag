@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars">
+  <div class="ww-datagrid" :class="{ editing: isEditing, loading: isLoading }" :style="cssVars">
     <ag-grid-vue
       :rowData="rowData"
       :columnDefs="columnDefs"
@@ -38,6 +38,36 @@
       @column-moved="onColumnMoved"
     >
     </ag-grid-vue>
+    
+    <!-- Loading Skeleton Overlay -->
+    <div v-if="isLoading && columnDefs && columnDefs.length > 0" class="loading-skeleton">
+      <div class="skeleton-header">
+        <div 
+          v-for="(col, index) in columnDefs" 
+          :key="index"
+          class="skeleton-header-cell"
+          :style="getSkeletonCellStyle(col)"
+        >
+          <div class="skeleton-shimmer"></div>
+        </div>
+      </div>
+      <div class="skeleton-body">
+        <div 
+          v-for="rowIndex in skeletonRowCount" 
+          :key="rowIndex"
+          class="skeleton-row"
+        >
+          <div 
+            v-for="(col, colIndex) in columnDefs" 
+            :key="colIndex"
+            class="skeleton-cell"
+            :style="getSkeletonCellStyle(col)"
+          >
+            <div class="skeleton-shimmer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -132,8 +162,11 @@ export default {
         readonly: true,
       });
 
+    const gridReady = ref(false);
+    
     const onGridReady = (params) => {
       gridApi.value = params.api;
+      gridReady.value = true;
       const columns = params.api.getAllGridColumns();
       setColumnOrder(columns.map((col) => col.getColId()));
     };
@@ -298,6 +331,30 @@ export default {
       const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
       return Array.isArray(data) ? data ?? [] : [];
     });
+    
+    // Detect loading state - show skeleton when grid is not ready or data is not yet available
+    const isLoading = computed(() => {
+      // Check if grid API is ready
+      if (!gridReady.value) return true;
+      
+      // Check if rowData source is undefined/null (not loaded yet)
+      // This handles the case where data is bound but not yet available
+      const rawData = props.content?.rowData;
+      if (rawData === undefined || rawData === null) {
+        return true;
+      }
+      
+      // If we have columns but no data yet, and the data source suggests it's loading
+      // (empty array might mean loaded but empty, so we only show skeleton if undefined/null)
+      return false;
+    });
+    
+    // Number of skeleton rows to show
+    const skeletonRowCount = computed(() => {
+      return props.content?.pagination 
+        ? (props.content?.paginationPageSize || 10)
+        : 8; // Default to 8 rows if no pagination
+    });
 
     function refreshData() {
       nextTick(() => {
@@ -339,6 +396,8 @@ export default {
       initialState,
       refreshData,
       rowData,
+      isLoading,
+      skeletonRowCount,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -654,6 +713,21 @@ export default {
   methods: {
     getRowId(params) {
       return this.resolveMappingFormula(this.content.idFormula, params.data);
+    },
+    getSkeletonCellStyle(col) {
+      const style = {};
+      if (col.flex) {
+        style.flex = col.flex;
+        style.minWidth = col.minWidth || '100px';
+        if (col.maxWidth) {
+          style.maxWidth = col.maxWidth;
+        }
+      } else if (col.width) {
+        style.width = col.width;
+      } else {
+        style.width = '150px';
+      }
+      return style;
     },
     onActionTrigger(event) {
       this.$emit("trigger-event", {
@@ -981,10 +1055,13 @@ export default {
 <style scoped lang="scss">
 .ww-datagrid {
   position: relative;
+  isolation: isolate; // Create a new stacking context to contain AG Grid elements
+  
   :deep(.ag-cell-wrapper),
   :deep(.ag-cell-value) {
     height: 100%;
   }
+  
   :deep(.ag-header-cell) {
     &.-center .ag-header-cell-label {
       justify-content: center;
@@ -1001,6 +1078,29 @@ export default {
       justify-content: flex-start;
     }
   }
+  
+  // Control z-index of filter menus and floating panels only
+  // These are the elements that appear above the grid
+  :deep(.ag-popup) {
+    z-index: 1000 !important; // Reasonable z-index for filter menus
+  }
+  
+  :deep(.ag-filter-wrapper) {
+    z-index: 1000 !important;
+  }
+  
+  :deep(.ag-menu) {
+    z-index: 1000 !important;
+  }
+  
+  :deep(.ag-column-menu) {
+    z-index: 1000 !important;
+  }
+  
+  :deep(.ag-filter) {
+    z-index: 1000 !important;
+  }
+  
   :deep(.ag-cell) {
     .ag-cell-value {
       display: flex;
@@ -1028,6 +1128,7 @@ export default {
       padding-right: 0 !important;
     }
   }
+  
   /* wwEditor:start */
   &.editing {
     &::before {
@@ -1040,5 +1141,120 @@ export default {
     }
   }
   /* wwEditor:end */
+  
+  // Hide grid content when loading
+  &.loading {
+    :deep(.ag-root-wrapper) {
+      opacity: 0;
+      pointer-events: none;
+    }
+  }
+  
+  // Loading skeleton overlay
+  .loading-skeleton {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    background: var(--ag-background-color, #ffffff);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    
+    .skeleton-header {
+      display: flex;
+      border-bottom: 1px solid var(--ag-border-color, #e2e8f0);
+      background: var(--ag-header-background-color, #f8fafc);
+      min-height: var(--ag-header-height, 48px);
+      width: 100%;
+      
+      .skeleton-header-cell {
+        padding: 12px 16px;
+        border-right: 1px solid var(--ag-border-color, #e2e8f0);
+        display: flex;
+        align-items: center;
+        flex-shrink: 0;
+        
+        &:last-child {
+          border-right: none;
+        }
+        
+        .skeleton-shimmer {
+          width: 60%;
+          height: 16px;
+          background: linear-gradient(
+            90deg,
+            var(--ag-header-background-color, #f8fafc) 0%,
+            #e2e8f0 50%,
+            var(--ag-header-background-color, #f8fafc) 100%
+          );
+          background-size: 200% 100%;
+          border-radius: 4px;
+          animation: shimmer 1.5s ease-in-out infinite;
+        }
+      }
+    }
+    
+    .skeleton-body {
+      flex: 1;
+      overflow-y: auto;
+      
+      .skeleton-row {
+        display: flex;
+        border-bottom: 1px solid var(--ag-border-color, #e2e8f0);
+        min-height: calc(var(--ag-row-height, 42px) * var(--ag-row-vertical-padding-scale, 1));
+        background: var(--ag-background-color, #ffffff);
+        width: 100%;
+        
+        &:nth-child(even) {
+          background: var(--ag-odd-row-background-color, var(--ag-background-color, #ffffff));
+        }
+        
+        .skeleton-cell {
+          padding: 12px 16px;
+          border-right: 1px solid var(--ag-border-color, #e2e8f0);
+          display: flex;
+          align-items: center;
+          flex-shrink: 0;
+          
+          &:last-child {
+            border-right: none;
+          }
+          
+          .skeleton-shimmer {
+            height: 14px;
+            background: linear-gradient(
+              90deg,
+              var(--ag-background-color, #ffffff) 0%,
+              #e2e8f0 50%,
+              var(--ag-background-color, #ffffff) 100%
+            );
+            background-size: 200% 100%;
+            border-radius: 4px;
+            animation: shimmer 1.5s ease-in-out infinite;
+          }
+          
+          // Vary the width for visual interest
+          &:nth-child(1) .skeleton-shimmer { width: 80%; }
+          &:nth-child(2) .skeleton-shimmer { width: 60%; }
+          &:nth-child(3) .skeleton-shimmer { width: 90%; }
+          &:nth-child(4) .skeleton-shimmer { width: 50%; }
+          &:nth-child(5) .skeleton-shimmer { width: 75%; }
+          &:nth-child(n+6) .skeleton-shimmer { width: 70%; }
+        }
+      }
+    }
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 </style>

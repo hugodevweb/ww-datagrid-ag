@@ -147,7 +147,7 @@ export default {
                 left: `${this.dropdownPosition.left}px`,
                 minWidth: `${minWidth}px`,
                 maxWidth: `${maxWidth}px`,
-                zIndex: 10000,
+                zIndex: 2000, // Above filter menus (1000) but reasonable
                 '--dropdown-columns': columns,
             };
         },
