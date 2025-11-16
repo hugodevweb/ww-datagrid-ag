@@ -136,7 +136,8 @@ export default {
         },
         cellStyle() {
             const bgColor = this.currentOption?.color || '#f0f0f0';
-            const textColor = this.getContrastColor(bgColor);
+            // Always use white for text color
+            const textColor = '#ffffff';
             
             return {
                 backgroundColor: bgColor,
@@ -341,27 +342,13 @@ export default {
         getOptionStyle(option) {
             // Color code the options in the dropdown with !important to override browser defaults
             const bgColor = option.color || '#ffffff';
-            const textColor = this.getContrastColor(bgColor);
+            // Always use white for text color
+            const textColor = '#ffffff';
             
             return {
                 'background-color': `${bgColor} !important`,
                 'color': `${textColor} !important`,
             };
-        },
-        getContrastColor(hexColor) {
-            // Convert hex to RGB
-            if (!hexColor) return '#000000';
-            
-            const hex = hexColor.replace('#', '');
-            const r = parseInt(hex.substr(0, 2), 16);
-            const g = parseInt(hex.substr(2, 2), 16);
-            const b = parseInt(hex.substr(4, 2), 16);
-            
-            // Calculate relative luminance
-            const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-            
-            // Return black for light backgrounds, white for dark backgrounds
-            return luminance > 0.5 ? '#000000' : '#ffffff';
         },
     },
 };

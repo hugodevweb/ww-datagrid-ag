@@ -1,6 +1,7 @@
 <template>
   <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars">
     <ag-grid-vue
+      :components="gridComponents"
       :rowData="rowData"
       :columnDefs="columnDefs"
       :initial-state="initialState"
@@ -68,6 +69,7 @@ import ActionCellRenderer from "./components/ActionCellRenderer.vue";
 import ImageCellRenderer from "./components/ImageCellRenderer.vue";
 import WewebCellRenderer from "./components/WewebCellRenderer.vue";
 import SelectCellRenderer from "./components/SelectCellRenderer.vue";
+import SelectFilterComponent from "./components/SelectFilterComponent.vue";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -80,6 +82,7 @@ export default {
     ImageCellRenderer,
     WewebCellRenderer,
     SelectCellRenderer,
+    SelectFilterComponent,
   },
   props: {
     content: {
@@ -370,6 +373,14 @@ export default {
       });
     }
 
+    const gridComponents = {
+      ActionCellRenderer,
+      ImageCellRenderer,
+      WewebCellRenderer,
+      SelectCellRenderer,
+      SelectFilterComponent,
+    };
+
     return {
       resolveMappingFormula,
       onGridReady,
@@ -405,6 +416,7 @@ export default {
       refreshData,
       rowData,
       isLoading,
+      gridComponents,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -614,7 +626,15 @@ export default {
               cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
               editable: col?.editable !== false,
               sortable: col?.sortable,
-              filter: col?.filter,
+              filter: col?.filter ? "SelectFilterComponent" : false,
+              ...(col?.filter
+                ? {
+                    filterParams: {
+                      selectOptions: selectParams,
+                      closeOnApply: true,
+                    },
+                  }
+                : {}),
               // Use label for filtering and sorting instead of value
               valueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
