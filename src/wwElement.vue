@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars">
+  <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars" ref="gridContainerRef">
     <ag-grid-vue
       :components="gridComponents"
       :rowData="rowData"
@@ -37,6 +37,7 @@
       @row-drag-end="onRowDragged"
       @row-drag-enter="onRowDragEnter"
       @column-moved="onColumnMoved"
+      @body-scroll="onBodyScroll"
     >
     </ag-grid-vue>
   </div>
@@ -51,6 +52,7 @@ import {
   watch,
   nextTick,
   ref,
+  onBeforeUnmount,
 } from "vue";
 import { AgGridVue } from "ag-grid-vue3";
 import {
@@ -138,6 +140,7 @@ export default {
     const gridReady = ref(false);
     const dataRendered = ref(false);
     const dataLoadingTimeout = ref(null);
+    const gridContainerRef = ref(null);
 
     const onGridReady = (params) => {
       gridApi.value = params.api;
@@ -298,6 +301,60 @@ export default {
       });
     };
 
+    // Track scroll debounce timer
+    const scrollDebounceTimer = ref(null);
+
+    // Cleanup on unmount
+    onBeforeUnmount(() => {
+      if (scrollDebounceTimer.value) {
+        clearTimeout(scrollDebounceTimer.value);
+      }
+    });
+
+    const onBodyScroll = (event) => {
+      if (!gridApi.value) return;
+      
+      const api = event?.api || gridApi.value;
+      
+      // Get scroll container dimensions from the grid container ref
+      if (!gridContainerRef.value) return;
+      
+      const scrollContainer = gridContainerRef.value.querySelector('.ag-body-viewport');
+      if (!scrollContainer) return;
+      
+      const scrollHeight = scrollContainer.scrollHeight;
+      const clientHeight = scrollContainer.clientHeight;
+      const scrollTopPos = scrollContainer.scrollTop || event?.top || 0;
+      const scrollLeftPos = scrollContainer.scrollLeft || event?.left || 0;
+      
+      // Calculate if near bottom (within 100px of bottom)
+      const distanceFromBottom = scrollHeight - (scrollTopPos + clientHeight);
+      const isNearBottom = distanceFromBottom <= 100;
+      const isAtBottom = distanceFromBottom <= 5;
+      
+      // Debounce to avoid too many events
+      if (scrollDebounceTimer.value) {
+        clearTimeout(scrollDebounceTimer.value);
+      }
+      
+      scrollDebounceTimer.value = setTimeout(() => {
+        // Emit scroll event with useful information for pagination management
+        ctx.emit("trigger-event", {
+          name: "scroll",
+          event: {
+            scrollTop: scrollTopPos,
+            scrollLeft: scrollLeftPos,
+            scrollHeight: scrollHeight,
+            clientHeight: clientHeight,
+            distanceFromBottom: distanceFromBottom,
+            isNearBottom: isNearBottom,
+            isAtBottom: isAtBottom,
+            totalRows: api.getDisplayedRowCount() || 0,
+          },
+        });
+      }, 100); // 100ms debounce to reduce event frequency
+    };
+
     /* wwEditor:start */
     const { createElement } = wwLib.useCreateElement();
     /* wwEditor:end */
@@ -412,6 +469,8 @@ export default {
       onRowDragged,
       onRowDragEnter,
       onColumnMoved,
+      onBodyScroll,
+      gridContainerRef,
       initialState,
       refreshData,
       rowData,
@@ -1123,6 +1182,19 @@ export default {
         id: 0,
         index: 0,
         displayIndex: 0,
+      };
+    },
+    getScrollTestEvent() {
+      if (!this.gridApi) throw new Error("Grid API is not initialized");
+      return {
+        scrollTop: 500,
+        scrollLeft: 0,
+        scrollHeight: 1000,
+        clientHeight: 400,
+        distanceFromBottom: 100,
+        isNearBottom: true,
+        isAtBottom: false,
+        totalRows: this.gridApi.getDisplayedRowCount() || 0,
       };
     },
     /* wwEditor:end */

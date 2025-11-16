@@ -236,6 +236,21 @@ export default {
       },
       getTestEvent: "getCellEditEndTestEvent",
     },
+    {
+      name: "scroll",
+      label: { en: "On Scroll" },
+      event: {
+        scrollTop: 0,
+        scrollLeft: 0,
+        scrollHeight: 0,
+        clientHeight: 0,
+        distanceFromBottom: 0,
+        isNearBottom: false,
+        isAtBottom: false,
+        totalRows: 0,
+      },
+      getTestEvent: "getScrollTestEvent",
+    },
   ],
   actions: [
     { label: "Reset filters", action: "resetFilters" },

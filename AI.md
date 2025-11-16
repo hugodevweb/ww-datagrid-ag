@@ -151,6 +151,7 @@ A highly customizable data grid/table component that supports features like sort
 - columnMoved: Triggered when a column has been moved. Payload: { toIndex: 0, columnId: 'id', columnsOrder: Array[id] }
 - filterChanged: Triggered when filters are applied or changed. Payload: filter model object
 - sortChanged: Triggered when sorting is applied or changed. Payload: array of sort configurations
+- scroll: Triggered when the grid is scrolled. Useful for implementing infinite scroll or load-more pagination. Payload: { scrollTop: 0, scrollLeft: 0, scrollHeight: 0, clientHeight: 0, distanceFromBottom: 0, isNearBottom: false, isAtBottom: false, totalRows: 0 }
 
 ***Notes:***
 - idFormula always use javascript with context.mapping value "context.mapping..."
