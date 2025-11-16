@@ -1137,8 +1137,34 @@ export default {
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
-                  !array?.item?.useCustomLabel ||
-                  array?.item?.cellDataType === "custom",
+                  (!array?.item?.useCustomLabel && array?.item?.cellDataType !== "custom"),
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: array?.item?.cellDataType === "custom" 
+                    ? "Formula that returns the value to use for filtering and sorting. The actual field value remains unchanged in the data. This is only used for filtering/sorting, not for display (which is handled by the custom cell renderer)."
+                    : "Formula that returns the formatted value to display in the cell",
+                },
+                /* wwEditor:end */
+              },
+              useDisplayValueForFilterSort: {
+                label: "Use display value for filter & sort",
+                type: "OnOff",
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image" ||
+                  array?.item?.cellDataType === "select" ||
+                  (array?.item?.cellDataType === "custom" && !array?.item?.displayLabelFormula) ||
+                  (array?.item?.cellDataType !== "custom" && !array?.item?.useCustomLabel),
+                defaultValue: false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "If true, uses the display value (from displayLabelFormula) for filtering and sorting instead of the raw field value",
+                },
+                propertyHelp: {
+                  tooltip: "When enabled, filtering and sorting will use the formatted display value instead of the original field value. For custom columns, this allows filtering/sorting by a different value than what's stored (e.g., filter by user name instead of user ID).",
+                },
+                /* wwEditor:end */
               },
               widthAlgo: {
                 type: "TextRadioGroup",
@@ -1446,6 +1472,7 @@ export default {
               "optionsColorFormula",
               "useCustomLabel",
               "displayLabelFormula",
+              "useDisplayValueForFilterSort",
               {
                 label: "Width",
                 isCollapsible: true,

@@ -74,7 +74,8 @@ A highly customizable data grid/table component that supports features like sort
     cellDataType: 'text' | 'number' | 'boolean' | 'dateString',
     field: string,
     useCustomLabel: boolean, // Default: false, if true, displayLabelFormula is used to format the label
-    displayLabelFormula: Formula, // Only if useCustomLabel is true
+    displayLabelFormula: Formula, // Only if useCustomLabel is true (for regular columns) or for custom columns (for filter/sort only, not display)
+    useDisplayValueForFilterSort: boolean, // Default: false, if true, uses display value for filtering and sorting instead of raw field value. Requires useCustomLabel to be true (regular columns) or displayLabelFormula to be set (custom columns). For custom columns, this allows filtering/sorting by a different value than what's stored (e.g., filter by user name instead of user ID)
     widthAlgo: 'flex' | 'fixed', // Default: 'fixed'
     width: string, // Only if widthAlgo is 'fixed'
     flex: number, // Only if widthAlgo is 'flex'
@@ -113,7 +114,23 @@ A highly customizable data grid/table component that supports features like sort
     actionName: string,
     actionLabel: string,
     pinned: undefined | 'left' | 'right'
-  }>` - Column configurations. Each object describe a column of the grid, and some options may depends on the selected type of data. For each object, width can be undefined, if defined its must be a string in the shape of {value}px. Flex will be ignore if width is defined or equal to auto and must be an integer.`
+  } | {
+    headerName: string,
+    cellDataType: 'custom',
+    field: string,
+    displayLabelFormula: Formula, // Optional: Formula for filter/sort value (not used for display, which is handled by custom cell renderer)
+    useDisplayValueForFilterSort: boolean, // Optional: If true, uses displayLabelFormula value for filtering and sorting
+    customFilterType: 'agTextColumnFilter' | 'agNumberColumnFilter' | 'agDateColumnFilter', // Data type for filtering
+    widthAlgo: 'flex' | 'fixed',
+    width: string,
+    flex: number,
+    minWidth: string,
+    maxWidth: string,
+    filter: boolean,
+    sortable: boolean,
+    editable: boolean,
+    pinned: undefined | 'left' | 'right'
+  }>` - Column configurations. Each object describe a column of the grid, and some options may depends on the selected type of data. For each object, width can be undefined, if defined its must be a string in the shape of {value}px. Flex will be ignore if width is defined or equal to auto and must be an integer. For custom columns, displayLabelFormula and useDisplayValueForFilterSort allow you to filter/sort by a different value than what's stored (e.g., filter by user name when the field contains user ID).`
 
 ***Exposed Variables:***
 - selectedRows: ***READ ONLY*** Array of currently selected rows.

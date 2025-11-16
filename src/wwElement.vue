@@ -493,23 +493,72 @@ export default {
               filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
             };
             
-            // Add custom comparator based on filter type for proper sorting
-            if (col?.sortable && col?.customFilterType) {
-              if (col.customFilterType === "agDateColumnFilter") {
-                customColumn.comparator = (valueA, valueB) => {
-                  const dateA = valueA ? new Date(valueA).getTime() : 0;
-                  const dateB = valueB ? new Date(valueB).getTime() : 0;
-                  return dateA - dateB;
+            // Use display value for filtering and sorting if enabled
+            if (col?.useDisplayValueForFilterSort && col?.displayLabelFormula) {
+              // Helper function to get display value from raw value
+              const getDisplayValue = (rawValue) => {
+                return this.resolveMappingFormula(
+                  col?.displayLabelFormula,
+                  rawValue
+                );
+              };
+              
+              // Use display value for filtering
+              customColumn.filterValueGetter = (params) => {
+                const rawValue = params.data?.[col?.field];
+                return getDisplayValue(rawValue);
+              };
+              
+              // Use display value for sorting with custom comparator
+              if (col?.sortable) {
+                customColumn.comparator = (valueA, valueB, nodeA, nodeB) => {
+                  const rawValueA = nodeA?.data?.[col?.field];
+                  const rawValueB = nodeB?.data?.[col?.field];
+                  const displayValueA = getDisplayValue(rawValueA);
+                  const displayValueB = getDisplayValue(rawValueB);
+                  
+                  // Handle null/undefined values
+                  if (displayValueA == null && displayValueB == null) return 0;
+                  if (displayValueA == null) return 1;
+                  if (displayValueB == null) return -1;
+                  
+                  // Use filter type to determine comparison method
+                  if (col?.customFilterType === "agDateColumnFilter") {
+                    const dateA = displayValueA ? new Date(displayValueA).getTime() : 0;
+                    const dateB = displayValueB ? new Date(displayValueB).getTime() : 0;
+                    return dateA - dateB;
+                  } else if (col?.customFilterType === "agNumberColumnFilter") {
+                    const numA = displayValueA != null ? parseFloat(displayValueA) : 0;
+                    const numB = displayValueB != null ? parseFloat(displayValueB) : 0;
+                    if (isNaN(numA) && isNaN(numB)) return 0;
+                    if (isNaN(numA)) return 1;
+                    if (isNaN(numB)) return -1;
+                    return numA - numB;
+                  } else {
+                    // Text comparison
+                    return String(displayValueA).localeCompare(String(displayValueB));
+                  }
                 };
-              } else if (col.customFilterType === "agNumberColumnFilter") {
-                customColumn.comparator = (valueA, valueB) => {
-                  const numA = valueA != null ? parseFloat(valueA) : 0;
-                  const numB = valueB != null ? parseFloat(valueB) : 0;
-                  if (isNaN(numA) && isNaN(numB)) return 0;
-                  if (isNaN(numA)) return 1;
-                  if (isNaN(numB)) return -1;
-                  return numA - numB;
-                };
+              }
+            } else {
+              // Add custom comparator based on filter type for proper sorting (when not using display value)
+              if (col?.sortable && col?.customFilterType) {
+                if (col.customFilterType === "agDateColumnFilter") {
+                  customColumn.comparator = (valueA, valueB) => {
+                    const dateA = valueA ? new Date(valueA).getTime() : 0;
+                    const dateB = valueB ? new Date(valueB).getTime() : 0;
+                    return dateA - dateB;
+                  };
+                } else if (col.customFilterType === "agNumberColumnFilter") {
+                  customColumn.comparator = (valueA, valueB) => {
+                    const numA = valueA != null ? parseFloat(valueA) : 0;
+                    const numB = valueB != null ? parseFloat(valueB) : 0;
+                    if (isNaN(numA) && isNaN(numB)) return 0;
+                    if (isNaN(numA)) return 1;
+                    if (isNaN(numB)) return -1;
+                    return numA - numB;
+                  };
+                }
               }
             }
             
@@ -599,6 +648,48 @@ export default {
                   params.value
                 );
               };
+              
+              // Use display value for filtering and sorting if enabled
+              if (col?.useDisplayValueForFilterSort) {
+                // Helper function to get display value from raw value
+                const getDisplayValue = (rawValue) => {
+                  return this.resolveMappingFormula(
+                    col?.displayLabelFormula,
+                    rawValue
+                  );
+                };
+                
+                // Use display value for filtering
+                result.filterValueGetter = (params) => {
+                  const rawValue = params.data?.[col?.field];
+                  return getDisplayValue(rawValue);
+                };
+                
+                // Use display value for sorting with custom comparator
+                if (col?.sortable) {
+                  result.comparator = (valueA, valueB, nodeA, nodeB) => {
+                    const rawValueA = nodeA?.data?.[col?.field];
+                    const rawValueB = nodeB?.data?.[col?.field];
+                    const displayValueA = getDisplayValue(rawValueA);
+                    const displayValueB = getDisplayValue(rawValueB);
+                    
+                    // Handle null/undefined values
+                    if (displayValueA == null && displayValueB == null) return 0;
+                    if (displayValueA == null) return 1;
+                    if (displayValueB == null) return -1;
+                    
+                    // Compare as numbers if both are numbers, otherwise as strings
+                    const numA = Number(displayValueA);
+                    const numB = Number(displayValueB);
+                    if (!isNaN(numA) && !isNaN(numB)) {
+                      return numA - numB;
+                    }
+                    
+                    // String comparison
+                    return String(displayValueA).localeCompare(String(displayValueB));
+                  };
+                }
+              }
             }
             return result;
           }
