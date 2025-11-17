@@ -146,7 +146,14 @@ export default {
       gridApi.value = params.api;
       gridReady.value = true;
       const columns = params.api.getAllGridColumns();
-      setColumnOrder(columns.map((col) => col.getColId()));
+      
+      // Only set column order from grid if initialColumnsOrder is not provided
+      // Otherwise, use the initialColumnsOrder from props
+      if (props.content.initialColumnsOrder && Array.isArray(props.content.initialColumnsOrder)) {
+        setColumnOrder([...props.content.initialColumnsOrder]);
+      } else {
+        setColumnOrder(columns.map((col) => col.getColId()));
+      }
       
       // If data is already present when grid is ready, mark as rendered after a short delay
       nextTick(() => {
@@ -165,6 +172,7 @@ export default {
 
     let initialFilter = "";
     let initialSort = "";
+    let initialColumnsOrder = "";
 
     watchEffect(() => {
       // Both initial filters and sort should be set here to avoid conflicts with column state application
@@ -187,15 +195,18 @@ export default {
         });
         initialSort = JSON.stringify(props.content.initialSort);
       }
-    });
-
-    watchEffect(() => {
-      if (!gridApi.value) return;
-      if (props.content.initialColumnsOrder) {
+      if (
+        props.content.initialColumnsOrder &&
+        Array.isArray(props.content.initialColumnsOrder) &&
+        initialColumnsOrder !== JSON.stringify(props.content.initialColumnsOrder)
+      ) {
         gridApi.value.applyColumnState({
           state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
           applyOrder: true,
         });
+        // Update the column order variable to match
+        setColumnOrder([...props.content.initialColumnsOrder]);
+        initialColumnsOrder = JSON.stringify(props.content.initialColumnsOrder);
       }
     });
 
@@ -209,7 +220,7 @@ export default {
       if (props.content.initialSort) {
         state.sort = { sortModel: props.content.initialSort };
       }
-      if (props.content.initialColumnsOrder) {
+      if (props.content.initialColumnsOrder && Array.isArray(props.content.initialColumnsOrder)) {
         state.columnOrder = {
           orderedColIds: props.content.initialColumnsOrder,
         };

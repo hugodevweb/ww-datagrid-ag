@@ -55,7 +55,46 @@ export default {
             rawOptions: [],
             pendingSelection: new Set(),
             appliedSelection: new Set(),
+            refreshTimer: null,
         };
+    },
+    mounted() {
+        // Force a refresh after mount to ensure options are loaded
+        // This helps when options are bound dynamically and not available during agInit
+        this.$nextTick(() => {
+            if (this.params) {
+                this.setSelectParams(this.params.filterParams);
+            }
+        });
+        
+        // Also set up a periodic check for options (in case they load asynchronously)
+        // This is a fallback for cases where watchers don't catch the change
+        // Only runs if options aren't loaded yet
+        this.refreshTimer = setInterval(() => {
+            if (this.params && this.rawOptions.length === 0) {
+                // Only refresh if we don't have options yet
+                const currentOptions = this.getCurrentOptions();
+                if (currentOptions && currentOptions.length > 0) {
+                    this.setSelectParams(this.params.filterParams);
+                    // Stop the interval once options are loaded
+                    if (this.refreshTimer) {
+                        clearInterval(this.refreshTimer);
+                        this.refreshTimer = null;
+                    }
+                }
+            } else if (this.rawOptions.length > 0 && this.refreshTimer) {
+                // Stop the interval if we have options
+                clearInterval(this.refreshTimer);
+                this.refreshTimer = null;
+            }
+        }, 500); // Check every 500ms, but stop once options are loaded
+    },
+    beforeUnmount() {
+        // Clean up the interval
+        if (this.refreshTimer) {
+            clearInterval(this.refreshTimer);
+            this.refreshTimer = null;
+        }
     },
     computed: {
         processedOptions() {
@@ -110,8 +149,72 @@ export default {
             deep: true,
             immediate: false,
         },
+        // Specifically watch for options changes in selectOptions
+        'params.filterParams.selectOptions.options': {
+            handler(newOptions, oldOptions) {
+                // Only refresh if options actually changed
+                if (newOptions !== oldOptions && Array.isArray(newOptions)) {
+                    this.setSelectParams(this.params?.filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        // Watch for changes in cellRendererParams and cellEditorParams options
+        'params.colDef.cellRendererParams.options': {
+            handler(newOptions, oldOptions) {
+                if (newOptions !== oldOptions && Array.isArray(newOptions)) {
+                    this.setSelectParams(this.params?.filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        'params.colDef.cellEditorParams.options': {
+            handler(newOptions, oldOptions) {
+                if (newOptions !== oldOptions && Array.isArray(newOptions)) {
+                    this.setSelectParams(this.params?.filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        // Watch rawOptions to stop the refresh interval when options are loaded
+        rawOptions: {
+            handler(newOptions) {
+                if (newOptions && newOptions.length > 0 && this.refreshTimer) {
+                    // Stop the interval once options are loaded
+                    clearInterval(this.refreshTimer);
+                    this.refreshTimer = null;
+                }
+            },
+            immediate: false,
+        },
     },
     methods: {
+        getCurrentOptions() {
+            // Helper method to get current options from params
+            if (!this.params) return null;
+            
+            const colDef = this.params.colDef || {};
+            const filterParams = this.params.filterParams || {};
+            const selectOptions = filterParams.selectOptions || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Check in priority order
+            if (Array.isArray(selectOptions.options)) {
+                return selectOptions.options;
+            }
+            if (Array.isArray(editorParams.options)) {
+                return editorParams.options;
+            }
+            if (Array.isArray(rendererParams.options)) {
+                return rendererParams.options;
+            }
+            
+            return null;
+        },
         agInit(params) {
             this.params = params;
             this.setSelectParams(params.filterParams);
@@ -121,6 +224,9 @@ export default {
             if (params) {
                 this.params = params;
                 this.setSelectParams(params.filterParams);
+            } else if (this.params) {
+                // Even if params don't change, refresh options in case they were updated
+                this.setSelectParams(this.params.filterParams);
             }
             return true;
         },
@@ -143,7 +249,8 @@ export default {
             
             // Try to get from filterParams.selectOptions first (this is the primary source)
             if (selectOptions && typeof selectOptions === 'object') {
-                if (Array.isArray(selectOptions.options) && selectOptions.options.length > 0) {
+                // Check if options is an array (even if empty, we want to use it)
+                if (Array.isArray(selectOptions.options)) {
                     options = selectOptions.options;
                 }
                 resolveMappingFormula = selectOptions.resolveMappingFormula;
@@ -153,8 +260,8 @@ export default {
                 isLoading = selectOptions.isLoading;
             }
             
-            // Fallback to editor params
-            if ((!options || options.length === 0) && Array.isArray(editorParams.options) && editorParams.options.length > 0) {
+            // Fallback to editor params (check if it's an array, even if empty)
+            if (options === null && Array.isArray(editorParams.options)) {
                 options = editorParams.options;
                 if (!resolveMappingFormula) resolveMappingFormula = editorParams.resolveMappingFormula;
                 if (!optionsValueFormula) optionsValueFormula = editorParams.optionsValueFormula;
@@ -163,8 +270,8 @@ export default {
                 if (isLoading === null || isLoading === undefined) isLoading = editorParams.isLoading;
             }
             
-            // Fallback to renderer params
-            if ((!options || options.length === 0) && Array.isArray(rendererParams.options) && rendererParams.options.length > 0) {
+            // Fallback to renderer params (check if it's an array, even if empty)
+            if (options === null && Array.isArray(rendererParams.options)) {
                 options = rendererParams.options;
                 if (!resolveMappingFormula) resolveMappingFormula = rendererParams.resolveMappingFormula;
                 if (!optionsValueFormula) optionsValueFormula = rendererParams.optionsValueFormula;
@@ -174,7 +281,8 @@ export default {
             }
             
             // Last resort: extract unique values from row data if options aren't available
-            if ((!options || options.length === 0) && this.params?.api) {
+            // Only do this if we don't have options yet (not even an empty array)
+            if (options === null && this.params?.api) {
                 const field = colDef?.field;
                 if (field) {
                     const uniqueValues = new Set();
@@ -193,13 +301,24 @@ export default {
                             label: String(value),
                             color: '#f2f2f2',
                         }));
+                    } else {
+                        // Set to empty array if no unique values found
+                        options = [];
                     }
+                } else {
+                    // No field, set to empty array
+                    options = [];
                 }
+            }
+            
+            // Ensure options is always an array (default to empty array)
+            if (!Array.isArray(options)) {
+                options = [];
             }
             
             // Build merged params - ensure we always have an array, even if empty
             const mergedParams = {
-                options: Array.isArray(options) ? options : [],
+                options: options,
                 resolveMappingFormula: resolveMappingFormula,
                 optionsValueFormula: optionsValueFormula,
                 optionsLabelFormula: optionsLabelFormula,
@@ -208,7 +327,7 @@ export default {
             };
             
             this.selectParams = mergedParams;
-            this.rawOptions = Array.isArray(mergedParams.options) ? [...mergedParams.options] : [];
+            this.rawOptions = [...options]; // Always use a copy to ensure reactivity
         },
         getModel() {
             if (!this.isFilterActive()) {
