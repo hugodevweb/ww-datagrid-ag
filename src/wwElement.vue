@@ -72,6 +72,7 @@ import ImageCellRenderer from "./components/ImageCellRenderer.vue";
 import WewebCellRenderer from "./components/WewebCellRenderer.vue";
 import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 import SelectFilterComponent from "./components/SelectFilterComponent.vue";
+import SelectFilterWrapper from "./components/SelectFilterWrapper.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -446,7 +447,7 @@ export default {
       ImageCellRenderer,
       WewebCellRenderer,
       SelectCellRenderer,
-      SelectFilterComponent,
+      SelectFilterComponent: SelectFilterWrapper,
     };
 
     return {

@@ -48,9 +48,14 @@
 <script>
 export default {
     name: "SelectFilterComponent",
+    props: {
+        params: {
+            type: Object,
+            required: true,
+        },
+    },
     data() {
         return {
-            params: null,
             selectParams: {},
             rawOptions: [],
             pendingSelection: new Set(),
@@ -58,36 +63,47 @@ export default {
             refreshTimer: null,
         };
     },
+    created() {
+        console.log('[SelectFilterComponent] created() called with params:', this.params);
+        if (!this.params) {
+            console.error('[SelectFilterComponent] ERROR: params is null/undefined in created()!');
+        } else {
+            console.log('[SelectFilterComponent] params.filterParams:', this.params.filterParams);
+            console.log('[SelectFilterComponent] params.colDef:', this.params.colDef);
+        }
+    },
     mounted() {
-        // Force a refresh after mount to ensure options are loaded
-        // This helps when options are bound dynamically and not available during agInit
-        this.$nextTick(() => {
-            if (this.params) {
+        console.log('[SelectFilterComponent] mounted() called');
+        console.log('[SelectFilterComponent] mounted - params:', this.params);
+
+        // Initialize options after mounting
+        if (this.params) {
+            this.setSelectParams(this.params.filterParams);
+            this.syncSelectionsFromModel(null, { updateApplied: true });
+
+            console.log('[SelectFilterComponent] After setSelectParams - rawOptions:', this.rawOptions);
+            console.log('[SelectFilterComponent] After setSelectParams - processedOptions:', this.processedOptions);
+        } else {
+            console.error('[SelectFilterComponent] ERROR: Cannot initialize - params is null/undefined!');
+        }
+
+        // Set up a periodic check for options (in case they load asynchronously)
+        // This is a fallback for cases where watchers don't catch the change
+        // Keeps running to detect option changes at any time
+        this.refreshTimer = setInterval(() => {
+            if (!this.params) return;
+
+            const currentOptions = this.getCurrentOptions();
+
+            // Check if options have changed by comparing stringified versions
+            const currentOptionsStr = JSON.stringify(currentOptions || []);
+            const rawOptionsStr = JSON.stringify(this.rawOptions || []);
+
+            if (currentOptionsStr !== rawOptionsStr) {
+                // Options have changed, refresh
                 this.setSelectParams(this.params.filterParams);
             }
-        });
-        
-        // Also set up a periodic check for options (in case they load asynchronously)
-        // This is a fallback for cases where watchers don't catch the change
-        // Only runs if options aren't loaded yet
-        this.refreshTimer = setInterval(() => {
-            if (this.params && this.rawOptions.length === 0) {
-                // Only refresh if we don't have options yet
-                const currentOptions = this.getCurrentOptions();
-                if (currentOptions && currentOptions.length > 0) {
-                    this.setSelectParams(this.params.filterParams);
-                    // Stop the interval once options are loaded
-                    if (this.refreshTimer) {
-                        clearInterval(this.refreshTimer);
-                        this.refreshTimer = null;
-                    }
-                }
-            } else if (this.rawOptions.length > 0 && this.refreshTimer) {
-                // Stop the interval if we have options
-                clearInterval(this.refreshTimer);
-                this.refreshTimer = null;
-            }
-        }, 500); // Check every 500ms, but stop once options are loaded
+        }, 500); // Check every 500ms for option changes
     },
     beforeUnmount() {
         // Clean up the interval
@@ -179,29 +195,18 @@ export default {
             deep: true,
             immediate: false,
         },
-        // Watch rawOptions to stop the refresh interval when options are loaded
-        rawOptions: {
-            handler(newOptions) {
-                if (newOptions && newOptions.length > 0 && this.refreshTimer) {
-                    // Stop the interval once options are loaded
-                    clearInterval(this.refreshTimer);
-                    this.refreshTimer = null;
-                }
-            },
-            immediate: false,
-        },
     },
     methods: {
         getCurrentOptions() {
             // Helper method to get current options from params
             if (!this.params) return null;
-            
+
             const colDef = this.params.colDef || {};
             const filterParams = this.params.filterParams || {};
             const selectOptions = filterParams.selectOptions || {};
             const rendererParams = colDef.cellRendererParams || {};
             const editorParams = colDef.cellEditorParams || {};
-            
+
             // Check in priority order
             if (Array.isArray(selectOptions.options)) {
                 return selectOptions.options;
@@ -212,22 +217,17 @@ export default {
             if (Array.isArray(rendererParams.options)) {
                 return rendererParams.options;
             }
-            
+
             return null;
         },
-        agInit(params) {
-            this.params = params;
-            this.setSelectParams(params.filterParams);
-            this.syncSelectionsFromModel(null, { updateApplied: true });
-        },
-        refresh(params) {
-            if (params) {
-                this.params = params;
-                this.setSelectParams(params.filterParams);
-            } else if (this.params) {
-                // Even if params don't change, refresh options in case they were updated
+        refresh(newParams) {
+            console.log('[SelectFilterComponent] refresh() called with:', newParams);
+
+            // Refresh options when called
+            if (this.params) {
                 this.setSelectParams(this.params.filterParams);
             }
+
             return true;
         },
         setSelectParams(filterParams = {}) {
