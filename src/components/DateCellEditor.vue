@@ -6,7 +6,7 @@
         @input="onInput"
         @keydown.enter="stopEditing"
         @keydown.escape="cancelEditing"
-        class="date-cell-editor"
+        class="ag-input-field-input date-cell-editor"
     />
 </template>
 
@@ -129,17 +129,30 @@ export default {
 .date-cell-editor {
     width: 100%;
     height: 100%;
-    border: none;
+    min-width: 0; /* Override browser default min-width for date inputs */
+    /* Let AG Grid theme handle border, padding, margin, background, etc. */
+    /* Only override what's necessary for cell editor functionality */
     outline: none;
-    padding: 0 8px;
-    font-size: inherit;
-    font-family: inherit;
     box-sizing: border-box;
-    min-width: 150px;
+    display: block; /* Ensure input takes full width */
 }
 
 /* Ensure datetime-local input shows time picker */
 .date-cell-editor[type="datetime-local"] {
-    min-width: 200px;
+    min-width: 0; /* Override browser default min-width */
+}
+
+/* Ensure all date inputs inside ag-cell-wrapper take full width */
+:deep(.ag-cell-wrapper input[type="date"]),
+:deep(.ag-cell-wrapper input[type="datetime-local"]) {
+    display: block !important;
+}
+</style>
+
+<style>
+/* Global style to ensure date inputs inside ag-cell-wrapper take full width */
+.ag-cell-wrapper input[type="date"],
+.ag-cell-wrapper input[type="datetime-local"] {
+    display: block !important;
 }
 </style>

@@ -1466,6 +1466,41 @@ export default {
     }
   }
   
+  // Make editable inputs take full cell width
+  :deep(.ag-cell-inline-editing) {
+    padding: 0 !important;
+    
+    .ag-cell-wrapper {
+      width: 100%;
+      height: 100%;
+      padding: 0;
+    }
+    
+    // Default AG Grid text input
+    .ag-input-field-input {
+      width: 100% !important;
+      height: 100% !important;
+      box-sizing: border-box;
+      padding: 0 8px; /* Add padding inside input for text readability */
+    }
+    
+    // Custom cell editors (DateCellEditor, etc.)
+    input,
+    textarea,
+    select {
+      width: 100% !important;
+      height: 100% !important;
+      box-sizing: border-box;
+      padding: 0 8px; /* Add padding inside input for text readability */
+    }
+    
+    // Cell editor wrapper
+    > * {
+      width: 100%;
+      height: 100%;
+    }
+  }
+  
   /* wwEditor:start */
   &.editing {
     &::before {

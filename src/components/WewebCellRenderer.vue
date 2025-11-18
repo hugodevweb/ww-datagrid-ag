@@ -23,6 +23,7 @@ export default {
         return {
             currentValue: null,
             originalValue: null,
+            isCancelled: false,
         };
     },
     computed: {
@@ -62,8 +63,9 @@ export default {
             this.removeKeyboardListener();
         }
         
-        // If in edit mode, emit the cellEditEnd event
-        if (this.isEditMode && this.params?.trigger) {
+        // If in edit mode and not cancelled, emit the cellEditEnd event
+        // Don't emit if Escape key was pressed (cancelled)
+        if (this.isEditMode && !this.isCancelled && this.params?.trigger) {
             this.params.trigger({
                 type: 'cellEditEnd',
                 columnId: this.params?.column?.getColId(),
@@ -95,6 +97,7 @@ export default {
             else if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
+                this.isCancelled = true; // Mark as cancelled to prevent cellEditEnd event
                 if (this.params?.stopEditing) {
                     this.params.stopEditing(true); // true = cancel
                 }
