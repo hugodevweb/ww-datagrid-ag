@@ -53,6 +53,17 @@ export default {
                 displayIndex: this.params?.node?.rowIndex,
             });
             
+            // Wrap stopEditing to track cancellation
+            if (this.params?.stopEditing) {
+                const originalStopEditing = this.params.stopEditing;
+                this.params.stopEditing = (cancel = false) => {
+                    if (cancel) {
+                        this.isCancelled = true;
+                    }
+                    return originalStopEditing(cancel);
+                };
+            }
+            
             // Add Enter key listener to validate and exit edit mode
             this.addKeyboardListener();
         }
@@ -63,9 +74,8 @@ export default {
             this.removeKeyboardListener();
         }
         
-        // If in edit mode and not cancelled, emit the cellEditEnd event
-        // Don't emit if Escape key was pressed (cancelled)
-        if (this.isEditMode && !this.isCancelled && this.params?.trigger) {
+        // If in edit mode, emit the cellEditEnd event
+        if (this.isEditMode && this.params?.trigger) {
             this.params.trigger({
                 type: 'cellEditEnd',
                 columnId: this.params?.column?.getColId(),
@@ -75,6 +85,7 @@ export default {
                 id: this.params?.node?.id,
                 index: this.params?.node?.sourceRowIndex,
                 displayIndex: this.params?.node?.rowIndex,
+                isCancel: this.isCancelled,
             });
         }
     },
@@ -89,6 +100,7 @@ export default {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
+                this.isCancelled = false; // Save, not cancel
                 if (this.params?.stopEditing) {
                     this.params.stopEditing();
                 }
@@ -97,7 +109,7 @@ export default {
             else if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                this.isCancelled = true; // Mark as cancelled to prevent cellEditEnd event
+                this.isCancelled = true; // Mark as cancelled
                 if (this.params?.stopEditing) {
                     this.params.stopEditing(true); // true = cancel
                 }

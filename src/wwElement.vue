@@ -1094,17 +1094,24 @@ export default {
       });
     },
     onCustomCellEdit(event) {
+      const eventData = {
+        columnId: event.columnId,
+        field: event.field,
+        value: event.value,
+        row: event.row,
+        id: event.id,
+        index: event.index,
+        displayIndex: event.displayIndex,
+      };
+      
+      // Include isCancel property for cellEditEnd events
+      if (event.type === 'cellEditEnd' && event.hasOwnProperty('isCancel')) {
+        eventData.isCancel = event.isCancel;
+      }
+      
       this.$emit("trigger-event", {
         name: event.type,
-        event: {
-          columnId: event.columnId,
-          field: event.field,
-          value: event.value,
-          row: event.row,
-          id: event.id,
-          index: event.index,
-          displayIndex: event.displayIndex,
-        },
+        event: eventData,
       });
     },
     triggerCellValueChanged(rowId, columnId, newValue) {
