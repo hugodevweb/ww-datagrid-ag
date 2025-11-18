@@ -1413,6 +1413,36 @@ export default {
   position: relative;
   isolation: isolate; // Create a new stacking context to contain AG Grid elements
   
+  // Fix horizontal scroll alignment between header and body
+  // Optimize scroll containers for better synchronization
+  :deep(.ag-header-viewport),
+  :deep(.ag-body-viewport) {
+    // Use hardware acceleration for smooth scrolling and proper synchronization
+    transform: translateZ(0);
+    backface-visibility: hidden;
+    // Force GPU acceleration for better scroll performance
+    -webkit-transform: translateZ(0);
+  }
+  
+  // Ensure header and body rows stay aligned during horizontal scroll
+  :deep(.ag-header-row),
+  :deep(.ag-row) {
+    // Use hardware acceleration for better scroll performance
+    transform: translateZ(0);
+    backface-visibility: hidden;
+  }
+  
+  // Disable transitions on header and body cells during scroll to prevent lag
+  // This ensures columns stay aligned during horizontal scrolling
+  :deep(.ag-header-cell),
+  :deep(.ag-cell) {
+    // Only disable transitions on transform/position properties that affect scroll alignment
+    // Keep other transitions (like hover effects) intact
+    transition-property: background-color, color, border-color, opacity;
+    transition-duration: 0.15s;
+    transition-timing-function: ease;
+  }
+  
   :deep(.ag-cell-wrapper),
   :deep(.ag-cell-value) {
     height: 100%;
