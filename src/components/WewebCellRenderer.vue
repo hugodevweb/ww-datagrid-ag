@@ -3,7 +3,7 @@
         <wwLayoutItemContext
             is-repeat
             :index="params.node.sourceRowIndex"
-            :data="{ value: params.value, row: params.data }"
+            :data="{ value: params.value, row: params.data, columnId: columnId }"
         >
             <wwElement v-bind="params.containerId" class="ww-cell-renderer-flexbox"></wwElement>
         </wwLayoutItemContext>
@@ -32,6 +32,14 @@ export default {
             // When AG Grid uses this as an editor, it's in edit mode
             // We detect this by checking if we're being used as a cell editor
             return this.params?.api && this.params?.stopEditing;
+        },
+        // Get the column ID for mappable data
+        columnId() {
+            // Try multiple ways to get the column ID
+            return this.params?.column?.getColId() || 
+                   this.params?.colDef?.colId || 
+                   this.params?.colDef?.field || 
+                   null;
         },
     },
     mounted() {
