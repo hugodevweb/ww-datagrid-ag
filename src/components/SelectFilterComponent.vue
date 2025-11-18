@@ -54,6 +54,8 @@ export default {
             required: true,
         },
     },
+    // Expose methods for AG Grid filter interface
+    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
     data() {
         return {
             selectParams: {},
@@ -78,7 +80,11 @@ export default {
 
         // Initialize options after mounting
         if (this.params) {
-            this.setSelectParams(this.params.filterParams);
+            // Filter params are in colDef.filterParams, not directly on params
+            const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+            console.log('[SelectFilterComponent] Using filterParams:', filterParams);
+
+            this.setSelectParams(filterParams);
             this.syncSelectionsFromModel(null, { updateApplied: true });
 
             console.log('[SelectFilterComponent] After setSelectParams - rawOptions:', this.rawOptions);
@@ -147,16 +153,7 @@ export default {
     },
     watch: {
         // Watch for changes in params to refresh options
-        'params.colDef': {
-            handler() {
-                if (this.params) {
-                    this.setSelectParams(this.params.filterParams);
-                }
-            },
-            deep: true,
-            immediate: false,
-        },
-        'params.filterParams': {
+        'params.colDef.filterParams': {
             handler(newParams) {
                 if (newParams) {
                     this.setSelectParams(newParams);
@@ -166,11 +163,12 @@ export default {
             immediate: false,
         },
         // Specifically watch for options changes in selectOptions
-        'params.filterParams.selectOptions.options': {
+        'params.colDef.filterParams.selectOptions.options': {
             handler(newOptions, oldOptions) {
                 // Only refresh if options actually changed
                 if (newOptions !== oldOptions && Array.isArray(newOptions)) {
-                    this.setSelectParams(this.params?.filterParams);
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setSelectParams(filterParams);
                 }
             },
             deep: true,
@@ -180,7 +178,8 @@ export default {
         'params.colDef.cellRendererParams.options': {
             handler(newOptions, oldOptions) {
                 if (newOptions !== oldOptions && Array.isArray(newOptions)) {
-                    this.setSelectParams(this.params?.filterParams);
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setSelectParams(filterParams);
                 }
             },
             deep: true,
@@ -189,7 +188,8 @@ export default {
         'params.colDef.cellEditorParams.options': {
             handler(newOptions, oldOptions) {
                 if (newOptions !== oldOptions && Array.isArray(newOptions)) {
-                    this.setSelectParams(this.params?.filterParams);
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setSelectParams(filterParams);
                 }
             },
             deep: true,
@@ -197,6 +197,10 @@ export default {
         },
     },
     methods: {
+        // AG Grid filter interface methods
+        getGui() {
+            return this.$el;
+        },
         getCurrentOptions() {
             // Helper method to get current options from params
             if (!this.params) return null;
@@ -225,7 +229,8 @@ export default {
 
             // Refresh options when called
             if (this.params) {
-                this.setSelectParams(this.params.filterParams);
+                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+                this.setSelectParams(filterParams);
             }
 
             return true;

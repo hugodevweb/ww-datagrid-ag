@@ -447,7 +447,7 @@ export default {
       ImageCellRenderer,
       WewebCellRenderer,
       SelectCellRenderer,
-      SelectFilterComponent: SelectFilterWrapper,
+      SelectFilterComponent,
     };
 
     return {
@@ -513,7 +513,9 @@ export default {
       };
     },
     columnDefs() {
-      const columns = this.content.columns.map((col, index) => {
+      // First, map all columns to their definitions
+      const columnsMap = new Map();
+      const allColumnDefs = this.content.columns.map((col, index) => {
         const minWidth =
           !col?.minWidth || col?.minWidth === "auto"
             ? null
@@ -697,7 +699,7 @@ export default {
               cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
               editable: col?.editable !== false,
               sortable: col?.sortable,
-              filter: col?.filter ? "SelectFilterComponent" : false,
+              filter: col?.filter ? SelectFilterWrapper : false,
               ...(col?.filter
                 ? {
                     filterParams: {
@@ -786,6 +788,42 @@ export default {
           }
         }
       });
+
+      // Build a map of column definitions by their colId/field for reordering
+      allColumnDefs.forEach((colDef) => {
+        const colId = colDef.colId || colDef.field;
+        if (colId) {
+          columnsMap.set(colId, colDef);
+        }
+      });
+
+      // Reorder columns based on initialColumnsOrder if provided
+      let columns;
+      if (this.content.initialColumnsOrder && Array.isArray(this.content.initialColumnsOrder)) {
+        const orderedColumns = [];
+        const usedColIds = new Set();
+
+        // First, add columns in the order specified by initialColumnsOrder
+        for (const colId of this.content.initialColumnsOrder) {
+          if (columnsMap.has(colId)) {
+            orderedColumns.push(columnsMap.get(colId));
+            usedColIds.add(colId);
+          }
+        }
+
+        // Then, add any remaining columns that weren't in initialColumnsOrder
+        // (to handle cases where new columns were added to config but not to initialColumnsOrder)
+        for (const colDef of allColumnDefs) {
+          const colId = colDef.colId || colDef.field;
+          if (colId && !usedColIds.has(colId)) {
+            orderedColumns.push(colDef);
+          }
+        }
+
+        columns = orderedColumns;
+      } else {
+        columns = allColumnDefs;
+      }
 
       if (this.content.rowReorder && columns[0]) {
         columns[0].rowDrag = true;
