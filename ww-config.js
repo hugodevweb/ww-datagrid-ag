@@ -1087,6 +1087,7 @@ export default {
                     { value: "number", label: "Number" },
                     { value: "boolean", label: "Boolean" },
                     { value: "dateString", label: "Date" },
+                    { value: "dateTime", label: "Date & Time" },
                     { value: "image", label: "Image" },
                     { value: "action", label: "Action" },
                     { value: "select", label: "Select" },
@@ -1107,6 +1108,48 @@ export default {
                 label: "Key",
                 type: "Text",
                 hidden: array?.item?.cellDataType === "action",
+              },
+              dateFormat: {
+                label: "Date Format",
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "auto", label: "Auto (ISO)", default: true },
+                    { value: "DD/MM/YYYY", label: "DD/MM/YYYY" },
+                    { value: "MM/DD/YYYY", label: "MM/DD/YYYY" },
+                    { value: "YYYY-MM-DD", label: "YYYY-MM-DD" },
+                    { value: "DD MMM YYYY", label: "DD MMM YYYY" },
+                  ],
+                },
+                hidden:
+                  array?.item?.cellDataType !== "dateString" &&
+                  array?.item?.cellDataType !== "dateTime",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Date format: auto | DD/MM/YYYY | MM/DD/YYYY | YYYY-MM-DD | DD MMM YYYY",
+                },
+                /* wwEditor:end */
+              },
+              timeFormat: {
+                label: "Time Format",
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "HH:mm", label: "24h (HH:mm)", default: true },
+                    { value: "HH:mm:ss", label: "24h with seconds" },
+                    { value: "hh:mm A", label: "12h (hh:mm AM/PM)" },
+                  ],
+                },
+                hidden: array?.item?.cellDataType !== "dateTime",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Time format: HH:mm | HH:mm:ss | hh:mm A",
+                },
+                /* wwEditor:end */
               },
               customFilterType: {
                 label: "Data Type",
@@ -1476,6 +1519,8 @@ export default {
               "field",
               "cellDataType",
               "info",
+              "dateFormat",
+              "timeFormat",
               "customFilterType",
               "actionName",
               "actionLabel",

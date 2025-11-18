@@ -6,6 +6,7 @@
       :columnDefs="columnDefs"
       :initial-state="initialState"
       :defaultColDef="defaultColDef"
+      :dataTypeDefinitions="dataTypeDefinitions"
       :domLayout="content.layout === 'auto' ? 'autoHeight' : 'normal'"
       :style="style"
       :rowSelection="rowSelection"
@@ -73,6 +74,7 @@ import WewebCellRenderer from "./components/WewebCellRenderer.vue";
 import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 import SelectFilterComponent from "./components/SelectFilterComponent.vue";
 import SelectFilterWrapper from "./components/SelectFilterWrapper.js";
+import DateCellEditor from "./components/DateCellEditor.vue";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -448,6 +450,7 @@ export default {
       WewebCellRenderer,
       SelectCellRenderer,
       SelectFilterComponent,
+      DateCellEditor,
     };
 
     return {
@@ -509,6 +512,24 @@ export default {
         filterParams: {
           buttons: ['reset', 'apply'],
           closeOnApply: true,
+        },
+      };
+    },
+    dataTypeDefinitions() {
+      return {
+        dateString: {
+          baseDataType: 'dateString',
+          valueParser: (params) => {
+            if (params.newValue == null || params.newValue === '') {
+              return null;
+            }
+            return params.newValue;
+          },
+          valueFormatter: (params) => {
+            if (!params.value) return '';
+            return params.value;
+          },
+          dataTypeMatcher: (value) => typeof value === 'string' && !isNaN(Date.parse(value)),
         },
       };
     },
@@ -648,6 +669,96 @@ export default {
             }
             
             return customColumn;
+          }
+          case "dateString":
+          case "dateTime": {
+            // Helper function to format date based on configuration
+            const formatDateValue = (value) => {
+              if (!value) return '';
+              const date = new Date(value);
+              if (isNaN(date.getTime())) return value;
+
+              const dateFormat = col?.dateFormat || 'auto';
+              const timeFormat = col?.timeFormat || 'HH:mm';
+
+              // Format date part
+              let formattedDate;
+              const day = String(date.getDate()).padStart(2, '0');
+              const month = String(date.getMonth() + 1).padStart(2, '0');
+              const year = date.getFullYear();
+              const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+              const monthName = monthNames[date.getMonth()];
+
+              switch (dateFormat) {
+                case 'DD/MM/YYYY':
+                  formattedDate = `${day}/${month}/${year}`;
+                  break;
+                case 'MM/DD/YYYY':
+                  formattedDate = `${month}/${day}/${year}`;
+                  break;
+                case 'YYYY-MM-DD':
+                  formattedDate = `${year}-${month}-${day}`;
+                  break;
+                case 'DD MMM YYYY':
+                  formattedDate = `${day} ${monthName} ${year}`;
+                  break;
+                case 'auto':
+                default:
+                  formattedDate = date.toLocaleDateString();
+                  break;
+              }
+
+              // Add time part for dateTime type
+              if (col?.cellDataType === 'dateTime') {
+                const hours24 = date.getHours();
+                const hours12 = hours24 % 12 || 12;
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                const seconds = String(date.getSeconds()).padStart(2, '0');
+                const ampm = hours24 >= 12 ? 'PM' : 'AM';
+                const hours24Str = String(hours24).padStart(2, '0');
+                const hours12Str = String(hours12).padStart(2, '0');
+
+                let formattedTime;
+                switch (timeFormat) {
+                  case 'HH:mm:ss':
+                    formattedTime = `${hours24Str}:${minutes}:${seconds}`;
+                    break;
+                  case 'hh:mm A':
+                    formattedTime = `${hours12Str}:${minutes} ${ampm}`;
+                    break;
+                  case 'HH:mm':
+                  default:
+                    formattedTime = `${hours24Str}:${minutes}`;
+                    break;
+                }
+
+                return `${formattedDate} ${formattedTime}`;
+              }
+
+              return formattedDate;
+            };
+
+            const dateColumn = {
+              ...commonProperties,
+              headerName: col?.headerName,
+              field: col?.field,
+              sortable: col?.sortable,
+              filter: col?.filter ? 'agDateColumnFilter' : false,
+              editable: col?.editable,
+              cellEditor: 'DateCellEditor',
+              cellEditorParams: {
+                isDateTime: col?.cellDataType === 'dateTime',
+              },
+              valueFormatter: (params) => formatDateValue(params.value),
+              // Date comparator for proper sorting
+              comparator: (valueA, valueB) => {
+                const dateA = valueA ? new Date(valueA).getTime() : 0;
+                const dateB = valueB ? new Date(valueB).getTime() : 0;
+                return dateA - dateB;
+              },
+            };
+
+            return dateColumn;
           }
           case "image": {
             return {
