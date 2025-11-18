@@ -57,6 +57,7 @@ export default {
             dropdownPosition: { top: 100, left: 100, width: 200 }, // Better initial values
             teleportTarget: null,
             highlightedIndex: -1,
+            hasEverRendered: false, // Track if we've ever rendered with data
         };
     },
     computed: {
@@ -72,18 +73,22 @@ export default {
             const editorParams = this.params?.colDef?.cellEditorParams || {};
             const rendererParams = this.params?.colDef?.cellRendererParams || {};
 
-            // Check if explicitly loading
+            // Check if explicitly loading (from parent component)
             if (this.params?.isLoading || editorParams?.isLoading || rendererParams?.isLoading) {
                 return true;
             }
 
-            // Check if options are not yet loaded but we have a value
-            // This prevents showing raw IDs when options haven't loaded yet
-            const hasValue = this.params?.value !== undefined && this.params?.value !== null && this.params?.value !== '';
-            const optionsNotLoaded = this.processedOptions.length === 0;
-
-            if (hasValue && optionsNotLoaded) {
-                return true;
+            // Only show skeleton on initial load if options are not yet loaded
+            // This prevents showing raw IDs when options haven't loaded yet on first render
+            // But don't show skeleton on subsequent data updates
+            if (!this.hasEverRendered) {
+                const optionsNotLoaded = this.processedOptions.length === 0;
+                
+                // Show skeleton if options are not loaded (regardless of whether there's a value)
+                // This handles the case where grid loads but options haven't been set yet
+                if (optionsNotLoaded) {
+                    return true;
+                }
             }
 
             return false;
@@ -195,6 +200,15 @@ export default {
             this.highlightedIndex = 0;
         }
         
+        // Mark as rendered once we have options available
+        // This prevents skeleton from showing on subsequent data updates
+        // Only mark as rendered when options are actually available, not just when there's a value
+        this.$nextTick(() => {
+            if (this.processedOptions.length > 0) {
+                this.hasEverRendered = true;
+            }
+        });
+        
         // If in edit mode, calculate position and focus the dropdown immediately
         if (this.isEditMode) {
             // Clear any text selection from the double-click
@@ -240,6 +254,15 @@ export default {
                     this.updateDropdownPosition();
                 });
             }
+        },
+        // Mark as rendered when options become available (for cases where component mounts before options)
+        processedOptions: {
+            handler(newOptions) {
+                if (!this.hasEverRendered && newOptions.length > 0) {
+                    this.hasEverRendered = true;
+                }
+            },
+            immediate: true,
         },
     },
     methods: {
