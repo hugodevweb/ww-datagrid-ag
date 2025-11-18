@@ -71,7 +71,22 @@ export default {
             // Check both editor and renderer params for isLoading
             const editorParams = this.params?.colDef?.cellEditorParams || {};
             const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            return this.params?.isLoading || editorParams?.isLoading || rendererParams?.isLoading || false;
+
+            // Check if explicitly loading
+            if (this.params?.isLoading || editorParams?.isLoading || rendererParams?.isLoading) {
+                return true;
+            }
+
+            // Check if options are not yet loaded but we have a value
+            // This prevents showing raw IDs when options haven't loaded yet
+            const hasValue = this.params?.value !== undefined && this.params?.value !== null && this.params?.value !== '';
+            const optionsNotLoaded = this.processedOptions.length === 0;
+
+            if (hasValue && optionsNotLoaded) {
+                return true;
+            }
+
+            return false;
         },
         processedOptions() {
             // AG Grid editor params are nested - try both locations

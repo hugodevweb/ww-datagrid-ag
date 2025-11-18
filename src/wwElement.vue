@@ -392,9 +392,24 @@ export default {
       return Array.isArray(data) ? data ?? [] : [];
     });
 
+    // Track if we've ever rendered data (for initial load detection)
+    const hasEverRendered = ref(false);
+
     // Watch for data changes to detect loading state
     watch(() => rowData.value, (newData, oldData) => {
-      // If data changed (new data loaded), reset the rendered state
+      // If we've already rendered data once, don't show loading skeleton for updates
+      // This prevents select cells from flickering when bound data is updated
+      if (hasEverRendered.value) {
+        // Data is being updated, not initially loaded - keep rendered state
+        if (Array.isArray(newData) && newData.length > 0) {
+          dataRendered.value = true;
+        } else if (Array.isArray(newData) && newData.length === 0) {
+          dataRendered.value = true;
+        }
+        return;
+      }
+
+      // Initial load: show loading skeleton until rendered
       if (newData !== oldData && Array.isArray(newData) && newData.length > 0) {
         dataRendered.value = false;
         // Clear any existing timeout
@@ -408,6 +423,7 @@ export default {
             requestAnimationFrame(() => {
               setTimeout(() => {
                 dataRendered.value = true;
+                hasEverRendered.value = true;
               }, 200); // Give time for all cells (especially select cells) to render
             });
           }
@@ -415,6 +431,7 @@ export default {
       } else if (Array.isArray(newData) && newData.length === 0) {
         // Empty data means it's loaded (just empty)
         dataRendered.value = true;
+        hasEverRendered.value = true;
       }
     }, { deep: true, immediate: true });
 
