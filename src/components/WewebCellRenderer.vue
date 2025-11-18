@@ -23,7 +23,7 @@ export default {
         return {
             currentValue: null,
             originalValue: null,
-            isCancelled: false,
+            wasCancelled: false,
         };
     },
     computed: {
@@ -53,17 +53,6 @@ export default {
                 displayIndex: this.params?.node?.rowIndex,
             });
             
-            // Wrap stopEditing to track cancellation
-            if (this.params?.stopEditing) {
-                const originalStopEditing = this.params.stopEditing;
-                this.params.stopEditing = (cancel = false) => {
-                    if (cancel) {
-                        this.isCancelled = true;
-                    }
-                    return originalStopEditing(cancel);
-                };
-            }
-            
             // Add Enter key listener to validate and exit edit mode
             this.addKeyboardListener();
         }
@@ -85,7 +74,7 @@ export default {
                 id: this.params?.node?.id,
                 index: this.params?.node?.sourceRowIndex,
                 displayIndex: this.params?.node?.rowIndex,
-                isCancel: this.isCancelled,
+                isCancel: this.wasCancelled,
             });
         }
     },
@@ -100,7 +89,6 @@ export default {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();
                 event.stopPropagation();
-                this.isCancelled = false; // Save, not cancel
                 if (this.params?.stopEditing) {
                     this.params.stopEditing();
                 }
@@ -109,7 +97,7 @@ export default {
             else if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
-                this.isCancelled = true; // Mark as cancelled
+                this.wasCancelled = true; // Mark as cancelled
                 if (this.params?.stopEditing) {
                     this.params.stopEditing(true); // true = cancel
                 }

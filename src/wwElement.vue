@@ -1094,24 +1094,18 @@ export default {
       });
     },
     onCustomCellEdit(event) {
-      const eventData = {
-        columnId: event.columnId,
-        field: event.field,
-        value: event.value,
-        row: event.row,
-        id: event.id,
-        index: event.index,
-        displayIndex: event.displayIndex,
-      };
-      
-      // Include isCancel property for cellEditEnd events
-      if (event.type === 'cellEditEnd' && event.hasOwnProperty('isCancel')) {
-        eventData.isCancel = event.isCancel;
-      }
-      
       this.$emit("trigger-event", {
         name: event.type,
-        event: eventData,
+        event: {
+          columnId: event.columnId,
+          field: event.field,
+          value: event.value,
+          row: event.row,
+          id: event.id,
+          index: event.index,
+          displayIndex: event.displayIndex,
+          isCancel: event.isCancel || false,
+        },
       });
     },
     triggerCellValueChanged(rowId, columnId, newValue) {
@@ -1350,6 +1344,7 @@ export default {
         id: 0,
         index: 0,
         displayIndex: 0,
+        isCancel: false,
       };
     },
     getScrollTestEvent() {
