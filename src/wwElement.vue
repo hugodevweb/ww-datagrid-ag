@@ -787,6 +787,103 @@ export default {
 
             return dateColumn;
           }
+          case "currency": {
+            // Helper function to get currency code from row data or column config
+            const getCurrencyCode = (rowData, col) => {
+              if (col?.currencyMode === 'perRow' && col?.currencyCodeField) {
+                return this.resolveMappingFormula(col.currencyCodeField, rowData) || 'EUR';
+              }
+              return col?.currencyCode || 'EUR';
+            };
+
+            // Helper function to format currency value (cents to formatted string)
+            const formatCurrency = (value, currencyCode) => {
+              if (value == null || value === '') return '';
+              
+              // Convert cents to currency units
+              const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
+              if (isNaN(currencyValue)) return '';
+
+              // Use Intl.NumberFormat for proper currency formatting
+              try {
+                return new Intl.NumberFormat('en-US', {
+                  style: 'currency',
+                  currency: currencyCode || 'EUR',
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                }).format(currencyValue);
+              } catch (e) {
+                // Fallback formatting if currency code is invalid
+                return `${currencyValue.toFixed(2)} ${currencyCode || 'EUR'}`;
+              }
+            };
+
+            // Helper function to parse user input to cents
+            const parseCurrencyInput = (input) => {
+              if (input == null || input === '') return null;
+              
+              // Remove currency symbols and whitespace
+              const cleaned = String(input).replace(/[€$£¥,\s]/g, '');
+              const parsed = parseFloat(cleaned);
+              
+              if (isNaN(parsed)) return null;
+              
+              // Convert to cents (multiply by 100)
+              return Math.round(parsed * 100);
+            };
+
+            // Helper function to get display value (cents / 100) for filtering and sorting
+            const getDisplayValue = (value) => {
+              if (value == null || value === '') return null;
+              const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
+              return isNaN(currencyValue) ? null : currencyValue;
+            };
+
+            const currencyColumn = {
+              ...commonProperties,
+              headerName: col?.headerName,
+              field: col?.field,
+              sortable: col?.sortable,
+              filter: col?.filter ? 'agNumberColumnFilter' : false,
+              editable: col?.editable,
+              // Format display: convert cents to formatted currency
+              // Use raw field value from params.data, not params.value (which comes from valueGetter)
+              valueFormatter: (params) => {
+                const rawValue = params.data?.[col?.field];
+                const currencyCode = getCurrencyCode(params.data, col);
+                return formatCurrency(rawValue, currencyCode);
+              },
+              // Get display value for sorting (cents / 100)
+              valueGetter: (params) => {
+                return getDisplayValue(params.data?.[col?.field]);
+              },
+              // Get display value for filtering (user types 12, not 1200)
+              filterValueGetter: (params) => {
+                return getDisplayValue(params.data?.[col?.field]);
+              },
+              // Parse user input: convert display value (e.g., "12") back to cents (1200)
+              valueParser: (params) => {
+                return parseCurrencyInput(params.newValue);
+              },
+              // Custom comparator for proper numeric sorting using display values
+              comparator: (valueA, valueB, nodeA, nodeB) => {
+                const rawValueA = nodeA?.data?.[col?.field];
+                const rawValueB = nodeB?.data?.[col?.field];
+                const displayValueA = getDisplayValue(rawValueA);
+                const displayValueB = getDisplayValue(rawValueB);
+                
+                // Handle null/undefined values
+                if (displayValueA == null && displayValueB == null) return 0;
+                if (displayValueA == null) return 1;
+                if (displayValueB == null) return -1;
+                
+                // Numeric comparison
+                return displayValueA - displayValueB;
+              },
+            };
+
+            return currencyColumn;
+          }
           case "image": {
             return {
               ...commonProperties,

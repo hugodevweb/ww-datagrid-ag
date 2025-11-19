@@ -1088,6 +1088,7 @@ export default {
                     { value: "boolean", label: "Boolean" },
                     { value: "dateString", label: "Date" },
                     { value: "dateTime", label: "Date & Time" },
+                    { value: "currency", label: "Currency" },
                     { value: "image", label: "Image" },
                     { value: "action", label: "Action" },
                     { value: "select", label: "Select" },
@@ -1148,6 +1149,69 @@ export default {
                 bindingValidation: {
                   type: "string",
                   tooltip: "Time format: HH:mm | HH:mm:ss | hh:mm A",
+                },
+                /* wwEditor:end */
+              },
+              currencyMode: {
+                label: "Currency Mode",
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "column", label: "Same for all rows", default: true },
+                    { value: "perRow", label: "Per row (from data)" },
+                  ],
+                },
+                hidden: array?.item?.cellDataType !== "currency",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Currency mode: column (same currency for all rows) | perRow (currency code from data)",
+                },
+                /* wwEditor:end */
+              },
+              currencyCode: {
+                label: "Currency Code",
+                type: "Text",
+                hidden:
+                  array?.item?.cellDataType !== "currency" ||
+                  array?.item?.currencyMode !== "column",
+                bindable: true,
+                defaultValue: "EUR",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "ISO currency code (e.g., EUR, USD, GBP)",
+                },
+                propertyHelp: {
+                  tooltip: "ISO 4217 currency code (e.g., EUR, USD, GBP, JPY)",
+                },
+                /* wwEditor:end */
+              },
+              currencyCodeField: {
+                label: "Currency Code Field",
+                type: "Formula",
+                options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                  template:
+                    Array.isArray(wwLib.wwUtils.getDataFromCollection(content.rowData)) &&
+                    wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
+                      ? wwLib.wwUtils.getDataFromCollection(content.rowData)[0]
+                      : null,
+                }),
+                hidden:
+                  array?.item?.cellDataType !== "currency" ||
+                  array?.item?.currencyMode !== "perRow",
+                defaultValue: {
+                  type: "f",
+                  code: "context.mapping?.['currency']",
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Formula that returns the currency code from the row data",
+                },
+                propertyHelp: {
+                  tooltip: "Formula that extracts the currency code from each row (e.g., context.mapping?.['currency'] or context.mapping?.['currencyCode'])",
                 },
                 /* wwEditor:end */
               },
@@ -1537,6 +1601,9 @@ export default {
               "info",
               "dateFormat",
               "timeFormat",
+              "currencyMode",
+              "currencyCode",
+              "currencyCodeField",
               "customFilterType",
               "actionName",
               "actionLabel",
