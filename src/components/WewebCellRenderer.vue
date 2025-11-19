@@ -1,5 +1,10 @@
 <template>
-    <div class="ww-cell-renderer" :class="{ 'edit-mode': isEditMode }">
+    <div
+        class="ww-cell-renderer"
+        :class="{ 'edit-mode': isEditMode }"
+        @click="handleClick"
+        @mousedown="handleMouseDown"
+    >
         <wwLayoutItemContext
             is-repeat
             :index="params.node.sourceRowIndex"
@@ -91,6 +96,18 @@ export default {
         // Returns the current cell value
         getValue() {
             return this.currentValue;
+        },
+        // Prevent click from propagating to row when suppressRowInteraction is enabled
+        handleClick(event) {
+            if (this.params?.suppressRowInteraction) {
+                event.stopPropagation();
+            }
+        },
+        // Prevent mousedown from triggering row focus when suppressRowInteraction is enabled
+        handleMouseDown(event) {
+            if (this.params?.suppressRowInteraction) {
+                event.stopPropagation();
+            }
         },
         handleKeyDown(event) {
             // Enter key validates and exits edit mode

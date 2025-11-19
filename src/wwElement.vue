@@ -567,6 +567,16 @@ export default {
             ? null
             : wwLib.wwUtils.getLengthUnit(col?.width)?.[0];
         const flex = col?.widthAlgo === "flex" ? col?.flex ?? 1 : null;
+
+        // Build cellClass array for column-specific styling
+        const cellClasses = [];
+        if (this.content.cellAlignmentMode !== "custom" && col?.cellAlignment) {
+          cellClasses.push(`-${col?.cellAlignment}`);
+        }
+        if (col?.suppressRowInteraction) {
+          cellClasses.push("-suppress-row-interaction");
+        }
+
         const commonProperties = {
           minWidth,
           maxWidth,
@@ -575,9 +585,7 @@ export default {
           flex,
           hide: !!col?.hide,
           headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
-          ...(this.content.cellAlignmentMode !== "custom"
-            ? { cellClass: col?.cellAlignment ? `-${col?.cellAlignment}` : null }
-            : {}),
+          ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
         };
         switch (col?.cellDataType) {
           case "action": {
@@ -605,11 +613,13 @@ export default {
               cellRendererParams: {
                 containerId: col?.containerId,
                 trigger: this.onCustomCellEdit,
+                suppressRowInteraction: col?.suppressRowInteraction,
               },
               cellEditor: "WewebCellRenderer",
               cellEditorParams: {
                 containerId: col?.containerId,
                 trigger: this.onCustomCellEdit,
+                suppressRowInteraction: col?.suppressRowInteraction,
               },
               editable: col?.editable !== false,
               sortable: col?.sortable,
@@ -1513,8 +1523,41 @@ export default {
       padding-left: 0 !important;
       padding-right: 0 !important;
     }
+
+    // Suppress focus border effects for cells with suppressRowInteraction (keep background)
+    &.-suppress-row-interaction {
+      // Override focus and range selection border/outline styling only
+      &.ag-cell-focus,
+      &.ag-cell-range-selected,
+      &:focus,
+      &:focus-within {
+        outline: none !important;
+        box-shadow: none !important;
+        border-color: transparent !important;
+      }
+    }
   }
-  
+
+  // Suppress cell focus border styling for suppress-row-interaction cells (stronger selectors)
+  :deep(.ag-cell-focus.-suppress-row-interaction),
+  :deep(.ag-cell.-suppress-row-interaction.ag-cell-focus),
+  :deep(.ag-cell.-suppress-row-interaction.ag-cell-range-selected) {
+    outline: none !important;
+    box-shadow: none !important;
+    border: 1px solid transparent !important;
+  }
+
+  // Override AG Grid's range selection border for suppress-row-interaction cells
+  :deep(.ag-cell.-suppress-row-interaction) {
+    &.ag-cell-range-single-cell,
+    &.ag-cell-range-selected-1,
+    &.ag-cell-range-selected-2,
+    &.ag-cell-range-selected-3,
+    &.ag-cell-range-selected-4 {
+      border-color: transparent !important;
+    }
+  }
+
   // Make editable inputs take full cell width
   :deep(.ag-cell-inline-editing) {
     padding: 0 !important;

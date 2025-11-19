@@ -1392,6 +1392,22 @@ export default {
                   array?.item?.cellDataType === "image",
                 bindable: true,
               },
+              suppressRowInteraction: {
+                label: "Suppress Row Interaction",
+                type: "OnOff",
+                hidden: array?.item?.cellDataType === "action",
+                bindable: true,
+                defaultValue: false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "Prevents row hover and focus styling when interacting with this column's cells",
+                },
+                propertyHelp: {
+                  tooltip: "Enable this for columns with buttons or interactive elements to prevent row focus/hover effects when clicking",
+                },
+                /* wwEditor:end */
+              },
               actionName: {
                 label: "Action Name",
                 type: "Text",
@@ -1554,6 +1570,7 @@ export default {
                   "isDirectUpdate",
                   "filter",
                   "sortable",
+                  "suppressRowInteraction",
                 ],
               },
             ],
