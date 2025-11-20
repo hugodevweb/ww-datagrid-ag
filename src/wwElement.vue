@@ -1198,8 +1198,9 @@ export default {
             };
           }
           case "select": {
+            const rawOptions = col?.options;
             const selectParams = {
-              options: col?.options || [],
+              options: Array.isArray(rawOptions) ? rawOptions : [],
               optionsValueFormula: col?.optionsValueFormula,
               optionsLabelFormula: col?.optionsLabelFormula,
               optionsColorFormula: col?.optionsColorFormula,
@@ -1209,7 +1210,8 @@ export default {
             
             // Helper function to get label from value
             const getLabelFromValue = (value) => {
-              const options = col?.options || [];
+              const rawOptions = col?.options;
+              const options = Array.isArray(rawOptions) ? rawOptions : [];
               
               // Process options with formula mapping if needed
               const processedOptions = options.map(option => {
@@ -1272,8 +1274,9 @@ export default {
             };
           }
           case "user": {
+            const rawUsers = col?.users;
             const userParams = {
-              users: col?.users || [],
+              users: Array.isArray(rawUsers) ? rawUsers : [],
               maxNumberOfUsers: col?.maxNumberOfUsers ?? 4,
               userFocusColor: this.content.userFocusColor,
               cellFontFamily: this.content.cellFontFamily,
@@ -1284,7 +1287,8 @@ export default {
             // Helper function to get user name from ID
             const getUserNameFromId = (userId) => {
               if (!userId) return '';
-              const users = col?.users || [];
+              const rawUsers = col?.users;
+              const users = Array.isArray(rawUsers) ? rawUsers : [];
               const user = users.find(u => u.id === userId);
               if (user) {
                 if (user.name) return user.name;
@@ -1836,11 +1840,14 @@ export default {
       rowNode.data[columnId] = newValue;
       
       // Refresh the cells to show the updated value
-      this.gridApi.refreshCells({
-        rowNodes: [rowNode],
-        columns: [columnId],
-        force: true,
-      });
+      // Use setTimeout to avoid calling grid API during render phase
+      setTimeout(() => {
+        this.gridApi.refreshCells({
+          rowNodes: [rowNode],
+          columns: [columnId],
+          force: true,
+        });
+      }, 0);
       
       // Manually trigger the event (bypassing AG Grid's event)
       this.$emit("trigger-event", {
