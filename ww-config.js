@@ -115,6 +115,7 @@ export default {
         ],
       },
       "invalidEditValueMode",
+      "cellEditMode",
       "movableColumns",
       "resizableColumns",
       "rowReorder",
@@ -123,6 +124,7 @@ export default {
       "initialSort",
       "initialColumnsOrder",
       ["lang", "localeText"],
+      "enableDebugLogs",
     ],
   },
   triggerEvents: [
@@ -2023,6 +2025,29 @@ export default {
       },
       /* wwEditor:end */
     },
+    cellEditMode: {
+      label: { en: "Edit Mode" },
+      type: "TextSelect",
+      section: "settings",
+      bindable: true,
+      defaultValue: "singleClick",
+      options: {
+        options: [
+          { value: "singleClick", label: "Single Click", default: true },
+          { value: "doubleClick", label: "Double Click" },
+        ],
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        enum: ["singleClick", "doubleClick"],
+        tooltip: "Edit mode: 'singleClick' enables editing with a single click, 'doubleClick' requires double-click to edit",
+      },
+      propertyHelp: {
+        tooltip: "Controls how cell editing is triggered. 'Single Click' allows editing cells with a single click. 'Double Click' requires double-clicking a cell to start editing.",
+      },
+      /* wwEditor:end */
+    },
     initialFilters: {
       label: { en: "Initial Filters" },
       type: "RawObject",
@@ -2129,6 +2154,22 @@ export default {
         title: "Incompatible options",
         content: `Row reordering is not compatible with pagination. Pagination will be disabled`,
       },
+    },
+    enableDebugLogs: {
+      label: { en: "Enable Debug Logs" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable or disable debug console logs for validation and debugging purposes",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, detailed debug information will be logged to the browser console. Useful for troubleshooting validation issues and understanding component behavior.",
+      },
+      /* wwEditor:end */
     },
   },
 };

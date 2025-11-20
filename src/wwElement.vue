@@ -115,6 +115,13 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
+    // Debug logging helper
+    const debugLog = (...args) => {
+      if (props.content?.enableDebugLogs) {
+        console.log(...args);
+      }
+    };
+
     const gridApi = shallowRef(null);
     const { value: selectedRows, setValue: setSelectedRows } =
       wwLib.wwVariable.useComponentVariable({
@@ -483,6 +490,7 @@ export default {
 
     return {
       resolveMappingFormula,
+      debugLog,
       onGridReady,
       onRowSelected,
       onSelectionChanged,
@@ -532,7 +540,7 @@ export default {
         resizable: this.content.resizableColumns,
         autoHeaderHeight: this.content.headerHeightMode === "auto",
         wrapHeaderText: this.content.headerHeightMode === "auto",
-        singleClickEdit: true,
+        singleClickEdit: this.content.cellEditMode !== "doubleClick",
         cellClass:
           this.content.cellAlignmentMode === "custom"
             ? `-${this.content.cellAlignment || "left"} ||`
@@ -563,7 +571,7 @@ export default {
         },
       };
 
-      console.log('[Validation Debug] Data type definitions:', definitions);
+      this.debugLog('[Validation Debug] Data type definitions:', definitions);
 
       return definitions;
     },
@@ -571,14 +579,14 @@ export default {
       // First, map all columns to their definitions
       const columnsMap = new Map();
 
-      console.log('[Validation Debug] Column definitions being built', {
+      this.debugLog('[Validation Debug] Column definitions being built', {
         columns: this.content.columns,
         validationMode: this.content.invalidEditValueMode,
       });
 
       // Helper to get validation errors for a value
       const getValidationErrors = (col, newValue, rowData) => {
-        console.log('[Validation Debug] getValidationErrors called', {
+        this.debugLog('[Validation Debug] getValidationErrors called', {
           column: col?.field || col?.headerName,
           newValue,
           rowData,
@@ -588,7 +596,7 @@ export default {
         });
 
         if (!col?.validation || !Array.isArray(col.validation)) {
-          console.log('[Validation Debug] No validation rules found or not an array');
+          this.debugLog('[Validation Debug] No validation rules found or not an array');
           return null;
         }
 
@@ -596,11 +604,11 @@ export default {
 
         for (const rule of col.validation) {
           if (!rule?.type) {
-            console.log('[Validation Debug] Skipping rule without type:', rule);
+            this.debugLog('[Validation Debug] Skipping rule without type:', rule);
             continue;
           }
 
-          console.log('[Validation Debug] Checking rule:', {
+          this.debugLog('[Validation Debug] Checking rule:', {
             type: rule.type,
             value: rule.value,
             message: rule.message,
@@ -614,7 +622,7 @@ export default {
             case 'required':
               isValid = newValue !== null && newValue !== undefined && newValue !== '';
               errorMessage = rule.message || 'This field is required.';
-              console.log('[Validation Debug] Required check:', {
+              this.debugLog('[Validation Debug] Required check:', {
                 newValue,
                 isValid,
                 result: newValue !== null && newValue !== undefined && newValue !== '',
@@ -628,7 +636,7 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at least ${minLength} characters long.`;
                 }
-                console.log('[Validation Debug] MinLength check:', {
+                this.debugLog('[Validation Debug] MinLength check:', {
                   newValue,
                   valueLength: String(newValue).length,
                   minLength,
@@ -644,7 +652,7 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at most ${maxLength} characters long.`;
                 }
-                console.log('[Validation Debug] MaxLength check:', {
+                this.debugLog('[Validation Debug] MaxLength check:', {
                   newValue,
                   valueLength: String(newValue).length,
                   maxLength,
@@ -661,7 +669,7 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at least ${min}.`;
                 }
-                console.log('[Validation Debug] Min check:', {
+                this.debugLog('[Validation Debug] Min check:', {
                   newValue,
                   numValue,
                   min,
@@ -678,7 +686,7 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at most ${max}.`;
                 }
-                console.log('[Validation Debug] Max check:', {
+                this.debugLog('[Validation Debug] Max check:', {
                   newValue,
                   numValue,
                   max,
@@ -696,14 +704,16 @@ export default {
                     isValid = false;
                     errorMessage = rule.message || 'Value does not match the required pattern.';
                   }
-                  console.log('[Validation Debug] Pattern check:', {
+                  this.debugLog('[Validation Debug] Pattern check:', {
                     newValue,
                     pattern: rule.value,
                     matches,
                     isValid: matches,
                   });
                 } catch (e) {
-                  console.warn('[Validation Debug] Invalid regex pattern:', rule.value, e);
+                  if (this.content?.enableDebugLogs) {
+                    console.warn('[Validation Debug] Invalid regex pattern:', rule.value, e);
+                  }
                   // If pattern is invalid, don't fail validation
                 }
               }
@@ -713,13 +723,13 @@ export default {
               if (rule.custom) {
                 // Create context with new value for the field
                 const validationContext = { ...rowData, [col.field]: newValue };
-                console.log('[Validation Debug] Custom validation context:', validationContext);
+                this.debugLog('[Validation Debug] Custom validation context:', validationContext);
                 const result = this.resolveMappingFormula(rule.custom, validationContext);
-                console.log('[Validation Debug] Custom validation result:', result);
+                this.debugLog('[Validation Debug] Custom validation result:', result);
                 // Formula should return true for valid, false for invalid
                 isValid = Boolean(result);
                 errorMessage = rule.message || 'Custom validation failed.';
-                console.log('[Validation Debug] Custom check:', {
+                this.debugLog('[Validation Debug] Custom check:', {
                   formula: rule.custom,
                   result,
                   isValid,
@@ -729,18 +739,18 @@ export default {
           }
 
           if (!isValid && errorMessage) {
-            console.log('[Validation Debug] Validation failed for rule:', {
+            this.debugLog('[Validation Debug] Validation failed for rule:', {
               type: rule.type,
               errorMessage,
             });
             errors.push(errorMessage);
           } else {
-            console.log('[Validation Debug] Validation passed for rule:', rule.type);
+            this.debugLog('[Validation Debug] Validation passed for rule:', rule.type);
           }
         }
 
         const finalResult = errors.length > 0 ? errors : null;
-        console.log('[Validation Debug] Final validation result:', {
+        this.debugLog('[Validation Debug] Final validation result:', {
           errorsCount: errors.length,
           errors,
           finalResult,
@@ -768,7 +778,7 @@ export default {
         };
       };
       const allColumnDefs = this.content.columns.map((col, index) => {
-        console.log('[Validation Debug] Processing column', {
+        this.debugLog('[Validation Debug] Processing column', {
           index,
           field: col?.field,
           headerName: col?.headerName,
@@ -813,7 +823,7 @@ export default {
         };
 
         const cellDataType = col?.cellDataType;
-        console.log('[Validation Debug] Column cellDataType:', {
+        this.debugLog('[Validation Debug] Column cellDataType:', {
           field: col?.field,
           cellDataType,
           typeof: typeof cellDataType,
@@ -838,7 +848,7 @@ export default {
             };
           }
           case "custom": {
-            console.log('[Validation Debug] Building custom column', {
+            this.debugLog('[Validation Debug] Building custom column', {
               field: col?.field,
               editable: col?.editable,
               validation: col?.validation,
@@ -860,7 +870,7 @@ export default {
                 trigger: this.onCustomCellEdit,
                 suppressRowInteraction: col?.suppressRowInteraction,
                 getValidationErrors: (params) => {
-                  console.log('[Validation Debug] Custom column getValidationErrors called', {
+                  this.debugLog('[Validation Debug] Custom column getValidationErrors called', {
                     params,
                     columnField: col?.field,
                     columnValidation: col?.validation,
@@ -873,7 +883,7 @@ export default {
               filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
             };
 
-            console.log('[Validation Debug] Custom column built', {
+            this.debugLog('[Validation Debug] Custom column built', {
               field: customColumn.field,
               editable: customColumn.editable,
               hasCellEditorParams: !!customColumn.cellEditorParams,
@@ -953,7 +963,7 @@ export default {
           }
           case "dateString":
           case "dateTime": {
-            console.log('[Validation Debug] Building date column', {
+            this.debugLog('[Validation Debug] Building date column', {
               field: col?.field,
               editable: col?.editable,
               validation: col?.validation,
@@ -1036,7 +1046,7 @@ export default {
               cellEditorParams: {
                 isDateTime: col?.cellDataType === 'dateTime',
                 getValidationErrors: (params) => {
-                  console.log('[Validation Debug] Date column getValidationErrors called', {
+                  this.debugLog('[Validation Debug] Date column getValidationErrors called', {
                     params,
                     columnField: col?.field,
                     columnValidation: col?.validation,
@@ -1053,7 +1063,7 @@ export default {
               },
             };
 
-            console.log('[Validation Debug] Date column built', {
+            this.debugLog('[Validation Debug] Date column built', {
               field: dateColumn.field,
               editable: dateColumn.editable,
               hasCellEditorParams: !!dateColumn.cellEditorParams,
@@ -1063,7 +1073,7 @@ export default {
             return dateColumn;
           }
           case "currency": {
-            console.log('[Validation Debug] Building currency column', {
+            this.debugLog('[Validation Debug] Building currency column', {
               field: col?.field,
               editable: col?.editable,
               validation: col?.validation,
@@ -1129,7 +1139,7 @@ export default {
               editable: col?.editable,
               cellEditorParams: {
                 getValidationErrors: (params) => {
-                  console.log('[Validation Debug] Currency column getValidationErrors called', {
+                  this.debugLog('[Validation Debug] Currency column getValidationErrors called', {
                     params,
                     columnField: col?.field,
                     columnValidation: col?.validation,
@@ -1225,7 +1235,7 @@ export default {
               cellEditorParams: {
                 ...selectParams,
                 getValidationErrors: (params) => {
-                  console.log('[Validation Debug] Select column getValidationErrors called', {
+                  this.debugLog('[Validation Debug] Select column getValidationErrors called', {
                     params,
                     columnField: col?.field,
                     columnValidation: col?.validation,
@@ -1298,7 +1308,7 @@ export default {
               cellEditorParams: {
                 ...userParams,
                 getValidationErrors: (params) => {
-                  console.log('[Validation Debug] User column getValidationErrors called', {
+                  this.debugLog('[Validation Debug] User column getValidationErrors called', {
                     params,
                     columnField: col?.field,
                     columnValidation: col?.validation,
@@ -1356,7 +1366,7 @@ export default {
             };
           }
           default: {
-            console.log('[Validation Debug] Building default column', {
+            this.debugLog('[Validation Debug] Building default column', {
               field: col?.field,
               editable: col?.editable,
               validation: col?.validation,
@@ -1376,7 +1386,7 @@ export default {
             if (col?.editable) {
               // Create the validation function
               const validationFn = (params) => {
-                console.log('[Validation Debug] Default column getValidationErrors called - FUNCTION EXECUTED', {
+                this.debugLog('[Validation Debug] Default column getValidationErrors called - FUNCTION EXECUTED', {
                   params,
                   columnField: col?.field,
                   columnValidation: col?.validation,
@@ -1385,7 +1395,7 @@ export default {
                   paramsKeys: params ? Object.keys(params) : 'params is null',
                 });
                 const errors = getValidationErrors(col, params?.value, params?.data);
-                console.log('[Validation Debug] Validation result:', errors);
+                this.debugLog('[Validation Debug] Validation result:', errors);
                 return errors;
               };
 
@@ -1393,7 +1403,7 @@ export default {
               // AG Grid's default editor might not call getValidationErrors consistently
               result.cellEditor = 'agTextCellEditor';
               
-              console.log('[Validation Debug] Setting cellEditorParams for default column', {
+              this.debugLog('[Validation Debug] Setting cellEditorParams for default column', {
                 field: col?.field,
                 cellEditor: result.cellEditor,
                 hasValidationFn: !!validationFn,
@@ -1404,7 +1414,7 @@ export default {
                 getValidationErrors: validationFn,
               };
 
-              console.log('[Validation Debug] cellEditorParams created', {
+              this.debugLog('[Validation Debug] cellEditorParams created', {
                 field: col?.field,
                 cellEditorParams: result.cellEditorParams,
                 hasGetValidationErrors: !!result.cellEditorParams?.getValidationErrors,
@@ -1412,7 +1422,7 @@ export default {
               });
             }
 
-            console.log('[Validation Debug] Default column built', {
+            this.debugLog('[Validation Debug] Default column built', {
               field: result.field,
               editable: result.editable,
               cellEditor: result.cellEditor,
@@ -1477,14 +1487,16 @@ export default {
         }
 
         // This should never be reached, but just in case
-        console.warn('[Validation Debug] Column did not match any case', {
-          field: col?.field,
-          cellDataType: cellDataType,
-        });
+        if (this.content?.enableDebugLogs) {
+          console.warn('[Validation Debug] Column did not match any case', {
+            field: col?.field,
+            cellDataType: cellDataType,
+          });
+        }
         return result;
       });
 
-      console.log('[Validation Debug] All column definitions created', {
+      this.debugLog('[Validation Debug] All column definitions created', {
         count: allColumnDefs.length,
         columns: allColumnDefs.map(col => ({
           field: col.field,
@@ -1632,7 +1644,7 @@ export default {
     },
     invalidEditValueMode() {
       const mode = this.content?.invalidEditValueMode || "revert";
-      console.log('[Validation Debug] invalidEditValueMode computed:', mode);
+      this.debugLog('[Validation Debug] invalidEditValueMode computed:', mode);
       return mode;
     },
     paginationPageSizeSelector() {
@@ -1664,7 +1676,7 @@ export default {
     onCellEditRequest(event) {
       const colDef = event.column?.getColDef();
       const cellEditorParams = colDef?.cellEditorParams;
-      console.log('[Validation Debug] Cell edit requested', {
+      this.debugLog('[Validation Debug] Cell edit requested', {
         column: event.column?.getColId(),
         newValue: event.newValue,
         oldValue: event.oldValue,
@@ -1680,20 +1692,20 @@ export default {
 
       // Try to manually check if validation would be called
       if (cellEditorParams?.getValidationErrors && typeof cellEditorParams.getValidationErrors === 'function') {
-        console.log('[Validation Debug] Attempting manual validation call');
+        this.debugLog('[Validation Debug] Attempting manual validation call');
         try {
           const manualResult = cellEditorParams.getValidationErrors({
             value: event.newValue,
             data: event.data,
           });
-          console.log('[Validation Debug] Manual validation result:', manualResult);
+          this.debugLog('[Validation Debug] Manual validation result:', manualResult);
         } catch (e) {
           console.error('[Validation Debug] Error calling validation manually:', e);
         }
       }
     },
     onCellValueChanged(event) {
-      console.log('[Validation Debug] Cell value changed', {
+      this.debugLog('[Validation Debug] Cell value changed', {
         column: event.column?.getColId(),
         newValue: event.data?.[event.column.getColId()],
         oldValue: event.oldValue,
