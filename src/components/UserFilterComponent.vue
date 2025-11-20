@@ -1,0 +1,720 @@
+<template>
+    <div class="user-filter">
+        <div v-if="isLoadingUsers" class="user-filter-empty">
+            Loading users...
+        </div>
+        <div v-else class="user-filter-content">
+            <!-- Search Input -->
+            <div class="user-search-container">
+                <input
+                    ref="searchInput"
+                    v-model="searchQuery"
+                    type="text"
+                    class="user-search-input"
+                    :placeholder="searchPlaceholder"
+                    @input="highlightedIndex = -1"
+                    @keydown.escape.stop="onReset"
+                    @keydown.arrow-down.prevent="highlightNextUser"
+                    @keydown.arrow-up.prevent="highlightPreviousUser"
+                    @keydown.enter.prevent="selectHighlightedUser"
+                />
+            </div>
+            
+            <!-- Selected Users Pills -->
+            <div v-if="selectedUserNames.length > 0" class="selected-users-pills">
+                <div 
+                    v-for="userName in selectedUserNames" 
+                    :key="userName"
+                    class="user-pill"
+                >
+                    <span class="pill-name">{{ userName }}</span>
+                    <button 
+                        class="pill-remove"
+                        @click.stop="removeUserName(userName)"
+                        type="button"
+                    >×</button>
+                </div>
+            </div>
+            
+            <!-- Users List -->
+            <div class="user-list">
+                <div 
+                    v-for="(user, index) in filteredUsers" 
+                    :key="user.id"
+                    class="user-option"
+                    :class="{ 
+                        'selected': isUserNameSelected(user),
+                        'highlighted': index === highlightedIndex
+                    }"
+                    :style="getUserOptionStyle(user)"
+                    @click="toggleUser(user)"
+                    @mouseenter="highlightedIndex = index"
+                >
+                    <img 
+                        :src="user.avatar_url || getDefaultAvatar(user)" 
+                        :alt="getUserName(user)"
+                        class="option-avatar"
+                    />
+                    <div class="option-info">
+                        <div class="option-name">{{ getUserName(user) }}</div>
+                        <div v-if="user.bio" class="option-bio">{{ user.bio }}</div>
+                    </div>
+                    <div v-if="isUserNameSelected(user)" class="option-check">✓</div>
+                </div>
+                <div v-if="filteredUsers.length === 0" class="no-users">
+                    No users found
+                </div>
+            </div>
+            
+            <!-- Filter Actions -->
+            <div class="user-filter-actions">
+                <button
+                    type="button"
+                    class="filter-btn reset"
+                    :disabled="!canReset"
+                    @click="onReset"
+                >
+                    Reset
+                </button>
+                <button
+                    type="button"
+                    class="filter-btn apply"
+                    :disabled="!canApply"
+                    @click="onApply"
+                >
+                    Apply
+                </button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<script>
+export default {
+    name: "UserFilterComponent",
+    props: {
+        params: {
+            type: Object,
+            required: true,
+        },
+    },
+    // Expose methods for AG Grid filter interface
+    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
+    data() {
+        return {
+            userParams: {},
+            availableUsers: [],
+            searchQuery: "",
+            highlightedIndex: -1,
+            pendingSelection: new Set(), // Store user names
+            appliedSelection: new Set(), // Store user names
+            refreshTimer: null,
+        };
+    },
+    computed: {
+        filteredUsers() {
+            if (!this.searchQuery.trim()) {
+                return this.availableUsers;
+            }
+            
+            const query = this.searchQuery.toLowerCase();
+            return this.availableUsers.filter(user => {
+                const name = this.getUserName(user).toLowerCase();
+                const email = (user.email || "").toLowerCase();
+                const bio = (user.bio || "").toLowerCase();
+                return name.includes(query) || email.includes(query) || bio.includes(query);
+            });
+        },
+        selectedUserNames() {
+            return Array.from(this.pendingSelection);
+        },
+        isLoadingUsers() {
+            return !!this.userParams?.isLoading;
+        },
+        canApply() {
+            if (!this.pendingSelection.size && !this.appliedSelection.size) {
+                return false;
+            }
+            return !this.areSetsEqual(this.pendingSelection, this.appliedSelection);
+        },
+        canReset() {
+            return this.pendingSelection.size > 0 || this.appliedSelection.size > 0;
+        },
+        userFocusColor() {
+            return this.userParams?.userFocusColor || null;
+        },
+        searchPlaceholder() {
+            const locale = navigator.language || navigator.userLanguage || 'en';
+            const lang = locale.split('-')[0].toLowerCase();
+            
+            const translations = {
+                'en': 'Search users...',
+                'fr': 'Rechercher des utilisateurs...',
+                'es': 'Buscar usuarios...',
+                'de': 'Benutzer suchen...',
+                'pt': 'Pesquisar usuários...',
+                'it': 'Cerca utenti...',
+                'nl': 'Zoek gebruikers...',
+                'pl': 'Szukaj użytkowników...',
+                'ru': 'Поиск пользователей...',
+                'ja': 'ユーザーを検索...',
+                'zh': '搜索用户...',
+                'ko': '사용자 검색...',
+            };
+            
+            return translations[lang] || translations['en'];
+        },
+    },
+    mounted() {
+        this.initializeUsers();
+        this.syncSelectionsFromModel(null, { updateApplied: true });
+        
+        // Set up a periodic check for users (in case they load asynchronously)
+        this.refreshTimer = setInterval(() => {
+            if (!this.params) return;
+            
+            const currentUsers = this.getCurrentUsers();
+            const currentUsersStr = JSON.stringify(currentUsers || []);
+            const availableUsersStr = JSON.stringify(this.availableUsers || []);
+            
+            if (currentUsersStr !== availableUsersStr) {
+                this.setUserParams(this.params.filterParams);
+            }
+        }, 500);
+    },
+    beforeUnmount() {
+        if (this.refreshTimer) {
+            clearInterval(this.refreshTimer);
+            this.refreshTimer = null;
+        }
+    },
+    watch: {
+        // Watch for changes in params to refresh users
+        'params.colDef.filterParams': {
+            handler(newParams) {
+                if (newParams) {
+                    this.setUserParams(newParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        // Watch for changes in users array
+        'params.colDef.filterParams.users': {
+            handler(newUsers, oldUsers) {
+                if (newUsers !== oldUsers && Array.isArray(newUsers)) {
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setUserParams(filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        // Watch for changes in cellRendererParams and cellEditorParams users
+        'params.colDef.cellRendererParams.users': {
+            handler(newUsers, oldUsers) {
+                if (newUsers !== oldUsers && Array.isArray(newUsers)) {
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setUserParams(filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+        'params.colDef.cellEditorParams.users': {
+            handler(newUsers, oldUsers) {
+                if (newUsers !== oldUsers && Array.isArray(newUsers)) {
+                    const filterParams = this.params?.colDef?.filterParams || {};
+                    this.setUserParams(filterParams);
+                }
+            },
+            deep: true,
+            immediate: false,
+        },
+    },
+    methods: {
+        // AG Grid filter interface methods
+        getGui() {
+            return this.$el;
+        },
+        getCurrentUsers() {
+            if (!this.params) return null;
+            
+            const colDef = this.params.colDef || {};
+            const filterParams = this.params.filterParams || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Check in priority order
+            if (Array.isArray(filterParams.users)) {
+                return filterParams.users;
+            }
+            if (Array.isArray(editorParams.users)) {
+                return editorParams.users;
+            }
+            if (Array.isArray(rendererParams.users)) {
+                return rendererParams.users;
+            }
+            
+            return null;
+        },
+        refresh(newParams) {
+            // Refresh users when called
+            if (this.params) {
+                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+                this.setUserParams(filterParams);
+            }
+            
+            return true;
+        },
+        initializeUsers() {
+            if (this.params) {
+                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+                this.setUserParams(filterParams);
+            }
+        },
+        setUserParams(filterParams = {}) {
+            const colDef = this.params?.colDef || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Priority order: filterParams > editorParams > rendererParams
+            let users = null;
+            let userFocusColor = null;
+            let cellFontFamily = null;
+            let resolveMappingFormula = null;
+            let isLoading = null;
+            
+            // Try to get from filterParams first
+            if (filterParams && typeof filterParams === 'object') {
+                if (Array.isArray(filterParams.users)) {
+                    users = filterParams.users;
+                }
+                userFocusColor = filterParams.userFocusColor;
+                cellFontFamily = filterParams.cellFontFamily;
+                resolveMappingFormula = filterParams.resolveMappingFormula;
+                isLoading = filterParams.isLoading;
+            }
+            
+            // Fallback to editor params
+            if (users === null && Array.isArray(editorParams.users)) {
+                users = editorParams.users;
+                if (!userFocusColor) userFocusColor = editorParams.userFocusColor;
+                if (!cellFontFamily) cellFontFamily = editorParams.cellFontFamily;
+                if (!resolveMappingFormula) resolveMappingFormula = editorParams.resolveMappingFormula;
+                if (isLoading === null || isLoading === undefined) isLoading = editorParams.isLoading;
+            }
+            
+            // Fallback to renderer params
+            if (users === null && Array.isArray(rendererParams.users)) {
+                users = rendererParams.users;
+                if (!userFocusColor) userFocusColor = rendererParams.userFocusColor;
+                if (!cellFontFamily) cellFontFamily = rendererParams.cellFontFamily;
+                if (!resolveMappingFormula) resolveMappingFormula = rendererParams.resolveMappingFormula;
+                if (isLoading === null || isLoading === undefined) isLoading = rendererParams.isLoading;
+            }
+            
+            // Ensure users is always an array
+            if (!Array.isArray(users)) {
+                users = [];
+            }
+            
+            this.userParams = {
+                users: users,
+                userFocusColor: userFocusColor,
+                cellFontFamily: cellFontFamily,
+                resolveMappingFormula: resolveMappingFormula,
+                isLoading: isLoading || false,
+            };
+            
+            this.availableUsers = [...users];
+        },
+        getUserName(user) {
+            if (user.name) return user.name;
+            if (user.firstname || user.lastname) {
+                return [user.firstname, user.lastname].filter(Boolean).join(' ');
+            }
+            return user.email || user.id || 'Unknown User';
+        },
+        getDefaultAvatar(user) {
+            // Generate a simple colored circle based on user name
+            const name = this.getUserName(user);
+            const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE'];
+            const colorIndex = name.charCodeAt(0) % colors.length;
+            return `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='${encodeURIComponent(colors[colorIndex])}'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-weight='bold'>${encodeURIComponent(name.charAt(0).toUpperCase())}</text></svg>`;
+        },
+        isUserNameSelected(user) {
+            const userName = this.getUserName(user);
+            return this.pendingSelection.has(userName);
+        },
+        toggleUser(user) {
+            const userName = this.getUserName(user);
+            const nextSelection = new Set(this.pendingSelection);
+            if (nextSelection.has(userName)) {
+                nextSelection.delete(userName);
+            } else {
+                nextSelection.add(userName);
+            }
+            this.pendingSelection = nextSelection;
+        },
+        removeUserName(userName) {
+            const nextSelection = new Set(this.pendingSelection);
+            nextSelection.delete(userName);
+            this.pendingSelection = nextSelection;
+        },
+        getUserOptionStyle(user) {
+            if (this.isUserNameSelected(user) && this.userFocusColor) {
+                return {
+                    'background-color': `${this.userFocusColor} !important`,
+                };
+            }
+            return {};
+        },
+        selectHighlightedUser() {
+            if (this.highlightedIndex >= 0 && this.highlightedIndex < this.filteredUsers.length) {
+                const user = this.filteredUsers[this.highlightedIndex];
+                this.toggleUser(user);
+            }
+        },
+        highlightNextUser() {
+            if (this.highlightedIndex < this.filteredUsers.length - 1) {
+                this.highlightedIndex++;
+                this.scrollToHighlighted();
+            }
+        },
+        highlightPreviousUser() {
+            if (this.highlightedIndex > 0) {
+                this.highlightedIndex--;
+                this.scrollToHighlighted();
+            }
+        },
+        scrollToHighlighted() {
+            this.$nextTick(() => {
+                const list = this.$el?.querySelector('.user-list');
+                if (!list) return;
+                
+                const highlightedElement = list.querySelector('.user-option.highlighted');
+                if (highlightedElement) {
+                    highlightedElement.scrollIntoView({
+                        block: 'nearest',
+                        behavior: 'smooth',
+                    });
+                }
+            });
+        },
+        // AG Grid filter interface methods
+        getModel() {
+            if (!this.isFilterActive()) {
+                return null;
+            }
+            // Store user names in the model (matching what filterValueGetter returns)
+            return {
+                type: "userFilter",
+                values: Array.from(this.appliedSelection), // These are user names
+            };
+        },
+        setModel(model) {
+            this.syncSelectionsFromModel(model, { updateApplied: true });
+        },
+        onParentModelChanged(model) {
+            this.syncSelectionsFromModel(model, { updateApplied: true });
+        },
+        isFilterActive() {
+            return this.appliedSelection.size > 0;
+        },
+        doesFilterPass(params) {
+            if (!this.isFilterActive()) {
+                return true;
+            }
+            const rowValue = this.getRowValue(params);
+            
+            // If row has no users, it doesn't match any filter
+            if (!rowValue || rowValue === '') {
+                return false;
+            }
+            
+            // For multiple users, filterValueGetter returns comma-separated names
+            // We need to check if any of the selected user names match any name in the row value
+            if (typeof rowValue === 'string' && rowValue.includes(',')) {
+                // Multiple users: split by comma and check each name
+                const rowUserNames = rowValue.split(',').map(name => name.trim()).filter(Boolean);
+                return rowUserNames.some(name => this.appliedSelection.has(name));
+            } else {
+                // Single user: direct match
+                return this.appliedSelection.has(rowValue);
+            }
+        },
+        getRowValue(filterParams) {
+            // AG Grid passes the result of filterValueGetter as params.value
+            // For user columns, this is the user name(s), not the raw ID(s)
+            if (filterParams && "value" in filterParams) {
+                return filterParams.value;
+            }
+            // Fallback: try to get from data field directly
+            const field = this.params?.colDef?.field;
+            if (field && filterParams?.data && Object.prototype.hasOwnProperty.call(filterParams.data, field)) {
+                // If filterValueGetter is defined, we shouldn't reach here
+                // But if we do, we need to convert ID(s) to name(s)
+                const rawValue = filterParams.data[field];
+                return this.getUserNamesFromValue(rawValue);
+            }
+            return undefined;
+        },
+        getUserNamesFromValue(value) {
+            // Convert user ID(s) to user name(s)
+            if (!value) return '';
+            
+            const userIds = Array.isArray(value) ? value : [value];
+            const userNames = userIds
+                .map(id => {
+                    const user = this.availableUsers.find(u => u.id === id);
+                    return user ? this.getUserName(user) : null;
+                })
+                .filter(Boolean);
+            
+            return userNames.join(', ');
+        },
+        onApply() {
+            this.appliedSelection = new Set(this.pendingSelection);
+            this.params?.filterChangedCallback();
+            if (this.params?.filterParams?.closeOnApply && this.params?.api?.hidePopupMenu) {
+                this.params.api.hidePopupMenu();
+            }
+        },
+        onReset() {
+            if (!this.canReset) return;
+            this.pendingSelection = new Set();
+            this.appliedSelection = new Set();
+            this.params?.filterChangedCallback();
+        },
+        syncSelectionsFromModel(model, { updateApplied } = { updateApplied: true }) {
+            if (!model || !Array.isArray(model.values) || model.values.length === 0) {
+                if (updateApplied) {
+                    this.appliedSelection = new Set();
+                }
+                this.pendingSelection = updateApplied ? new Set(this.appliedSelection) : new Set();
+                return;
+            }
+            const next = new Set(model.values);
+            if (updateApplied) {
+                this.appliedSelection = new Set(next);
+            }
+            this.pendingSelection = new Set(next);
+        },
+        areSetsEqual(a, b) {
+            if (a.size !== b.size) return false;
+            for (const value of a) {
+                if (!b.has(value)) return false;
+            }
+            return true;
+        },
+    },
+};
+</script>
+
+<style scoped lang="scss">
+.user-filter {
+    display: flex;
+    flex-direction: column;
+    min-width: 300px;
+    max-width: 400px;
+    max-height: 500px;
+    font-family: inherit;
+    color: inherit;
+}
+
+.user-filter-content {
+    display: flex;
+    flex-direction: column;
+    max-height: 500px;
+}
+
+.user-search-container {
+    padding: 8px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.user-search-input {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    
+    &:focus {
+        border-color: #4a90e2;
+        box-shadow: 0 0 0 2px rgba(74, 144, 226, 0.1);
+    }
+}
+
+.selected-users-pills {
+    padding: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    border-bottom: 1px solid #e0e0e0;
+    max-height: 100px;
+    overflow-y: auto;
+}
+
+.user-pill {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: #f0f0f0;
+    border-radius: 16px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
+.pill-name {
+    color: #333;
+}
+
+.pill-remove {
+    background: none;
+    border: none;
+    color: #666;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0;
+    width: 18px;
+    height: 18px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background-color 0.2s;
+    
+    &:hover {
+        background-color: #ddd;
+    }
+}
+
+.user-list {
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.user-option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: all 0.15s ease;
+    
+    &:hover {
+        background-color: #f5f5f5;
+    }
+    
+    &.highlighted {
+        background-color: #e8f4f8;
+    }
+    
+    &.selected {
+        font-weight: 500;
+    }
+}
+
+.option-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    object-fit: cover;
+    flex-shrink: 0;
+}
+
+.option-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.option-name {
+    font-size: 14px;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.option-bio {
+    font-size: 12px;
+    color: #666;
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.option-check {
+    color: #4a90e2;
+    font-weight: bold;
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.no-users {
+    padding: 20px;
+    text-align: center;
+    color: #999;
+    font-size: 14px;
+}
+
+.user-filter-actions {
+    padding: 8px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    border-top: 1px solid #e0e0e0;
+}
+
+.filter-btn {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-color: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    color: #333333;
+    cursor: pointer;
+    font-weight: 400;
+    padding: 6px 16px;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+    transition: all 0.2s ease;
+    
+    &.reset {
+        background-color: #ffffff;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        color: #333333;
+    }
+    
+    &.apply {
+        background-color: #ffffff;
+        border: 1px solid rgba(0, 0, 0, 0.15);
+        color: #333333;
+    }
+    
+    &:hover {
+        background-color: #f5f5f5;
+    }
+    
+    &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        background-color: #ffffff;
+    }
+}
+
+.user-filter-empty {
+    padding: 16px;
+    font-size: 13px;
+    color: rgba(0, 0, 0, 0.6);
+}
+</style>
+

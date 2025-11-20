@@ -75,6 +75,9 @@ import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 import SelectFilterComponent from "./components/SelectFilterComponent.vue";
 import SelectFilterWrapper from "./components/SelectFilterWrapper.js";
 import DateCellEditor from "./components/DateCellEditor.vue";
+import UserCellRenderer from "./components/UserCellRenderer.vue";
+import UserFilterComponent from "./components/UserFilterComponent.vue";
+import UserFilterWrapper from "./components/UserFilterWrapper.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -88,6 +91,8 @@ export default {
     WewebCellRenderer,
     SelectCellRenderer,
     SelectFilterComponent,
+    UserCellRenderer,
+    UserFilterComponent,
   },
   props: {
     content: {
@@ -468,6 +473,8 @@ export default {
       SelectCellRenderer,
       SelectFilterComponent,
       DateCellEditor,
+      UserCellRenderer,
+      UserFilterComponent,
     };
 
     return {
@@ -960,6 +967,90 @@ export default {
               },
             };
           }
+          case "user": {
+            const userParams = {
+              users: col?.users || [],
+              maxNumberOfUsers: col?.maxNumberOfUsers ?? 4,
+              userFocusColor: this.content.userFocusColor,
+              cellFontFamily: this.content.cellFontFamily,
+              resolveMappingFormula: this.resolveMappingFormula,
+              isLoading: this.isLoading,
+            };
+            
+            // Helper function to get user name from ID
+            const getUserNameFromId = (userId) => {
+              if (!userId) return '';
+              const users = col?.users || [];
+              const user = users.find(u => u.id === userId);
+              if (user) {
+                if (user.name) return user.name;
+                if (user.firstname || user.lastname) {
+                  return [user.firstname, user.lastname].filter(Boolean).join(' ');
+                }
+                return user.email || userId;
+              }
+              return userId;
+            };
+            
+            const isMultiple = (col?.maxNumberOfUsers ?? 4) > 1;
+            
+            return {
+              ...commonProperties,
+              headerName: col?.headerName,
+              field: col?.field,
+              cellRenderer: "UserCellRenderer",
+              cellRendererParams: userParams,
+              cellEditor: "UserCellRenderer",
+              cellEditorParams: userParams,
+              editable: col?.editable !== false,
+              sortable: col?.sortable,
+              filter: col?.filter ? UserFilterWrapper : false,
+              ...(col?.filter
+                ? {
+                    filterParams: {
+                      users: userParams.users,
+                      maxNumberOfUsers: userParams.maxNumberOfUsers,
+                      userFocusColor: userParams.userFocusColor,
+                      cellFontFamily: userParams.cellFontFamily,
+                      resolveMappingFormula: userParams.resolveMappingFormula,
+                      isLoading: userParams.isLoading,
+                      closeOnApply: true,
+                    },
+                  }
+                : {}),
+              // Use user name for filtering and sorting instead of ID
+              valueGetter: (params) => {
+                const value = params.data?.[col?.field];
+                if (!value) return '';
+                if (isMultiple) {
+                  // Multiple users: return comma-separated names
+                  const userIds = Array.isArray(value) ? value : [value];
+                  return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
+                } else {
+                  // Single user: return name
+                  return getUserNameFromId(value);
+                }
+              },
+              // Ensure the raw value (ID or array of IDs) is stored
+              valueSetter: (params) => {
+                if (params.newValue !== params.oldValue) {
+                  params.data[col?.field] = params.newValue;
+                  return true;
+                }
+                return false;
+              },
+              filterValueGetter: (params) => {
+                const value = params.data?.[col?.field];
+                if (!value) return '';
+                if (isMultiple) {
+                  const userIds = Array.isArray(value) ? value : [value];
+                  return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
+                } else {
+                  return getUserNameFromId(value);
+                }
+              },
+            };
+          }
           default: {
             const result = {
               ...commonProperties,
@@ -1194,6 +1285,21 @@ export default {
       // The valueSetter ensures the actual value (ID) is stored in the data field
       const newValue = event.data?.[columnId];
       const oldValue = event.oldValue;
+      
+      // Don't emit event if values are the same (e.g., when edit was cancelled with Escape)
+      // This handles both primitive values and arrays
+      const valuesEqual = (() => {
+        if (oldValue === newValue) return true;
+        if (Array.isArray(oldValue) && Array.isArray(newValue)) {
+          if (oldValue.length !== newValue.length) return false;
+          return oldValue.every((val, idx) => val === newValue[idx]);
+        }
+        return false;
+      })();
+      
+      if (valuesEqual) {
+        return; // Skip emitting event when values are the same (cancelled edit)
+      }
       
       this.$emit("trigger-event", {
         name: "cellValueChanged",

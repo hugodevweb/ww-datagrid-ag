@@ -69,6 +69,7 @@ export default {
           "selectionCheckboxColor",
           "focusShadow",
           "checkboxUncheckedBorderColor",
+          "userFocusColor",
         ],
       },
       {
@@ -746,6 +747,24 @@ export default {
       states: true,
       classes: true,
     },
+    userFocusColor: {
+      label: "User Focus Color",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      bindable: true,
+      bindingValidation: {
+        markdown: "background-color",
+        type: "string",
+        cssSupports: "background-color",
+      },
+      responsive: true,
+      states: true,
+      classes: true,
+      propertyHelp: {
+        tooltip: "Color used to highlight selected users in the user column dropdown",
+      },
+    },
     actionColor: {
       label: "Text color",
       type: "Color",
@@ -1092,6 +1111,7 @@ export default {
                     { value: "image", label: "Image" },
                     { value: "action", label: "Action" },
                     { value: "select", label: "Select" },
+                    { value: "user", label: "User" },
                     { value: "custom", label: "Custom" },
                   ],
                 },
@@ -1244,6 +1264,7 @@ export default {
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
+                  array?.item?.cellDataType === "user" ||
                   array?.item?.cellDataType === "custom",
               },
               displayLabelFormula: {
@@ -1259,6 +1280,7 @@ export default {
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
+                  array?.item?.cellDataType === "user" ||
                   (!array?.item?.useCustomLabel && array?.item?.cellDataType !== "custom"),
                 /* wwEditor:start */
                 propertyHelp: {
@@ -1275,6 +1297,7 @@ export default {
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
+                  array?.item?.cellDataType === "user" ||
                   (array?.item?.cellDataType === "custom" && !array?.item?.displayLabelFormula) ||
                   (array?.item?.cellDataType !== "custom" && !array?.item?.useCustomLabel),
                 defaultValue: false,
@@ -1593,6 +1616,50 @@ export default {
                   code: "context.mapping?.['color']",
                 },
               },
+              users: {
+                label: "Users",
+                type: "Array",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "user",
+                options: {
+                  expandable: true,
+                  getItemLabel(item) {
+                    return item?.name || item?.firstname || item?.lastname || item?.email || "User";
+                  },
+                  item: {
+                    type: "Object",
+                    options: {
+                      useSchema: true,
+                    },
+                  },
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "array",
+                  tooltip: "Array of user objects with id, avatar_url, name, firstname, lastname, email, phone, bio, etc.",
+                },
+                /* wwEditor:end */
+              },
+              maxNumberOfUsers: {
+                label: "Max Number of Users",
+                type: "Number",
+                hidden: array?.item?.cellDataType !== "user",
+                bindable: true,
+                options: {
+                  min: 1,
+                  max: 100,
+                  step: 1,
+                  noRange: true,
+                  defaultValue: 4,
+                },
+                defaultValue: 4,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "number",
+                  tooltip: "Maximum number of users that can be selected. If 1, stores a string ID. If > 1, stores an array of IDs.",
+                },
+                /* wwEditor:end */
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -1613,6 +1680,8 @@ export default {
               "optionsValueFormula",
               "optionsLabelFormula",
               "optionsColorFormula",
+              "users",
+              "maxNumberOfUsers",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",
