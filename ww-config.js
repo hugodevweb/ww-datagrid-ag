@@ -251,6 +251,18 @@ export default {
       },
       getTestEvent: "getScrollTestEvent",
     },
+    {
+      name: "validationError",
+      label: { en: "On Validation Error" },
+      event: {
+        columnId: "id",
+        row: null,
+        value: null,
+        errors: [],
+        customMessage: null,
+      },
+      getTestEvent: "getValidationErrorTestEvent",
+    },
   ],
   actions: [
     { label: "Reset filters", action: "resetFilters" },
@@ -1408,6 +1420,136 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              validationMode: {
+                label: "Validation Mode",
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "revert", label: "Revert", default: true },
+                    { value: "block", label: "Block" },
+                  ],
+                },
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image",
+                bindable: true,
+                defaultValue: "revert",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  enum: ["revert", "block"],
+                  tooltip: "Validation mode: 'revert' to revert invalid edits, 'block' to prevent edit completion",
+                },
+                /* wwEditor:end */
+              },
+              validationConstraints: {
+                label: "Validation Constraints",
+                type: "Array",
+                bindable: true,
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image",
+                options: {
+                  expandable: true,
+                  getItemLabel(item) {
+                    if (!item?.type) return "Constraint";
+                    const typeLabels = {
+                      required: "Required",
+                      min: `Min: ${item.value ?? ""}`,
+                      max: `Max: ${item.value ?? ""}`,
+                      minLength: `Min Length: ${item.value ?? ""}`,
+                      maxLength: `Max Length: ${item.value ?? ""}`,
+                      custom: "Custom",
+                    };
+                    return typeLabels[item.type] || item.type;
+                  },
+                  item: {
+                    type: "Object",
+                    defaultValue: { type: "required", value: null, message: null },
+                    options: {
+                      item: {
+                        type: {
+                          label: "Type",
+                          type: "TextSelect",
+                          options: {
+                            options: [
+                              { value: "required", label: "Required", default: true },
+                              { value: "min", label: "Min" },
+                              { value: "max", label: "Max" },
+                              { value: "minLength", label: "Min Length" },
+                              { value: "maxLength", label: "Max Length" },
+                              { value: "custom", label: "Custom" },
+                            ],
+                          },
+                        },
+                        value: {
+                          label: "Value",
+                          type: "Text",
+                          hidden: (content, sidepanelContent, boundProps, wwProps, array) =>
+                            array?.item?.type === "required" || array?.item?.type === "custom",
+                          /* wwEditor:start */
+                          bindingValidation: {
+                            type: "string",
+                            tooltip: "Constraint value (number for min/max, number for minLength/maxLength)",
+                          },
+                          /* wwEditor:end */
+                        },
+                        message: {
+                          label: "Error Message",
+                          type: "Text",
+                          options: {
+                            nullable: true,
+                          },
+                          bindable: true,
+                          /* wwEditor:start */
+                          bindingValidation: {
+                            type: "string",
+                            tooltip: "Custom error message for this constraint (optional)",
+                          },
+                          /* wwEditor:end */
+                        },
+                        customValidationFormula: {
+                          label: "Custom Validation Formula",
+                          type: "Formula",
+                          hidden: (content, sidepanelContent, boundProps, wwProps, array) =>
+                            array?.item?.type !== "custom",
+                          options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                            template: wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0],
+                          }),
+                          /* wwEditor:start */
+                          propertyHelp: {
+                            tooltip: "Formula that returns an array of error messages or null/empty array if valid. Receives context with: value, row, columnId",
+                          },
+                          /* wwEditor:end */
+                        },
+                      },
+                    },
+                  },
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "array",
+                  tooltip: "Array of validation constraint objects",
+                },
+                /* wwEditor:end */
+              },
+              validationErrorMessage: {
+                label: "Validation Error Message",
+                type: "Text",
+                options: {
+                  nullable: true,
+                },
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Custom error message to include in validation event",
+                },
+                /* wwEditor:end */
+              },
               actionName: {
                 label: "Action Name",
                 type: "Text",
@@ -1571,6 +1713,15 @@ export default {
                   "filter",
                   "sortable",
                   "suppressRowInteraction",
+                ],
+              },
+              {
+                label: "Validation",
+                isCollapsible: true,
+                properties: [
+                  "validationMode",
+                  "validationConstraints",
+                  "validationErrorMessage",
                 ],
               },
             ],
