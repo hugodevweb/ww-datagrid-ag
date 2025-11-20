@@ -114,6 +114,7 @@ export default {
           "selectAll",
         ],
       },
+      "invalidEditValueMode",
       "movableColumns",
       "resizableColumns",
       "rowReorder",
@@ -1214,7 +1215,7 @@ export default {
                 options: (content, sidePanelContent, boundProps, wwProps, array) => ({
                   template:
                     Array.isArray(wwLib.wwUtils.getDataFromCollection(content.rowData)) &&
-                    wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
+                      wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
                       ? wwLib.wwUtils.getDataFromCollection(content.rowData)[0]
                       : null,
                 }),
@@ -1284,7 +1285,7 @@ export default {
                   (!array?.item?.useCustomLabel && array?.item?.cellDataType !== "custom"),
                 /* wwEditor:start */
                 propertyHelp: {
-                  tooltip: array?.item?.cellDataType === "custom" 
+                  tooltip: array?.item?.cellDataType === "custom"
                     ? "Formula that returns the value to use for filtering and sorting. The actual field value remains unchanged in the data. This is only used for filtering/sorting, not for display (which is handled by the custom cell renderer)."
                     : "Formula that returns the formatted value to display in the cell",
                 },
@@ -1492,6 +1493,110 @@ export default {
                 },
                 propertyHelp: {
                   tooltip: "Enable this for columns with buttons or interactive elements to prevent row focus/hover effects when clicking",
+                },
+                /* wwEditor:end */
+              },
+              validation: {
+                label: { en: "Validation Rules" },
+                type: "Array",
+                bindable: true,
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "image" ||
+                  array?.item?.editable === false,
+                options: {
+                  expandable: true,
+                  getItemLabel(item) {
+                    if (!item?.type) return "Validation Rule";
+                    const typeLabels = {
+                      required: "Required",
+                      minLength: `Min Length: ${item?.value || ""}`,
+                      maxLength: `Max Length: ${item?.value || ""}`,
+                      min: `Min: ${item?.value || ""}`,
+                      max: `Max: ${item?.value || ""}`,
+                      pattern: "Pattern",
+                      custom: "Custom",
+                    };
+                    return typeLabels[item.type] || item.type;
+                  },
+                  item: {
+                    type: "Object",
+                    defaultValue: { type: "required" },
+                    options: {
+                      item: {
+                        type: {
+                          label: "Type",
+                          type: "TextSelect",
+                          options: {
+                            options: [
+                              { value: "required", label: "Required", default: true },
+                              { value: "minLength", label: "Min Length" },
+                              { value: "maxLength", label: "Max Length" },
+                              { value: "min", label: "Min" },
+                              { value: "max", label: "Max" },
+                              { value: "pattern", label: "Pattern" },
+                              { value: "custom", label: "Custom" },
+                            ],
+                          },
+                        },
+                        value: {
+                          label: "Value",
+                          type: "Text",
+                          hidden:
+                            array?.item?.type === "required" || !array?.item?.type,
+                          bindable: true,
+                        },
+                        custom: {
+                          label: "Custom Formula",
+                          type: "Formula",
+                          hidden: array?.item?.type !== "custom",
+                          options: (content, sidePanelContent, boundProps, wwProps, array) => ({
+                            template:
+                              Array.isArray(wwLib.wwUtils.getDataFromCollection(content.rowData)) &&
+                              wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
+                                ? wwLib.wwUtils.getDataFromCollection(content.rowData)[0]
+                                : null,
+                          }),
+                          defaultValue: {
+                            type: "f",
+                            code: "true",
+                          },
+                          /* wwEditor:start */
+                          bindingValidation: {
+                            type: "string",
+                            tooltip: "Formula that returns true if valid, false if invalid",
+                          },
+                          propertyHelp: {
+                            tooltip: "Formula that validates the value. Return true if valid, false if invalid. Use context.mapping for the row data and context.mapping?.[fieldName] for the field value being edited.",
+                          },
+                          /* wwEditor:end */
+                        },
+                        message: {
+                          label: "Error Message",
+                          type: "Text",
+                          bindable: true,
+                          /* wwEditor:start */
+                          bindingValidation: {
+                            type: "string",
+                            tooltip: "Optional custom error message to display when validation fails",
+                          },
+                          propertyHelp: {
+                            tooltip: "Optional custom error message. If not provided, a default message will be used.",
+                          },
+                          /* wwEditor:end */
+                        },
+                      },
+                    },
+                  },
+                },
+                defaultValue: [],
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "array",
+                  tooltip: "Array of validation rules to apply to the cell editor",
+                },
+                propertyHelp: {
+                  tooltip: "Define validation rules for this column. Rules are checked when editing ends. The validation mode determines how invalid values are handled.",
                 },
                 /* wwEditor:end */
               },
@@ -1707,6 +1812,7 @@ export default {
                   "filter",
                   "sortable",
                   "suppressRowInteraction",
+                  "validation",
                 ],
               },
             ],
@@ -1722,8 +1828,8 @@ export default {
           return item?.headerName?.length
             ? item?.headerName
             : item?.field?.length
-            ? item?.field
-            : `Column ${index + 1}`;
+              ? item?.field
+              : `Column ${index + 1}`;
         },
       },
       defaultValue: [],
@@ -1891,6 +1997,29 @@ export default {
       bindingValidation: {
         type: "boolean",
         tooltip: "Enable or disable resizable columns",
+      },
+      /* wwEditor:end */
+    },
+    invalidEditValueMode: {
+      label: { en: "Validation Mode" },
+      type: "TextSelect",
+      section: "settings",
+      bindable: true,
+      defaultValue: "revert",
+      options: {
+        options: [
+          { value: "revert", label: "Revert", default: true },
+          { value: "block", label: "Block" },
+        ],
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        enum: ["revert", "block"],
+        tooltip: "Validation mode: 'revert' cancels invalid edits and reverts to original value, 'block' prevents editor from closing until valid value is provided",
+      },
+      propertyHelp: {
+        tooltip: "Controls how invalid cell edits are handled. 'Revert' mode cancels the edit and reverts to the original value. 'Block' mode prevents the editor from closing until a valid value is provided.",
       },
       /* wwEditor:end */
     },

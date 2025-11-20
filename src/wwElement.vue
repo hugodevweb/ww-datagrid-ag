@@ -25,6 +25,7 @@
       :suppressMovableColumns="!content.movableColumns"
       :columnHoverHighlight="content.columnHoverHighlight"
       :locale-text="localeText"
+      :invalidEditValueMode="invalidEditValueMode"
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="true"
@@ -32,6 +33,7 @@
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
       @cell-value-changed="onCellValueChanged"
+      @cell-edit-request="onCellEditRequest"
       @filter-changed="onFilterChanged"
       @sort-changed="onSortChanged"
       @row-clicked="onRowClicked"
@@ -60,6 +62,7 @@ import {
   AllCommunityModule,
   ModuleRegistry,
   themeQuartz,
+  ValidationModule,
 } from "ag-grid-community";
 import {
   AG_GRID_LOCALE_EN,
@@ -81,7 +84,8 @@ import UserFilterWrapper from "./components/UserFilterWrapper.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
-ModuleRegistry.registerModules([AllCommunityModule]);
+// ValidationModule is REQUIRED for getValidationErrors to work
+ModuleRegistry.registerModules([AllCommunityModule, ValidationModule]);
 
 export default {
   components: {
@@ -537,10 +541,12 @@ export default {
           buttons: ['reset', 'apply'],
           closeOnApply: true,
         },
+        // Note: cellEditorParams with getValidationErrors is added per-column,
+        // not in defaultColDef, to allow column-specific validation rules
       };
     },
     dataTypeDefinitions() {
-      return {
+      const definitions = {
         dateString: {
           baseDataType: 'dateString',
           valueParser: (params) => {
@@ -556,11 +562,221 @@ export default {
           dataTypeMatcher: (value) => typeof value === 'string' && !isNaN(Date.parse(value)),
         },
       };
+
+      console.log('[Validation Debug] Data type definitions:', definitions);
+
+      return definitions;
     },
     columnDefs() {
       // First, map all columns to their definitions
       const columnsMap = new Map();
+
+      console.log('[Validation Debug] Column definitions being built', {
+        columns: this.content.columns,
+        validationMode: this.content.invalidEditValueMode,
+      });
+
+      // Helper to get validation errors for a value
+      const getValidationErrors = (col, newValue, rowData) => {
+        console.log('[Validation Debug] getValidationErrors called', {
+          column: col?.field || col?.headerName,
+          newValue,
+          rowData,
+          validationRules: col?.validation,
+          hasValidation: !!col?.validation,
+          isArray: Array.isArray(col?.validation),
+        });
+
+        if (!col?.validation || !Array.isArray(col.validation)) {
+          console.log('[Validation Debug] No validation rules found or not an array');
+          return null;
+        }
+
+        const errors = [];
+
+        for (const rule of col.validation) {
+          if (!rule?.type) {
+            console.log('[Validation Debug] Skipping rule without type:', rule);
+            continue;
+          }
+
+          console.log('[Validation Debug] Checking rule:', {
+            type: rule.type,
+            value: rule.value,
+            message: rule.message,
+            custom: rule.custom,
+          });
+
+          let isValid = true;
+          let errorMessage = null;
+
+          switch (rule.type) {
+            case 'required':
+              isValid = newValue !== null && newValue !== undefined && newValue !== '';
+              errorMessage = rule.message || 'This field is required.';
+              console.log('[Validation Debug] Required check:', {
+                newValue,
+                isValid,
+                result: newValue !== null && newValue !== undefined && newValue !== '',
+              });
+              break;
+
+            case 'minLength':
+              if (newValue !== null && newValue !== undefined && newValue !== '') {
+                const minLength = parseInt(rule.value);
+                if (!isNaN(minLength) && String(newValue).length < minLength) {
+                  isValid = false;
+                  errorMessage = rule.message || `Value must be at least ${minLength} characters long.`;
+                }
+                console.log('[Validation Debug] MinLength check:', {
+                  newValue,
+                  valueLength: String(newValue).length,
+                  minLength,
+                  isValid: String(newValue).length >= minLength,
+                });
+              }
+              break;
+
+            case 'maxLength':
+              if (newValue !== null && newValue !== undefined && newValue !== '') {
+                const maxLength = parseInt(rule.value);
+                if (!isNaN(maxLength) && String(newValue).length > maxLength) {
+                  isValid = false;
+                  errorMessage = rule.message || `Value must be at most ${maxLength} characters long.`;
+                }
+                console.log('[Validation Debug] MaxLength check:', {
+                  newValue,
+                  valueLength: String(newValue).length,
+                  maxLength,
+                  isValid: String(newValue).length <= maxLength,
+                });
+              }
+              break;
+
+            case 'min':
+              if (newValue !== null && newValue !== undefined && newValue !== '') {
+                const min = Number(rule.value);
+                const numValue = Number(newValue);
+                if (!isNaN(min) && !isNaN(numValue) && numValue < min) {
+                  isValid = false;
+                  errorMessage = rule.message || `Value must be at least ${min}.`;
+                }
+                console.log('[Validation Debug] Min check:', {
+                  newValue,
+                  numValue,
+                  min,
+                  isValid: numValue >= min,
+                });
+              }
+              break;
+
+            case 'max':
+              if (newValue !== null && newValue !== undefined && newValue !== '') {
+                const max = Number(rule.value);
+                const numValue = Number(newValue);
+                if (!isNaN(max) && !isNaN(numValue) && numValue > max) {
+                  isValid = false;
+                  errorMessage = rule.message || `Value must be at most ${max}.`;
+                }
+                console.log('[Validation Debug] Max check:', {
+                  newValue,
+                  numValue,
+                  max,
+                  isValid: numValue <= max,
+                });
+              }
+              break;
+
+            case 'pattern':
+              if (newValue !== null && newValue !== undefined && newValue !== '' && rule.value) {
+                try {
+                  const regex = new RegExp(rule.value);
+                  const matches = regex.test(String(newValue));
+                  if (!matches) {
+                    isValid = false;
+                    errorMessage = rule.message || 'Value does not match the required pattern.';
+                  }
+                  console.log('[Validation Debug] Pattern check:', {
+                    newValue,
+                    pattern: rule.value,
+                    matches,
+                    isValid: matches,
+                  });
+                } catch (e) {
+                  console.warn('[Validation Debug] Invalid regex pattern:', rule.value, e);
+                  // If pattern is invalid, don't fail validation
+                }
+              }
+              break;
+
+            case 'custom':
+              if (rule.custom) {
+                // Create context with new value for the field
+                const validationContext = { ...rowData, [col.field]: newValue };
+                console.log('[Validation Debug] Custom validation context:', validationContext);
+                const result = this.resolveMappingFormula(rule.custom, validationContext);
+                console.log('[Validation Debug] Custom validation result:', result);
+                // Formula should return true for valid, false for invalid
+                isValid = Boolean(result);
+                errorMessage = rule.message || 'Custom validation failed.';
+                console.log('[Validation Debug] Custom check:', {
+                  formula: rule.custom,
+                  result,
+                  isValid,
+                });
+              }
+              break;
+          }
+
+          if (!isValid && errorMessage) {
+            console.log('[Validation Debug] Validation failed for rule:', {
+              type: rule.type,
+              errorMessage,
+            });
+            errors.push(errorMessage);
+          } else {
+            console.log('[Validation Debug] Validation passed for rule:', rule.type);
+          }
+        }
+
+        const finalResult = errors.length > 0 ? errors : null;
+        console.log('[Validation Debug] Final validation result:', {
+          errorsCount: errors.length,
+          errors,
+          finalResult,
+        });
+
+        return finalResult;
+      };
+
+      // Helper to create value setter (validation is handled separately via getValidationErrors)
+      const getValueSetter = (col, customSetter) => {
+        return (params) => {
+          const { newValue, oldValue, data } = params;
+
+          // If custom setter provided, use it
+          if (customSetter) {
+            return customSetter(params);
+          }
+          
+          // Default behavior
+          if (newValue !== oldValue) {
+             data[col.field] = newValue;
+             return true;
+          }
+          return false;
+        };
+      };
       const allColumnDefs = this.content.columns.map((col, index) => {
+        console.log('[Validation Debug] Processing column', {
+          index,
+          field: col?.field,
+          headerName: col?.headerName,
+          cellDataType: col?.cellDataType,
+          editable: col?.editable,
+          validation: col?.validation,
+        });
+
         const minWidth =
           !col?.minWidth || col?.minWidth === "auto"
             ? null
@@ -593,8 +809,18 @@ export default {
           hide: !!col?.hide,
           headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
           ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
+          valueSetter: getValueSetter(col),
         };
-        switch (col?.cellDataType) {
+
+        const cellDataType = col?.cellDataType;
+        console.log('[Validation Debug] Column cellDataType:', {
+          field: col?.field,
+          cellDataType,
+          typeof: typeof cellDataType,
+          isUndefined: cellDataType === undefined,
+        });
+
+        switch (cellDataType) {
           case "action": {
             return {
               ...commonProperties,
@@ -612,6 +838,12 @@ export default {
             };
           }
           case "custom": {
+            console.log('[Validation Debug] Building custom column', {
+              field: col?.field,
+              editable: col?.editable,
+              validation: col?.validation,
+            });
+
             const customColumn = {
               ...commonProperties,
               headerName: col?.headerName,
@@ -627,11 +859,26 @@ export default {
                 containerId: col?.containerId,
                 trigger: this.onCustomCellEdit,
                 suppressRowInteraction: col?.suppressRowInteraction,
+                getValidationErrors: (params) => {
+                  console.log('[Validation Debug] Custom column getValidationErrors called', {
+                    params,
+                    columnField: col?.field,
+                    columnValidation: col?.validation,
+                  });
+                  return getValidationErrors(col, params.value, params.data);
+                },
               },
               editable: col?.editable !== false,
               sortable: col?.sortable,
               filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
             };
+
+            console.log('[Validation Debug] Custom column built', {
+              field: customColumn.field,
+              editable: customColumn.editable,
+              hasCellEditorParams: !!customColumn.cellEditorParams,
+              hasGetValidationErrors: !!customColumn.cellEditorParams?.getValidationErrors,
+            });
             
             // Use display value for filtering and sorting if enabled
             if (col?.useDisplayValueForFilterSort && col?.displayLabelFormula) {
@@ -706,6 +953,12 @@ export default {
           }
           case "dateString":
           case "dateTime": {
+            console.log('[Validation Debug] Building date column', {
+              field: col?.field,
+              editable: col?.editable,
+              validation: col?.validation,
+            });
+
             // Helper function to format date based on configuration
             const formatDateValue = (value) => {
               if (!value) return '';
@@ -782,6 +1035,14 @@ export default {
               cellEditor: 'DateCellEditor',
               cellEditorParams: {
                 isDateTime: col?.cellDataType === 'dateTime',
+                getValidationErrors: (params) => {
+                  console.log('[Validation Debug] Date column getValidationErrors called', {
+                    params,
+                    columnField: col?.field,
+                    columnValidation: col?.validation,
+                  });
+                  return getValidationErrors(col, params.value, params.data);
+                },
               },
               valueFormatter: (params) => formatDateValue(params.value),
               // Date comparator for proper sorting
@@ -792,9 +1053,22 @@ export default {
               },
             };
 
+            console.log('[Validation Debug] Date column built', {
+              field: dateColumn.field,
+              editable: dateColumn.editable,
+              hasCellEditorParams: !!dateColumn.cellEditorParams,
+              hasGetValidationErrors: !!dateColumn.cellEditorParams?.getValidationErrors,
+            });
+
             return dateColumn;
           }
           case "currency": {
+            console.log('[Validation Debug] Building currency column', {
+              field: col?.field,
+              editable: col?.editable,
+              validation: col?.validation,
+            });
+
             // Helper function to get currency code from row data or column config
             const getCurrencyCode = (rowData, col) => {
               if (col?.currencyMode === 'perRow' && col?.currencyCodeField) {
@@ -853,6 +1127,16 @@ export default {
               sortable: col?.sortable,
               filter: col?.filter ? 'agNumberColumnFilter' : false,
               editable: col?.editable,
+              cellEditorParams: {
+                getValidationErrors: (params) => {
+                  console.log('[Validation Debug] Currency column getValidationErrors called', {
+                    params,
+                    columnField: col?.field,
+                    columnValidation: col?.validation,
+                  });
+                  return getValidationErrors(col, params.value, params.data);
+                },
+              },
               // Format display: convert cents to formatted currency
               // Use raw field value from params.data, not params.value (which comes from valueGetter)
               valueFormatter: (params) => {
@@ -938,7 +1222,17 @@ export default {
               cellRenderer: "SelectCellRenderer",
               cellRendererParams: selectParams,
               cellEditor: "SelectCellRenderer",
-              cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
+              cellEditorParams: {
+                ...selectParams,
+                getValidationErrors: (params) => {
+                  console.log('[Validation Debug] Select column getValidationErrors called', {
+                    params,
+                    columnField: col?.field,
+                    columnValidation: col?.validation,
+                  });
+                  return getValidationErrors(col, params.value, params.data);
+                },
+              },
               editable: col?.editable !== false,
               sortable: col?.sortable,
               filter: col?.filter ? SelectFilterWrapper : false,
@@ -955,13 +1249,13 @@ export default {
                 return getLabelFromValue(params.data?.[col?.field]);
               },
               // Ensure the raw value (ID) is stored, not the label
-              valueSetter: (params) => {
+              valueSetter: getValueSetter(col, (params) => {
                 if (params.newValue !== params.oldValue) {
                   params.data[col?.field] = params.newValue;
                   return true;
                 }
                 return false;
-              },
+              }),
               filterValueGetter: (params) => {
                 return getLabelFromValue(params.data?.[col?.field]);
               },
@@ -1001,7 +1295,17 @@ export default {
               cellRenderer: "UserCellRenderer",
               cellRendererParams: userParams,
               cellEditor: "UserCellRenderer",
-              cellEditorParams: userParams,
+              cellEditorParams: {
+                ...userParams,
+                getValidationErrors: (params) => {
+                  console.log('[Validation Debug] User column getValidationErrors called', {
+                    params,
+                    columnField: col?.field,
+                    columnValidation: col?.validation,
+                  });
+                  return getValidationErrors(col, params.value, params.data);
+                },
+              },
               editable: col?.editable !== false,
               sortable: col?.sortable,
               filter: col?.filter ? UserFilterWrapper : false,
@@ -1032,13 +1336,13 @@ export default {
                 }
               },
               // Ensure the raw value (ID or array of IDs) is stored
-              valueSetter: (params) => {
+              valueSetter: getValueSetter(col, (params) => {
                 if (params.newValue !== params.oldValue) {
                   params.data[col?.field] = params.newValue;
                   return true;
                 }
                 return false;
-              },
+              }),
               filterValueGetter: (params) => {
                 const value = params.data?.[col?.field];
                 if (!value) return '';
@@ -1052,6 +1356,13 @@ export default {
             };
           }
           default: {
+            console.log('[Validation Debug] Building default column', {
+              field: col?.field,
+              editable: col?.editable,
+              validation: col?.validation,
+              cellDataType: col?.cellDataType,
+            });
+
             const result = {
               ...commonProperties,
               headerName: col?.headerName,
@@ -1060,6 +1371,57 @@ export default {
               filter: col?.filter,
               editable: col?.editable,
             };
+
+            // Add cellEditor and cellEditorParams for editable columns to ensure validation works
+            if (col?.editable) {
+              // Create the validation function
+              const validationFn = (params) => {
+                console.log('[Validation Debug] Default column getValidationErrors called - FUNCTION EXECUTED', {
+                  params,
+                  columnField: col?.field,
+                  columnValidation: col?.validation,
+                  value: params?.value,
+                  data: params?.data,
+                  paramsKeys: params ? Object.keys(params) : 'params is null',
+                });
+                const errors = getValidationErrors(col, params?.value, params?.data);
+                console.log('[Validation Debug] Validation result:', errors);
+                return errors;
+              };
+
+              // Explicitly set cellEditor to ensure validation is triggered
+              // AG Grid's default editor might not call getValidationErrors consistently
+              result.cellEditor = 'agTextCellEditor';
+              
+              console.log('[Validation Debug] Setting cellEditorParams for default column', {
+                field: col?.field,
+                cellEditor: result.cellEditor,
+                hasValidationFn: !!validationFn,
+                validationFnType: typeof validationFn,
+              });
+
+              result.cellEditorParams = {
+                getValidationErrors: validationFn,
+              };
+
+              console.log('[Validation Debug] cellEditorParams created', {
+                field: col?.field,
+                cellEditorParams: result.cellEditorParams,
+                hasGetValidationErrors: !!result.cellEditorParams?.getValidationErrors,
+                getValidationErrorsType: typeof result.cellEditorParams?.getValidationErrors,
+              });
+            }
+
+            console.log('[Validation Debug] Default column built', {
+              field: result.field,
+              editable: result.editable,
+              cellEditor: result.cellEditor,
+              hasCellEditorParams: !!result.cellEditorParams,
+              hasGetValidationErrors: !!result.cellEditorParams?.getValidationErrors,
+              cellEditorParams: result.cellEditorParams,
+              validation: col?.validation,
+            });
+
             if (col?.useCustomLabel) {
               result.valueFormatter = (params) => {
                 return this.resolveMappingFormula(
@@ -1113,6 +1475,26 @@ export default {
             return result;
           }
         }
+
+        // This should never be reached, but just in case
+        console.warn('[Validation Debug] Column did not match any case', {
+          field: col?.field,
+          cellDataType: cellDataType,
+        });
+        return result;
+      });
+
+      console.log('[Validation Debug] All column definitions created', {
+        count: allColumnDefs.length,
+        columns: allColumnDefs.map(col => ({
+          field: col.field,
+          cellDataType: col.cellDataType,
+          editable: col.editable,
+          cellEditor: col.cellEditor,
+          hasCellEditorParams: !!col.cellEditorParams,
+          hasGetValidationErrors: !!col.cellEditorParams?.getValidationErrors,
+          validation: this.content.columns.find(c => c.field === col.field || c.actionName === col.field)?.validation,
+        })),
       });
 
       // Build a map of column definitions by their colId/field for reordering
@@ -1248,6 +1630,11 @@ export default {
       // eslint-disable-next-line no-unreachable
       return false;
     },
+    invalidEditValueMode() {
+      const mode = this.content?.invalidEditValueMode || "revert";
+      console.log('[Validation Debug] invalidEditValueMode computed:', mode);
+      return mode;
+    },
     paginationPageSizeSelector() {
       if (
         !this.content.pagination ||
@@ -1274,7 +1661,45 @@ export default {
         event,
       });
     },
+    onCellEditRequest(event) {
+      const colDef = event.column?.getColDef();
+      const cellEditorParams = colDef?.cellEditorParams;
+      console.log('[Validation Debug] Cell edit requested', {
+        column: event.column?.getColId(),
+        newValue: event.newValue,
+        oldValue: event.oldValue,
+        data: event.data,
+        columnDef: colDef,
+        cellEditor: colDef?.cellEditor,
+        hasCellEditorParams: !!cellEditorParams,
+        cellEditorParams: cellEditorParams,
+        hasGetValidationErrors: !!cellEditorParams?.getValidationErrors,
+        getValidationErrorsType: typeof cellEditorParams?.getValidationErrors,
+        allCellEditorParamsKeys: cellEditorParams ? Object.keys(cellEditorParams) : [],
+      });
+
+      // Try to manually check if validation would be called
+      if (cellEditorParams?.getValidationErrors && typeof cellEditorParams.getValidationErrors === 'function') {
+        console.log('[Validation Debug] Attempting manual validation call');
+        try {
+          const manualResult = cellEditorParams.getValidationErrors({
+            value: event.newValue,
+            data: event.data,
+          });
+          console.log('[Validation Debug] Manual validation result:', manualResult);
+        } catch (e) {
+          console.error('[Validation Debug] Error calling validation manually:', e);
+        }
+      }
+    },
     onCellValueChanged(event) {
+      console.log('[Validation Debug] Cell value changed', {
+        column: event.column?.getColId(),
+        newValue: event.data?.[event.column.getColId()],
+        oldValue: event.oldValue,
+        data: event.data,
+      });
+
       // Find the column configuration to get isDirectUpdate
       const columnId = event.column.getColId();
       const columnConfig = this.content.columns.find(
