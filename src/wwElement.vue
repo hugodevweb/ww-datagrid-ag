@@ -695,6 +695,32 @@ export default {
               }
             }
             
+            // Add validation callback
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              customColumn.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
+            
             return customColumn;
           }
           case "dateString":
@@ -784,6 +810,32 @@ export default {
                 return dateA - dateB;
               },
             };
+            
+            // Add validation callback
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              dateColumn.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
 
             return dateColumn;
           }
@@ -827,7 +879,7 @@ export default {
               return foundOption?.label || value || '';
             };
             
-            return {
+            const selectColumn = {
               ...commonProperties,
               headerName: col?.headerName,
               field: col?.field,
@@ -862,6 +914,34 @@ export default {
                 return getLabelFromValue(params.data?.[col?.field]);
               },
             };
+            
+            // Add validation callback
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              selectColumn.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
+            
+            return selectColumn;
           }
           default: {
             const result = {
@@ -872,6 +952,69 @@ export default {
               filter: col?.filter,
               editable: col?.editable,
             };
+            
+            // Add maxLength to column definition if there's a maxLength constraint (for text columns)
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints)) {
+              const maxLengthConstraint = col.validationConstraints.find(
+                (c) => c?.type === "maxLength"
+              );
+              if (maxLengthConstraint?.value) {
+                const maxLength = parseInt(maxLengthConstraint.value);
+                if (!isNaN(maxLength)) {
+                  result.maxLength = maxLength;
+                }
+              }
+              
+              // Add min/max to column definition if there are min/max constraints (for number columns)
+              if (col?.cellDataType === "number") {
+                const minConstraint = col.validationConstraints.find(
+                  (c) => c?.type === "min"
+                );
+                if (minConstraint?.value) {
+                  const minValue = parseFloat(minConstraint.value);
+                  if (!isNaN(minValue)) {
+                    result.min = minValue;
+                  }
+                }
+                
+                const maxConstraint = col.validationConstraints.find(
+                  (c) => c?.type === "max"
+                );
+                if (maxConstraint?.value) {
+                  const maxValue = parseFloat(maxConstraint.value);
+                  if (!isNaN(maxValue)) {
+                    result.max = maxValue;
+                  }
+                }
+              }
+            }
+            
+            // Add validation callback
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              result.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
+            
             if (col?.useCustomLabel) {
               result.valueFormatter = (params) => {
                 return this.resolveMappingFormula(
@@ -1079,6 +1222,97 @@ export default {
   methods: {
     getRowId(params) {
       return this.resolveMappingFormula(this.content.idFormula, params.data);
+    },
+    buildValidationErrors(columnConfig, cellValue, rowData, columnId) {
+      if (!columnConfig?.validationConstraints || !Array.isArray(columnConfig.validationConstraints)) {
+        return [];
+      }
+
+      const errors = [];
+
+      for (const constraint of columnConfig.validationConstraints) {
+        if (!constraint?.type) continue;
+
+        let constraintErrors = [];
+
+        switch (constraint.type) {
+          case "required": {
+            if (cellValue === null || cellValue === undefined || cellValue === "") {
+              constraintErrors.push(
+                constraint.message || "This field is required"
+              );
+            }
+            break;
+          }
+          case "min": {
+            const numValue = parseFloat(cellValue);
+            const minValue = parseFloat(constraint.value);
+            if (!isNaN(numValue) && !isNaN(minValue) && numValue < minValue) {
+              constraintErrors.push(
+                constraint.message || `Value must be at least ${minValue}`
+              );
+            }
+            break;
+          }
+          case "max": {
+            const numValue = parseFloat(cellValue);
+            const maxValue = parseFloat(constraint.value);
+            if (!isNaN(numValue) && !isNaN(maxValue) && numValue > maxValue) {
+              constraintErrors.push(
+                constraint.message || `Value must be at most ${maxValue}`
+              );
+            }
+            break;
+          }
+          case "minLength": {
+            const strValue = String(cellValue || "");
+            const minLength = parseInt(constraint.value);
+            if (!isNaN(minLength) && strValue.length < minLength) {
+              constraintErrors.push(
+                constraint.message || `Value must be at least ${minLength} characters`
+              );
+            }
+            break;
+          }
+          case "maxLength": {
+            const strValue = String(cellValue || "");
+            const maxLength = parseInt(constraint.value);
+            if (!isNaN(maxLength) && strValue.length > maxLength) {
+              constraintErrors.push(
+                constraint.message || `Value must be at most ${maxLength} characters`
+              );
+            }
+            break;
+          }
+          case "custom": {
+            if (constraint.customValidationFormula) {
+              try {
+                const context = {
+                  value: cellValue,
+                  row: rowData,
+                  columnId: columnId,
+                };
+                const result = this.resolveMappingFormula(
+                  constraint.customValidationFormula,
+                  context
+                );
+                if (Array.isArray(result) && result.length > 0) {
+                  constraintErrors.push(...result);
+                } else if (result && typeof result === "string") {
+                  constraintErrors.push(result);
+                }
+              } catch (error) {
+                console.error("Error executing custom validation formula:", error);
+              }
+            }
+            break;
+          }
+        }
+
+        errors.push(...constraintErrors);
+      }
+
+      return errors;
     },
     onActionTrigger(event) {
       this.$emit("trigger-event", {
@@ -1385,6 +1619,21 @@ export default {
         isNearBottom: true,
         isAtBottom: false,
         totalRows: this.gridApi.getDisplayedRowCount() || 0,
+      };
+    },
+    getValidationErrorTestEvent() {
+      const data = this.rowData;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = this.content.columns || [];
+      const firstEditableColumn = columns.find(
+        (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
+      );
+      return {
+        columnId: firstEditableColumn?.field || "columnId",
+        row: data[0],
+        value: "invalidValue",
+        errors: ["This field is required"],
+        customMessage: firstEditableColumn?.validationErrorMessage || null,
       };
     },
     /* wwEditor:end */
