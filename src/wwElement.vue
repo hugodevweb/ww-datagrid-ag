@@ -106,6 +106,96 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
+    // Helper function to build validation errors
+    const buildValidationErrors = (columnConfig, cellValue, rowData, columnId) => {
+      const errors = [];
+      const constraints = columnConfig?.validationConstraints || [];
+      
+      if (!Array.isArray(constraints) || constraints.length === 0) {
+        return errors;
+      }
+      
+      for (const constraint of constraints) {
+        if (!constraint || !constraint.type) continue;
+        
+        switch (constraint.type) {
+          case "required": {
+            if (cellValue === null || cellValue === undefined || cellValue === "") {
+              errors.push(
+                constraint.message || "This field is required"
+              );
+            }
+            break;
+          }
+          case "min": {
+            const numValue = Number(cellValue);
+            const minValue = Number(constraint.value);
+            if (!isNaN(numValue) && !isNaN(minValue) && numValue < minValue) {
+              errors.push(
+                constraint.message || `Value must be at least ${minValue}`
+              );
+            }
+            break;
+          }
+          case "max": {
+            const numValue = Number(cellValue);
+            const maxValue = Number(constraint.value);
+            if (!isNaN(numValue) && !isNaN(maxValue) && numValue > maxValue) {
+              errors.push(
+                constraint.message || `Value must be at most ${maxValue}`
+              );
+            }
+            break;
+          }
+          case "minLength": {
+            const strValue = String(cellValue || "");
+            const minLength = Number(constraint.value);
+            if (!isNaN(minLength) && strValue.length < minLength) {
+              errors.push(
+                constraint.message || `Length must be at least ${minLength} characters`
+              );
+            }
+            break;
+          }
+          case "maxLength": {
+            const strValue = String(cellValue || "");
+            const maxLength = Number(constraint.value);
+            if (!isNaN(maxLength) && strValue.length > maxLength) {
+              errors.push(
+                constraint.message || `Length must be at most ${maxLength} characters`
+              );
+            }
+            break;
+          }
+          case "custom": {
+            if (constraint.customValidationFormula) {
+              try {
+                const context = {
+                  value: cellValue,
+                  row: rowData,
+                  columnId: columnId,
+                };
+                const result = resolveMappingFormula(
+                  constraint.customValidationFormula,
+                  context
+                );
+                if (Array.isArray(result) && result.length > 0) {
+                  errors.push(...result);
+                } else if (result && typeof result === "string") {
+                  errors.push(result);
+                }
+              } catch (error) {
+                console.error("Error executing custom validation formula:", error);
+              }
+            }
+            break;
+          }
+        }
+      }
+      
+      return errors;
+    };
+
     const gridApi = shallowRef(null);
     const { value: selectedRows, setValue: setSelectedRows } =
       wwLib.wwVariable.useComponentVariable({
@@ -472,6 +562,7 @@ export default {
 
     return {
       resolveMappingFormula,
+      buildValidationErrors,
       onGridReady,
       onRowSelected,
       onSelectionChanged,
@@ -605,6 +696,38 @@ export default {
             };
           }
           case "custom": {
+            const customCellEditorParams = {
+              containerId: col?.containerId,
+              trigger: this.onCustomCellEdit,
+              suppressRowInteraction: col?.suppressRowInteraction,
+            };
+            
+            // Add validation constraints
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0 && col?.editable !== false) {
+              customCellEditorParams.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
+            
             const customColumn = {
               ...commonProperties,
               headerName: col?.headerName,
@@ -616,11 +739,7 @@ export default {
                 suppressRowInteraction: col?.suppressRowInteraction,
               },
               cellEditor: "WewebCellRenderer",
-              cellEditorParams: {
-                containerId: col?.containerId,
-                trigger: this.onCustomCellEdit,
-                suppressRowInteraction: col?.suppressRowInteraction,
-              },
+              cellEditorParams: customCellEditorParams,
               editable: col?.editable !== false,
               sortable: col?.sortable,
               filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
@@ -784,6 +903,35 @@ export default {
                 return dateA - dateB;
               },
             };
+            
+            // Add validation constraints
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              if (col?.editable) {
+                dateColumn.cellEditorParams = dateColumn.cellEditorParams || {};
+                dateColumn.cellEditorParams.getValidationErrors = (params) => {
+                  const cellValue = params.newValue;
+                  const rowData = params.data;
+                  const columnId = col?.field;
+                  const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                  
+                  // Emit validation error event if there are errors
+                  if (errors.length > 0) {
+                    this.$emit("trigger-event", {
+                      name: "validationError",
+                      event: {
+                        columnId: columnId,
+                        row: rowData,
+                        value: cellValue,
+                        errors: errors,
+                        customMessage: col?.validationErrorMessage || null,
+                      },
+                    });
+                  }
+                  
+                  return errors;
+                };
+              }
+            }
 
             return dateColumn;
           }
@@ -827,6 +975,33 @@ export default {
               return foundOption?.label || value || '';
             };
             
+            // Add validation to selectParams if needed
+            const selectColumnParams = { ...selectParams };
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0 && col?.editable !== false) {
+              selectColumnParams.getValidationErrors = (params) => {
+                const cellValue = params.newValue;
+                const rowData = params.data;
+                const columnId = col?.field;
+                const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                
+                // Emit validation error event if there are errors
+                if (errors.length > 0) {
+                  this.$emit("trigger-event", {
+                    name: "validationError",
+                    event: {
+                      columnId: columnId,
+                      row: rowData,
+                      value: cellValue,
+                      errors: errors,
+                      customMessage: col?.validationErrorMessage || null,
+                    },
+                  });
+                }
+                
+                return errors;
+              };
+            }
+            
             return {
               ...commonProperties,
               headerName: col?.headerName,
@@ -834,7 +1009,7 @@ export default {
               cellRenderer: "SelectCellRenderer",
               cellRendererParams: selectParams,
               cellEditor: "SelectCellRenderer",
-              cellEditorParams: selectParams, // IMPORTANT: Editor needs params too!
+              cellEditorParams: selectColumnParams, // IMPORTANT: Editor needs params too!
               editable: col?.editable !== false,
               sortable: col?.sortable,
               filter: col?.filter ? SelectFilterWrapper : false,
@@ -872,6 +1047,65 @@ export default {
               filter: col?.filter,
               editable: col?.editable,
             };
+            
+            // Add validation constraints
+            if (col?.validationConstraints && Array.isArray(col.validationConstraints) && col.validationConstraints.length > 0) {
+              // Find maxLength constraint for AG Grid's built-in maxLength support (text columns)
+              const maxLengthConstraint = col.validationConstraints.find(c => c?.type === "maxLength");
+              if (maxLengthConstraint && maxLengthConstraint.value != null) {
+                const maxLength = Number(maxLengthConstraint.value);
+                if (!isNaN(maxLength)) {
+                  result.maxLength = maxLength;
+                }
+              }
+              
+              // Find min/max constraints for AG Grid's built-in min/max support (number columns)
+              if (col?.cellDataType === "number" || col?.cellDataType === "currency") {
+                const minConstraint = col.validationConstraints.find(c => c?.type === "min");
+                if (minConstraint && minConstraint.value != null) {
+                  const min = Number(minConstraint.value);
+                  if (!isNaN(min)) {
+                    result.min = min;
+                  }
+                }
+                
+                const maxConstraint = col.validationConstraints.find(c => c?.type === "max");
+                if (maxConstraint && maxConstraint.value != null) {
+                  const max = Number(maxConstraint.value);
+                  if (!isNaN(max)) {
+                    result.max = max;
+                  }
+                }
+              }
+              
+              // Add getValidationErrors callback
+              if (col?.editable) {
+                result.cellEditorParams = result.cellEditorParams || {};
+                result.cellEditorParams.getValidationErrors = (params) => {
+                  const cellValue = params.newValue;
+                  const rowData = params.data;
+                  const columnId = col?.field;
+                  const errors = this.buildValidationErrors(col, cellValue, rowData, columnId);
+                  
+                  // Emit validation error event if there are errors
+                  if (errors.length > 0) {
+                    this.$emit("trigger-event", {
+                      name: "validationError",
+                      event: {
+                        columnId: columnId,
+                        row: rowData,
+                        value: cellValue,
+                        errors: errors,
+                        customMessage: col?.validationErrorMessage || null,
+                      },
+                    });
+                  }
+                  
+                  return errors;
+                };
+              }
+            }
+            
             if (col?.useCustomLabel) {
               result.valueFormatter = (params) => {
                 return this.resolveMappingFormula(
@@ -1385,6 +1619,21 @@ export default {
         isNearBottom: true,
         isAtBottom: false,
         totalRows: this.gridApi.getDisplayedRowCount() || 0,
+      };
+    },
+    getValidationErrorTestEvent() {
+      const data = this.rowData;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = this.content.columns || [];
+      const firstEditableColumn = columns.find(
+        (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
+      );
+      return {
+        columnId: firstEditableColumn?.field || "columnId",
+        row: data[0],
+        value: data[0]?.[firstEditableColumn?.field] || null,
+        errors: ["Validation error example"],
+        customMessage: firstEditableColumn?.validationErrorMessage || null,
       };
     },
     /* wwEditor:end */
