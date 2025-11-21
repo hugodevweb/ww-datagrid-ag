@@ -95,6 +95,15 @@ export default {
       "rowData",
       "supabaseTable",
       "supabaseQuery",
+      {
+        label: "Search",
+        isCollapsible: true,
+        properties: [
+          "enableSearch",
+          "searchValue",
+          "searchableColumns",
+        ],
+      },
       "idFormula",
       "generateColumns",
       "columns",
@@ -106,6 +115,14 @@ export default {
           "hasPaginationSelector",
           "paginationPageSize",
           "paginationPageSizeSelector",
+        ],
+      },
+      {
+        label: "Infinite Scrolling",
+        isCollapsible: true,
+        properties: [
+          "enableInfiniteScroll",
+          "infiniteBlockSize",
         ],
       },
       {
@@ -1050,6 +1067,101 @@ export default {
       },
       propertyHelp: {
         tooltip: "Supabase query string for selecting columns and relations. Use '*' for all columns, or specify columns and relations like '*, site:sites(id, name, code)'.",
+      },
+      /* wwEditor:end */
+    },
+    enableSearch: {
+      label: { en: "Enable Search" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable or disable search functionality for Supabase data",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, allows searching across specified columns in the Supabase data source.",
+      },
+      /* wwEditor:end */
+    },
+    searchValue: {
+      label: { en: "Search Value" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase" || !content?.enableSearch,
+      defaultValue: "",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Search term to filter records across searchable columns",
+      },
+      propertyHelp: {
+        tooltip: "Enter a search term to filter records. The search will be applied across all columns specified in 'Searchable Columns'.",
+      },
+      /* wwEditor:end */
+    },
+    searchableColumns: {
+      label: { en: "Searchable Columns" },
+      type: "Array",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase" || !content?.enableSearch,
+      defaultValue: [],
+      options: {
+        expandable: true,
+        getItemLabel(item) {
+          return item || "Column";
+        },
+        item: {
+          type: "Text",
+        },
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "array",
+        tooltip: "Array of column field names to search in (e.g., ['name', 'email', 'description'])",
+      },
+      propertyHelp: {
+        tooltip: "List of column field names to include in the search. The search will look for the search value in all specified columns.",
+      },
+      /* wwEditor:end */
+    },
+    enableInfiniteScroll: {
+      label: { en: "Enable Infinite Scrolling" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable or disable infinite scrolling for Supabase data",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, the grid will lazy-load rows as you scroll. This is more efficient for large datasets than pagination. Note: Infinite scrolling and pagination are mutually exclusive.",
+      },
+      /* wwEditor:end */
+    },
+    infiniteBlockSize: {
+      label: { en: "Block Size" },
+      type: "Number",
+      section: "settings",
+      bindable: true,
+      defaultValue: 100,
+      hidden: (content) => content?.dataSource !== "supabase" || !content?.enableInfiniteScroll,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "number",
+        minimum: 1,
+        tooltip: "Number of rows to fetch per block when scrolling",
+      },
+      propertyHelp: {
+        tooltip: "The number of rows to fetch from Supabase in each block. Larger blocks mean fewer server requests but more data loaded at once. Recommended: 100-200 rows.",
       },
       /* wwEditor:end */
     },
