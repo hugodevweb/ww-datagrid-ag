@@ -95,8 +95,6 @@ export default {
       "rowData",
       "supabaseTable",
       "supabaseQuery",
-      "enableSearchParam",
-      "searchValue",
       "idFormula",
       "generateColumns",
       "columns",
@@ -108,8 +106,6 @@ export default {
           "hasPaginationSelector",
           "paginationPageSize",
           "paginationPageSizeSelector",
-          "enableInfiniteScroll",
-          "infiniteScrollPageSize",
         ],
       },
       {
@@ -1057,39 +1053,6 @@ export default {
       },
       /* wwEditor:end */
     },
-    enableSearchParam: {
-      label: { en: "Enable Search Parameter" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: false,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip: "Enable search functionality that searches across all columns",
-      },
-      propertyHelp: {
-        tooltip: "When enabled, you can provide a search value that will search across all columns for rows containing that value.",
-      },
-      /* wwEditor:end */
-    },
-    searchValue: {
-      label: { en: "Search Value" },
-      type: "Text",
-      section: "settings",
-      bindable: true,
-      hidden: (content) => !content?.enableSearchParam,
-      defaultValue: "",
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "string",
-        tooltip: "Search value to find in any column. Leave empty to show all rows.",
-      },
-      propertyHelp: {
-        tooltip: "Enter a search term to filter rows. The search will look for this value in any column of the grid.",
-      },
-      /* wwEditor:end */
-    },
     rowData: {
       label: { en: "Data" },
       type: "ObjectList",
@@ -2003,43 +1966,6 @@ export default {
         content.hasPaginationSelector === "single",
       /* wwEditor:end */
     },
-    enableInfiniteScroll: {
-      label: { en: "Enable Infinite Scroll" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: false,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip: "Enable infinite scroll to load more data as user scrolls down",
-      },
-      propertyHelp: {
-        tooltip: "When enabled, automatically loads more data when user scrolls near the bottom. Incompatible with pagination.",
-      },
-      /* wwEditor:end */
-    },
-    infiniteScrollPageSize: {
-      label: { en: "Infinite Scroll Page Size" },
-      type: "Number",
-      section: "settings",
-      bindable: true,
-      defaultValue: 20,
-      options: {
-        min: 1,
-        max: 1000,
-      },
-      hidden: (content) => !content.enableInfiniteScroll,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "number",
-        tooltip: "Number of records to load each time user scrolls near bottom",
-      },
-      propertyHelp: {
-        tooltip: "Number of records to fetch from server when infinite scroll is triggered (default: 20)",
-      },
-      /* wwEditor:end */
-    },
     rowSelection: {
       label: { en: "Row Selection" },
       type: "TextSelect",
@@ -2253,17 +2179,6 @@ export default {
       },
       /* wwEditor:end */
     },
-    infiniteScrollPaginationWarning: {
-      type: "Alert",
-      section: "settings",
-      hidden: (content) => !(content.enableInfiniteScroll && content.pagination),
-      options: {
-        variant: "warning",
-        icon: "warning",
-        title: "Incompatible options",
-        content: `Infinite scroll is not compatible with pagination. Pagination will be disabled when infinite scroll is enabled`,
-      },
-    },
     wrapperBorderRadius: {
       label: { en: "Border Radius" },
       type: "Length",
@@ -2298,17 +2213,6 @@ export default {
         icon: "warning",
         title: "Incompatible options",
         content: `Row reordering is not compatible with pagination. Pagination will be disabled`,
-      },
-    },
-    infiniteScrollPaginationWarning: {
-      type: "Alert",
-      section: "settings",
-      hidden: (content) => !(content.enableInfiniteScroll && content.pagination),
-      options: {
-        variant: "warning",
-        icon: "warning",
-        title: "Incompatible options",
-        content: `Infinite scroll is not compatible with pagination. Pagination will be disabled when infinite scroll is enabled`,
       },
     },
     enableDebugLogs: {
