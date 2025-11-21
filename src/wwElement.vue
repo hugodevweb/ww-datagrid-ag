@@ -685,12 +685,20 @@ export default {
         
         // If using Supabase, refetch data with new sort
         if (props.content?.dataSource === 'supabase') {
-          const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
-          const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
-          const filterModel = gridApi.value.getFilterModel();
-          const sortModel = state.sort?.sortModel || [];
-          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          if (isInfiniteScrollEnabled.value) {
+            // For infinite scrolling, refresh the datasource
+            if (gridApi.value) {
+              gridApi.value.setGridOption('datasource', datasource.value);
+            }
+          } else {
+            // For pagination mode, fetch data
+            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+            const filterModel = gridApi.value.getFilterModel();
+            const sortModel = state.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          }
         }
       }
     };
