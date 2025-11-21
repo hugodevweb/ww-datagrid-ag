@@ -13,7 +13,7 @@
       :selection-column-def="{ pinned: true }"
       :theme="theme"
       :getRowId="getRowId"
-      :pagination="content.pagination"
+      :pagination="content.pagination && !content.enableInfiniteScroll"
       :paginationPageSize="
         forcedPaginationPageSize
           ? 0
@@ -26,6 +26,8 @@
       :columnHoverHighlight="content.columnHoverHighlight"
       :locale-text="localeText"
       :invalidEditValueMode="invalidEditValueMode"
+      :isExternalFilterPresent="isExternalFilterPresent"
+      :doesExternalFilterPass="doesExternalFilterPass"
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="true"
@@ -250,7 +252,7 @@ export default {
     };
 
     // Fetch data from Supabase
-    const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
+    const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null, append = false) => {
       if (props.content?.dataSource !== 'supabase') {
         return;
       }
@@ -263,8 +265,31 @@ export default {
         return;
       }
 
+      // Check if infinite scroll is enabled
+      const isInfiniteScrollEnabled = props.content?.enableInfiniteScroll === true;
+      
+      // If infinite scroll is enabled and we're appending, check if filters/sort/search changed
+      if (isInfiniteScrollEnabled && append) {
+        const filterChanged = JSON.stringify(filterModel || {}) !== JSON.stringify(infiniteScrollLastFilterModel.value || {});
+        const sortChanged = JSON.stringify(sortModel || []) !== JSON.stringify(infiniteScrollLastSortModel.value || []);
+        const searchChanged = searchValue !== infiniteScrollLastSearchValue.value;
+        
+        // If filters/sort/search changed, reset to page 1 instead of appending
+        if (filterChanged || sortChanged || searchChanged) {
+          append = false;
+          page = 1;
+          infiniteScrollCurrentPage.value = 1;
+          infiniteScrollHasMore.value = true;
+        }
+      }
+
       try {
-        supabaseLoading.value = true;
+        // Use different loading state for infinite scroll append
+        if (isInfiniteScrollEnabled && append) {
+          infiniteScrollLoadingMore.value = true;
+        } else {
+          supabaseLoading.value = true;
+        }
         supabaseError.value = null;
 
         const supabase = wwLib.wwPlugins.supabase.instance;
@@ -272,13 +297,16 @@ export default {
           throw new Error('Supabase instance not available');
         }
 
-        // Check if pagination is enabled
-        const isPaginationEnabled = props.content?.pagination === true;
+        // Check if pagination is enabled (disabled when infinite scroll is enabled)
+        const isPaginationEnabled = props.content?.pagination === true && !isInfiniteScrollEnabled;
         
         // Validate and normalize pagination parameters
         // If pageSize is 0, undefined, or null, use defaults
         let validPageSize;
-        if (isPaginationEnabled) {
+        if (isInfiniteScrollEnabled) {
+          // For infinite scroll, use the infinite scroll page size
+          validPageSize = props.content?.infiniteScrollPageSize || 20;
+        } else if (isPaginationEnabled) {
           // For pagination enabled, use provided pageSize or fallback to config
           validPageSize = pageSize && pageSize > 0 ? pageSize : (props.content?.paginationPageSize || 10);
         } else {
@@ -290,7 +318,8 @@ export default {
         validPageSize = Math.max(1, validPageSize);
         
         // If pagination is disabled or pageSize is invalid, fetch all rows
-        const shouldPaginate = isPaginationEnabled && validPageSize > 0 && validPage > 0;
+        // For infinite scroll, we always paginate
+        const shouldPaginate = (isPaginationEnabled || isInfiniteScrollEnabled) && validPageSize > 0 && validPage > 0;
         
         debugLog('[Supabase] Pagination check:', { 
           isPaginationEnabled, 
@@ -378,13 +407,48 @@ export default {
           fetchedData = [data];
         }
         
-        supabaseData.value = fetchedData;
-        supabaseTotalCount.value = count !== null && count !== undefined ? count : fetchedData.length;
+        // Handle appending data for infinite scroll
+        if (isInfiniteScrollEnabled && append) {
+          // Append new data to existing data
+          supabaseData.value = [...supabaseData.value, ...fetchedData];
+          // Update total count
+          supabaseTotalCount.value = count !== null && count !== undefined ? count : supabaseData.value.length;
+          // Check if there's more data to load
+          infiniteScrollHasMore.value = fetchedData.length === validPageSize && supabaseData.value.length < (count || supabaseData.value.length);
+        } else {
+          // Replace data (normal behavior or first load)
+          supabaseData.value = fetchedData;
+          supabaseTotalCount.value = count !== null && count !== undefined ? count : fetchedData.length;
+          
+          // Update infinite scroll state for new loads
+          if (isInfiniteScrollEnabled) {
+            infiniteScrollCurrentPage.value = validPage;
+            infiniteScrollLastFilterModel.value = filterModel;
+            infiniteScrollLastSortModel.value = sortModel;
+            infiniteScrollLastSearchValue.value = searchValue;
+            // Check if there's more data to load
+            infiniteScrollHasMore.value = fetchedData.length === validPageSize && fetchedData.length < (count || fetchedData.length);
+          }
+        }
 
-        // Update grid row count if available
-        if (gridApi.value && supabaseTotalCount.value > 0) {
-          // Note: AG Grid client-side model doesn't support setting total count directly
-          // The pagination will work with the data provided, but total count display may be limited
+        // When using Supabase, explicitly update the grid to ensure it shows all filtered data
+        // Since we're using external filtering, AG Grid should display all rows in supabaseData
+        if (gridApi.value) {
+          // Use nextTick to ensure Vue has updated the reactive data
+          nextTick(() => {
+            if (gridApi.value) {
+              // Force grid to refresh and recognize the new data
+              // Since we're using external filtering, all rows in rowData should be displayed
+              gridApi.value.refreshCells({ force: true });
+              
+              // Also ensure the grid knows about the data change
+              // The rowData computed should automatically update, but we can force a refresh
+              debugLog('[Supabase] Grid refresh triggered after data update:', {
+                dataLength: fetchedData.length,
+                rowDataLength: rowData.value?.length
+              });
+            }
+          });
         }
 
         debugLog('[Supabase] Data fetched and processed:', { 
@@ -484,6 +548,14 @@ export default {
     const supabaseError = ref(null);
     const filterDebounceTimer = ref(null);
     const searchDebounceTimer = ref(null);
+    
+    // Infinite scroll state
+    const infiniteScrollCurrentPage = ref(1);
+    const infiniteScrollLoadingMore = ref(false);
+    const infiniteScrollHasMore = ref(true);
+    const infiniteScrollLastFilterModel = ref(null);
+    const infiniteScrollLastSortModel = ref(null);
+    const infiniteScrollLastSearchValue = ref(null);
 
     const onGridReady = (params) => {
       gridApi.value = params.api;
@@ -614,9 +686,14 @@ export default {
     const onFilterChanged = (event) => {
       if (!gridApi.value) return;
       const filterModel = gridApi.value.getFilterModel();
+      
+      // Normalize filter models for comparison (handle null, undefined, empty object)
+      const normalizedNewFilter = filterModel && Object.keys(filterModel).length > 0 ? filterModel : null;
+      const normalizedOldFilter = filterValue.value && Object.keys(filterValue.value).length > 0 ? filterValue.value : null;
+      
       if (
-        JSON.stringify(filterModel || {}) !==
-        JSON.stringify(filterValue.value || {})
+        JSON.stringify(normalizedNewFilter || {}) !==
+        JSON.stringify(normalizedOldFilter || {})
       ) {
         setFilters(filterModel);
         ctx.emit("trigger-event", {
@@ -626,6 +703,12 @@ export default {
         
         // If using Supabase, debounce filter changes to avoid excessive API calls
         if (props.content?.dataSource === 'supabase') {
+          // Reset infinite scroll state when filters change
+          if (props.content?.enableInfiniteScroll) {
+            infiniteScrollCurrentPage.value = 1;
+            infiniteScrollHasMore.value = true;
+          }
+          
           // Clear existing debounce timer
           if (filterDebounceTimer.value) {
             clearTimeout(filterDebounceTimer.value);
@@ -633,13 +716,18 @@ export default {
           
           // Debounce filter changes (300ms)
           filterDebounceTimer.value = setTimeout(() => {
-            const isPaginationEnabled = props.content?.pagination === true;
-            const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
-            const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+            const isInfiniteScrollEnabled = props.content?.enableInfiniteScroll === true;
+            const isPaginationEnabled = props.content?.pagination === true && !isInfiniteScrollEnabled;
+            const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : (isInfiniteScrollEnabled ? 1 : 1);
+            const pageSize = isInfiniteScrollEnabled 
+              ? (props.content?.infiniteScrollPageSize || 20)
+              : (isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 10000);
             const state = gridApi.value.getState();
             const sortModel = state?.sort?.sortModel || [];
             const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+            // Pass null if filterModel is empty/null to ensure no filters are applied
+            const finalFilterModel = normalizedNewFilter;
+            fetchSupabaseData(currentPage, pageSize, finalFilterModel, sortModel, searchValue, false);
           }, 300);
         }
       }
@@ -666,7 +754,7 @@ export default {
           const filterModel = gridApi.value.getFilterModel();
           const sortModel = state.sort?.sortModel || [];
           const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue, false);
         }
       }
     };
@@ -720,6 +808,55 @@ export default {
       if (!gridApi.value) return;
       
       const api = event?.api || gridApi.value;
+      
+      // Infinite scroll: load more data when user scrolls near bottom
+      if (props.content?.enableInfiniteScroll && props.content?.dataSource === 'supabase') {
+        if (infiniteScrollLoadingMore.value || !infiniteScrollHasMore.value) {
+          return; // Already loading or no more data
+        }
+        
+        // Get scroll container
+        if (!gridContainerRef.value) return;
+        const scrollContainer = gridContainerRef.value.querySelector('.ag-body-viewport');
+        if (!scrollContainer) return;
+        
+        const scrollTop = scrollContainer.scrollTop;
+        const scrollHeight = scrollContainer.scrollHeight;
+        const clientHeight = scrollContainer.clientHeight;
+        
+        // Calculate distance from bottom (in pixels)
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+        
+        // Trigger load when user is within 200px of bottom
+        const threshold = 200;
+        
+        if (distanceFromBottom < threshold) {
+          debugLog('[Infinite Scroll] Near bottom, loading more data:', {
+            distanceFromBottom,
+            currentPage: infiniteScrollCurrentPage.value,
+            hasMore: infiniteScrollHasMore.value
+          });
+          
+          // Load next page
+          infiniteScrollCurrentPage.value += 1;
+          const pageSize = props.content?.infiniteScrollPageSize || 20;
+          const filterModel = gridApi.value.getFilterModel();
+          const state = gridApi.value.getState();
+          const sortModel = state?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+          
+          fetchSupabaseData(
+            infiniteScrollCurrentPage.value,
+            pageSize,
+            filterModel,
+            sortModel,
+            searchValue,
+            true // append = true
+          );
+        }
+        
+        return; // Don't continue with other scroll logic when infinite scroll is enabled
+      }
       
       // Get scroll container dimensions from the grid container ref
       if (!gridContainerRef.value) return;
@@ -777,6 +914,18 @@ export default {
         }
       }
     );
+
+    // External filter callbacks for Supabase (to disable client-side filtering)
+    const isExternalFilterPresent = () => {
+      // When using Supabase, tell AG Grid that filtering is external
+      return props.content?.dataSource === 'supabase';
+    };
+    
+    const doesExternalFilterPass = (node) => {
+      // When using Supabase, all data is already filtered server-side
+      // So we always return true (all rows in supabaseData are already filtered)
+      return true;
+    };
 
     const rowData = computed(() => {
       // If using Supabase, return Supabase data
@@ -893,7 +1042,7 @@ export default {
           const state = gridApi.value.getState();
           const sortModel = state?.sort?.sortModel || [];
           const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue, false);
         }
       },
       { immediate: false }
@@ -911,7 +1060,7 @@ export default {
           const state = gridApi.value.getState();
           const sortModel = state?.sort?.sortModel || [];
           const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue, false);
         }
       }
     );
@@ -958,7 +1107,7 @@ export default {
           });
           
           const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, null, null, searchValue);
+          fetchSupabaseData(currentPage, pageSize, null, null, searchValue, false);
         }
       },
       { immediate: true }
@@ -983,7 +1132,7 @@ export default {
             const state = gridApi.value.getState();
             const sortModel = state?.sort?.sortModel || [];
             const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
-            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue, false);
           }, 300);
         }
         // For local data, the rowData computed will automatically filter
@@ -1016,6 +1165,11 @@ export default {
       gridApi,
       onFilterChanged,
       onSortChanged,
+      fetchSupabaseData,
+      filterDebounceTimer,
+      searchDebounceTimer,
+      isExternalFilterPresent,
+      doesExternalFilterPass,
       localeText: computed(() => {
         switch (props.content.lang) {
           case "fr":
@@ -2388,6 +2542,29 @@ export default {
     resetFilters() {
       if (!this.gridApi) return;
       this.gridApi.setFilterModel(null);
+      
+      // If using Supabase, immediately refetch data after resetting filters
+      // Note: setFilterModel will trigger onFilterChanged, but we also want to ensure
+      // the data is refetched immediately (or after debounce) with no filters
+      if (this.content?.dataSource === 'supabase' && this.fetchSupabaseData) {
+        // Clear any pending debounce timer to avoid conflicts
+        if (this.filterDebounceTimer) {
+          clearTimeout(this.filterDebounceTimer);
+        }
+        
+        // Use nextTick to ensure the filter model has been updated
+        this.$nextTick(() => {
+          const isPaginationEnabled = this.content?.pagination === true;
+          const currentPage = isPaginationEnabled ? (this.gridApi.paginationGetCurrentPage() || 0) + 1 : 1;
+          const pageSize = isPaginationEnabled ? (this.gridApi.paginationGetPageSize() || this.content?.paginationPageSize || 10) : 10000;
+          const state = this.gridApi.getState();
+          const sortModel = state?.sort?.sortModel || [];
+          const searchValue = this.content?.enableSearchParam ? this.content?.searchValue : null;
+          
+          // Fetch with null filter model (no filters)
+          this.fetchSupabaseData(currentPage, pageSize, null, sortModel, searchValue, false);
+        });
+      }
     },
     resetSort() {
       if (!this.gridApi) return;
