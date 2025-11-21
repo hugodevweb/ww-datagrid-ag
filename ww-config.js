@@ -91,7 +91,12 @@ export default {
       },
     ],
     customSettingsPropertiesOrder: [
+      "dataSource",
       "rowData",
+      "supabaseTable",
+      "supabaseQuery",
+      "enableSearchParam",
+      "searchValue",
       "idFormula",
       "generateColumns",
       "columns",
@@ -994,9 +999,99 @@ export default {
         cssSupports: "line-height",
       },
     },
+    dataSource: {
+      label: { en: "Data Source" },
+      type: "TextSelect",
+      section: "settings",
+      bindable: true,
+      defaultValue: "mapping",
+      options: {
+        options: [
+          { value: "mapping", label: "Local Data", default: true },
+          { value: "supabase", label: "Supabase" },
+        ],
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        enum: ["mapping", "supabase"],
+        tooltip: "Data source: 'mapping' uses local rowData, 'supabase' fetches from Supabase with server-side filtering and pagination",
+      },
+      propertyHelp: {
+        tooltip: "Choose between local data (mapping) or Supabase for server-side data fetching with filtering and pagination.",
+      },
+      /* wwEditor:end */
+    },
+    supabaseTable: {
+      label: { en: "Supabase Table" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Name of the Supabase table to query (e.g., 'users', 'products')",
+      },
+      propertyHelp: {
+        tooltip: "The name of the Supabase table to fetch data from. Required when data source is set to Supabase.",
+      },
+      /* wwEditor:end */
+    },
+    supabaseQuery: {
+      label: { en: "Supabase Query" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase",
+      defaultValue: "*",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Supabase select query string (e.g., '*, site:sites(id, name, code)')",
+      },
+      propertyHelp: {
+        tooltip: "Supabase query string for selecting columns and relations. Use '*' for all columns, or specify columns and relations like '*, site:sites(id, name, code)'.",
+      },
+      /* wwEditor:end */
+    },
+    enableSearchParam: {
+      label: { en: "Enable Search Parameter" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable search functionality that searches across all columns",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, you can provide a search value that will search across all columns for rows containing that value.",
+      },
+      /* wwEditor:end */
+    },
+    searchValue: {
+      label: { en: "Search Value" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => !content?.enableSearchParam,
+      defaultValue: "",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Search value to find in any column. Leave empty to show all rows.",
+      },
+      propertyHelp: {
+        tooltip: "Enter a search term to filter rows. The search will look for this value in any column of the grid.",
+      },
+      /* wwEditor:end */
+    },
     rowData: {
       label: { en: "Data" },
       type: "ObjectList",
+      hidden: (content) => content?.dataSource === "supabase",
       options: {
         useSchema: true,
       },

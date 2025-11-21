@@ -36,6 +36,7 @@
       @cell-edit-request="onCellEditRequest"
       @filter-changed="onFilterChanged"
       @sort-changed="onSortChanged"
+      @pagination-changed="onPaginationChanged"
       @row-clicked="onRowClicked"
       @row-drag-end="onRowDragged"
       @row-drag-enter="onRowDragEnter"
@@ -122,6 +123,313 @@ export default {
       }
     };
 
+    // Convert AG Grid filter model to Supabase filter chain
+    const convertFilterToSupabase = (filterModel, query) => {
+      if (!filterModel || Object.keys(filterModel).length === 0) {
+        return query;
+      }
+
+      let currentQuery = query;
+
+      // Process each column filter
+      for (const [columnId, filter] of Object.entries(filterModel)) {
+        if (!filter) continue;
+
+        // Handle different filter types
+        if (filter.filterType === 'text') {
+          // Text filters
+          if (filter.type === 'equals') {
+            currentQuery = currentQuery.eq(columnId, filter.filter);
+          } else if (filter.type === 'notEqual') {
+            currentQuery = currentQuery.neq(columnId, filter.filter);
+          } else if (filter.type === 'contains') {
+            currentQuery = currentQuery.ilike(columnId, `%${filter.filter}%`);
+          } else if (filter.type === 'notContains') {
+            currentQuery = currentQuery.not('ilike', columnId, `%${filter.filter}%`);
+          } else if (filter.type === 'startsWith') {
+            currentQuery = currentQuery.ilike(columnId, `${filter.filter}%`);
+          } else if (filter.type === 'endsWith') {
+            currentQuery = currentQuery.ilike(columnId, `%${filter.filter}`);
+          }
+        } else if (filter.filterType === 'number') {
+          // Number filters
+          if (filter.type === 'equals') {
+            currentQuery = currentQuery.eq(columnId, Number(filter.filter));
+          } else if (filter.type === 'notEqual') {
+            currentQuery = currentQuery.neq(columnId, Number(filter.filter));
+          } else if (filter.type === 'greaterThan') {
+            currentQuery = currentQuery.gt(columnId, Number(filter.filter));
+          } else if (filter.type === 'greaterThanOrEqual') {
+            currentQuery = currentQuery.gte(columnId, Number(filter.filter));
+          } else if (filter.type === 'lessThan') {
+            currentQuery = currentQuery.lt(columnId, Number(filter.filter));
+          } else if (filter.type === 'lessThanOrEqual') {
+            currentQuery = currentQuery.lte(columnId, Number(filter.filter));
+          } else if (filter.type === 'inRange') {
+            currentQuery = currentQuery.gte(columnId, Number(filter.filter))
+              .lte(columnId, Number(filter.filterTo));
+          }
+        } else if (filter.filterType === 'date') {
+          // Date filters
+          const filterDate = filter.dateFrom || filter.filter;
+          const filterToDate = filter.dateTo || filter.filterTo;
+          
+          if (filter.type === 'equals') {
+            // For date equals, we need to check the entire day
+            const startOfDay = new Date(filterDate);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(filterDate);
+            endOfDay.setHours(23, 59, 59, 999);
+            currentQuery = currentQuery.gte(columnId, startOfDay.toISOString())
+              .lte(columnId, endOfDay.toISOString());
+          } else if (filter.type === 'notEqual') {
+            // Not equal for dates: filter out the specific day
+            // We'll use a workaround: filter for dates less than start of day OR greater than end of day
+            const startOfDay = new Date(filterDate);
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(filterDate);
+            endOfDay.setHours(23, 59, 59, 999);
+            // Use .or() with proper Supabase syntax
+            currentQuery = currentQuery.or(`and(${columnId}.lt.${startOfDay.toISOString()},${columnId}.gt.${endOfDay.toISOString()})`);
+          } else if (filter.type === 'greaterThan') {
+            currentQuery = currentQuery.gt(columnId, new Date(filterDate).toISOString());
+          } else if (filter.type === 'greaterThanOrEqual') {
+            currentQuery = currentQuery.gte(columnId, new Date(filterDate).toISOString());
+          } else if (filter.type === 'lessThan') {
+            currentQuery = currentQuery.lt(columnId, new Date(filterDate).toISOString());
+          } else if (filter.type === 'lessThanOrEqual') {
+            currentQuery = currentQuery.lte(columnId, new Date(filterDate).toISOString());
+          } else if (filter.type === 'inRange') {
+            currentQuery = currentQuery.gte(columnId, new Date(filterDate).toISOString())
+              .lte(columnId, new Date(filterToDate).toISOString());
+          }
+        } else if (filter.filterType === 'set') {
+          // Set filters (for select columns)
+          if (filter.values && filter.values.length > 0) {
+            if (filter.values.length === 1) {
+              currentQuery = currentQuery.eq(columnId, filter.values[0]);
+            } else {
+              currentQuery = currentQuery.in(columnId, filter.values);
+            }
+          }
+        }
+      }
+
+      return currentQuery;
+    };
+
+    // Apply search filter to Supabase query
+    const applySearchToSupabase = (query, searchValue, columns) => {
+      if (!searchValue || !searchValue.trim() || !columns || columns.length === 0) {
+        return query;
+      }
+
+      const searchTerm = searchValue.trim();
+      const searchableColumns = columns
+        .filter(col => col.field && col.cellDataType !== 'action' && col.cellDataType !== 'image')
+        .map(col => col.field);
+
+      if (searchableColumns.length === 0) {
+        return query;
+      }
+
+      // Build OR condition for all searchable columns
+      // For Supabase, we need to chain .or() calls or use a single .or() with proper syntax
+      // Format: or(col1.ilike.%term%,col2.ilike.%term%,...)
+      if (searchableColumns.length === 1) {
+        // Single column: just use ilike
+        return query.ilike(searchableColumns[0], `%${searchTerm}%`);
+      } else {
+        // Multiple columns: use OR condition
+        // Supabase OR syntax: or('col1.ilike.%term%,col2.ilike.%term%')
+        const orConditions = searchableColumns
+          .map(col => `${col}.ilike.%${searchTerm}%`)
+          .join(',');
+        return query.or(orConditions);
+      }
+    };
+
+    // Fetch data from Supabase
+    const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
+      if (props.content?.dataSource !== 'supabase') {
+        return;
+      }
+
+      const tableName = props.content?.supabaseTable;
+      const queryString = props.content?.supabaseQuery || '*';
+
+      if (!tableName) {
+        supabaseError.value = 'Supabase table name is required';
+        return;
+      }
+
+      try {
+        supabaseLoading.value = true;
+        supabaseError.value = null;
+
+        const supabase = wwLib.wwPlugins.supabase.instance;
+        if (!supabase) {
+          throw new Error('Supabase instance not available');
+        }
+
+        // Check if pagination is enabled
+        const isPaginationEnabled = props.content?.pagination === true;
+        
+        // Validate and normalize pagination parameters
+        // If pageSize is 0, undefined, or null, use defaults
+        let validPageSize;
+        if (isPaginationEnabled) {
+          // For pagination enabled, use provided pageSize or fallback to config
+          validPageSize = pageSize && pageSize > 0 ? pageSize : (props.content?.paginationPageSize || 10);
+        } else {
+          // For pagination disabled, use a large number to fetch all records
+          validPageSize = 10000; // Large enough to fetch all records
+        }
+        
+        const validPage = Math.max(1, page || 1);
+        validPageSize = Math.max(1, validPageSize);
+        
+        // If pagination is disabled or pageSize is invalid, fetch all rows
+        const shouldPaginate = isPaginationEnabled && validPageSize > 0 && validPage > 0;
+        
+        debugLog('[Supabase] Pagination check:', { 
+          isPaginationEnabled, 
+          page, 
+          pageSize, 
+          validPage, 
+          validPageSize, 
+          shouldPaginate 
+        });
+
+        // Start building the query
+        let query = supabase.from(tableName).select(queryString, { count: 'exact' });
+
+        // Apply search filter (before other filters)
+        if (props.content?.enableSearchParam && searchValue && searchValue.trim()) {
+          const columns = props.content?.columns || [];
+          query = applySearchToSupabase(query, searchValue, columns);
+        }
+
+        // Apply filters
+        if (filterModel && Object.keys(filterModel).length > 0) {
+          query = convertFilterToSupabase(filterModel, query);
+        }
+
+        // Apply sorting
+        if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
+          for (const sort of sortModel) {
+            const columnId = sort.colId;
+            const order = sort.sort === 'asc' ? true : false;
+            query = query.order(columnId, { ascending: order });
+          }
+        }
+
+        // Apply pagination only if enabled
+        if (shouldPaginate) {
+          const from = (validPage - 1) * validPageSize;
+          const to = from + validPageSize - 1;
+          query = query.range(from, to);
+          debugLog('[Supabase] Fetching data with pagination:', { 
+            tableName, 
+            queryString, 
+            page: validPage, 
+            pageSize: validPageSize, 
+            filterModel, 
+            sortModel, 
+            from, 
+            to,
+            expectedRecords: validPageSize
+          });
+        } else {
+          // When pagination is disabled, don't apply range limit
+          // Supabase will return up to its default limit (usually 1000)
+          // For more records, users should enable pagination
+          debugLog('[Supabase] Fetching all data (pagination disabled, no range limit):', { 
+            tableName, 
+            queryString, 
+            filterModel, 
+            sortModel,
+            note: 'Supabase default limit applies (typically 1000 rows)'
+          });
+        }
+
+        const { data, error, count } = await query;
+
+        if (error) {
+          throw error;
+        }
+
+        // Debug: Log raw response before processing
+        debugLog('[Supabase] Raw query response:', {
+          dataType: Array.isArray(data) ? 'array' : typeof data,
+          dataLength: Array.isArray(data) ? data.length : (data ? 1 : 0),
+          data: data,
+          count: count,
+          error: error
+        });
+
+        // Ensure we have an array - handle case where Supabase returns single object
+        let fetchedData = [];
+        if (Array.isArray(data)) {
+          fetchedData = data;
+        } else if (data !== null && data !== undefined) {
+          // If data is a single object (shouldn't happen but handle it), wrap it in array
+          console.warn('[Supabase] Received non-array data, wrapping in array:', data);
+          fetchedData = [data];
+        }
+        
+        supabaseData.value = fetchedData;
+        supabaseTotalCount.value = count !== null && count !== undefined ? count : fetchedData.length;
+
+        // Update grid row count if available
+        if (gridApi.value && supabaseTotalCount.value > 0) {
+          // Note: AG Grid client-side model doesn't support setting total count directly
+          // The pagination will work with the data provided, but total count display may be limited
+        }
+
+        debugLog('[Supabase] Data fetched and processed:', { 
+          recordsReceived: supabaseData.value.length, 
+          totalCount: supabaseTotalCount.value,
+          shouldPaginate,
+          validPageSize: shouldPaginate ? validPageSize : 'all',
+          validPage: validPage,
+          from: shouldPaginate ? (validPage - 1) * validPageSize : 0,
+          to: shouldPaginate ? ((validPage - 1) * validPageSize + validPageSize - 1) : 'no limit',
+          firstRecord: supabaseData.value[0],
+          allRecords: supabaseData.value,
+          allRecordsLength: supabaseData.value.length
+        });
+        
+        // Warn if we got fewer records than expected
+        if (shouldPaginate && supabaseData.value.length < validPageSize && supabaseData.value.length < supabaseTotalCount.value) {
+          console.warn('[Supabase] Received fewer records than expected:', {
+            expected: validPageSize,
+            received: supabaseData.value.length,
+            total: supabaseTotalCount.value,
+            page: validPage,
+            from: (validPage - 1) * validPageSize,
+            to: (validPage - 1) * validPageSize + validPageSize - 1
+          });
+        }
+        
+        // Warn if pagination is disabled but we got fewer records than total
+        if (!shouldPaginate && supabaseData.value.length < supabaseTotalCount.value && supabaseTotalCount.value > 0) {
+          console.warn('[Supabase] Pagination disabled but received fewer records than total. Supabase may have a limit:', {
+            received: supabaseData.value.length,
+            total: supabaseTotalCount.value,
+            suggestion: 'Enable pagination or increase the range limit'
+          });
+        }
+      } catch (error) {
+        console.error('[Supabase] Error fetching data:', error);
+        supabaseError.value = error.message || 'Failed to fetch data from Supabase';
+        supabaseData.value = [];
+        supabaseTotalCount.value = 0;
+      } finally {
+        supabaseLoading.value = false;
+      }
+    };
+
     const gridApi = shallowRef(null);
     const { value: selectedRows, setValue: setSelectedRows } =
       wwLib.wwVariable.useComponentVariable({
@@ -155,11 +463,27 @@ export default {
         defaultValue: [],
         readonly: true,
       });
+    const { value: records, setValue: setRecords } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "records",
+        type: "array",
+        defaultValue: [],
+        readonly: true,
+      });
 
     const gridReady = ref(false);
     const dataRendered = ref(false);
     const dataLoadingTimeout = ref(null);
     const gridContainerRef = ref(null);
+    
+    // Supabase data state
+    const supabaseData = ref([]);
+    const supabaseTotalCount = ref(0);
+    const supabaseLoading = ref(false);
+    const supabaseError = ref(null);
+    const filterDebounceTimer = ref(null);
+    const searchDebounceTimer = ref(null);
 
     const onGridReady = (params) => {
       gridApi.value = params.api;
@@ -299,6 +623,25 @@ export default {
           name: "filterChanged",
           event: filterModel,
         });
+        
+        // If using Supabase, debounce filter changes to avoid excessive API calls
+        if (props.content?.dataSource === 'supabase') {
+          // Clear existing debounce timer
+          if (filterDebounceTimer.value) {
+            clearTimeout(filterDebounceTimer.value);
+          }
+          
+          // Debounce filter changes (300ms)
+          filterDebounceTimer.value = setTimeout(() => {
+            const isPaginationEnabled = props.content?.pagination === true;
+            const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
+            const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+            const state = gridApi.value.getState();
+            const sortModel = state?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          }, 300);
+        }
       }
     };
 
@@ -314,6 +657,32 @@ export default {
           name: "sortChanged",
           event: state.sort?.sortModel || [],
         });
+        
+        // If using Supabase, refetch data with new sort
+        if (props.content?.dataSource === 'supabase') {
+          const isPaginationEnabled = props.content?.pagination === true;
+          const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
+          const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+          const filterModel = gridApi.value.getFilterModel();
+          const sortModel = state.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+        }
+      }
+    };
+
+    const onPaginationChanged = (event) => {
+      if (!gridApi.value) return;
+      
+      // If using Supabase, refetch data for new page
+      if (props.content?.dataSource === 'supabase' && props.content?.pagination === true) {
+        const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+        const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+        const filterModel = gridApi.value.getFilterModel();
+        const state = gridApi.value.getState();
+        const sortModel = state?.sort?.sortModel || [];
+        const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+        fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
       }
     };
 
@@ -338,6 +707,12 @@ export default {
     onBeforeUnmount(() => {
       if (scrollDebounceTimer.value) {
         clearTimeout(scrollDebounceTimer.value);
+      }
+      if (filterDebounceTimer.value) {
+        clearTimeout(filterDebounceTimer.value);
+      }
+      if (searchDebounceTimer.value) {
+        clearTimeout(searchDebounceTimer.value);
       }
     });
 
@@ -404,15 +779,45 @@ export default {
     );
 
     const rowData = computed(() => {
+      // If using Supabase, return Supabase data
+      if (props.content?.dataSource === 'supabase') {
+        return supabaseData.value;
+      }
+      
+      // Otherwise, use local data (existing behavior)
       const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
-      return Array.isArray(data) ? data ?? [] : [];
+      const localData = Array.isArray(data) ? data ?? [] : [];
+      
+      // Apply search filter for local data
+      if (props.content?.enableSearchParam && props.content?.searchValue && props.content.searchValue.trim()) {
+        const searchTerm = props.content.searchValue.trim().toLowerCase();
+        const columns = props.content?.columns || [];
+        const searchableColumns = columns
+          .filter(col => col.field && col.cellDataType !== 'action' && col.cellDataType !== 'image')
+          .map(col => col.field);
+        
+        if (searchableColumns.length > 0) {
+          return localData.filter(row => {
+            return searchableColumns.some(col => {
+              const value = row?.[col];
+              if (value == null) return false;
+              return String(value).toLowerCase().includes(searchTerm);
+            });
+          });
+        }
+      }
+      
+      return localData;
     });
 
     // Track if we've ever rendered data (for initial load detection)
     const hasEverRendered = ref(false);
 
-    // Watch for data changes to detect loading state
+    // Watch for data changes to detect loading state and update records variable
     watch(() => rowData.value, (newData, oldData) => {
+      // Update records variable whenever rowData changes
+      setRecords(Array.isArray(newData) ? [...newData] : []);
+      
       // If we've already rendered data once, don't show loading skeleton for updates
       // This prevents select cells from flickering when bound data is updated
       if (hasEverRendered.value) {
@@ -456,6 +861,11 @@ export default {
       // Check if grid API is ready
       if (!gridReady.value) return true;
       
+      // If using Supabase, check Supabase loading state
+      if (props.content?.dataSource === 'supabase') {
+        return supabaseLoading.value;
+      }
+      
       // Check if rowData source is undefined/null (not loaded yet)
       const rawData = props.content?.rowData;
       if (rawData === undefined || rawData === null) {
@@ -470,6 +880,115 @@ export default {
       
       return false;
     });
+
+    // Watch for dataSource changes and fetch initial data
+    watch(
+      () => props.content?.dataSource,
+      (newSource) => {
+        if (newSource === 'supabase' && gridApi.value) {
+          const isPaginationEnabled = props.content?.pagination === true;
+          const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
+          const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+          const filterModel = gridApi.value.getFilterModel();
+          const state = gridApi.value.getState();
+          const sortModel = state?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+        }
+      },
+      { immediate: false }
+    );
+
+    // Watch for Supabase configuration changes
+    watch(
+      () => [props.content?.supabaseTable, props.content?.supabaseQuery],
+      () => {
+        if (props.content?.dataSource === 'supabase' && gridApi.value) {
+          const isPaginationEnabled = props.content?.pagination === true;
+          const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
+          const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+          const filterModel = gridApi.value.getFilterModel();
+          const state = gridApi.value.getState();
+          const sortModel = state?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+        }
+      }
+    );
+
+    // Initial data fetch when grid is ready and using Supabase
+    watch(
+      () => [gridReady.value, props.content?.dataSource, props.content?.supabaseTable],
+      ([ready, source, table]) => {
+        if (ready && source === 'supabase' && table && gridApi.value) {
+          const isPaginationEnabled = props.content?.pagination === true;
+          
+          // Get page and pageSize with proper defaults
+          let currentPage = 1;
+          let pageSize = 10;
+          
+          if (isPaginationEnabled) {
+            // Try to get from grid API, but use safe defaults
+            const apiPage = gridApi.value.paginationGetCurrentPage();
+            const apiPageSize = gridApi.value.paginationGetPageSize();
+            
+            // Only use API values if they're valid
+            if (apiPage !== null && apiPage !== undefined && apiPage >= 0) {
+              currentPage = apiPage + 1; // AG Grid is 0-based
+            }
+            
+            if (apiPageSize && apiPageSize > 0) {
+              pageSize = apiPageSize;
+            } else {
+              // Use config value or default
+              pageSize = props.content?.paginationPageSize || 10;
+            }
+          } else {
+            // Pagination disabled: use large pageSize to fetch all
+            pageSize = 10000;
+          }
+          
+          debugLog('[Supabase] Initial fetch parameters:', {
+            isPaginationEnabled,
+            currentPage,
+            pageSize,
+            apiPage: isPaginationEnabled ? gridApi.value.paginationGetCurrentPage() : 'N/A',
+            apiPageSize: isPaginationEnabled ? gridApi.value.paginationGetPageSize() : 'N/A',
+            configPageSize: props.content?.paginationPageSize
+          });
+          
+          const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+          fetchSupabaseData(currentPage, pageSize, null, null, searchValue);
+        }
+      },
+      { immediate: true }
+    );
+
+    // Watch for search value changes (with debounce for Supabase)
+    watch(
+      () => [props.content?.enableSearchParam, props.content?.searchValue],
+      () => {
+        if (props.content?.dataSource === 'supabase' && gridApi.value) {
+          // Clear existing debounce timer
+          if (searchDebounceTimer.value) {
+            clearTimeout(searchDebounceTimer.value);
+          }
+          
+          // Debounce search changes (300ms)
+          searchDebounceTimer.value = setTimeout(() => {
+            const isPaginationEnabled = props.content?.pagination === true;
+            const currentPage = isPaginationEnabled ? (gridApi.value.paginationGetCurrentPage() || 0) + 1 : 1;
+            const pageSize = isPaginationEnabled ? (gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10) : 1000;
+            const filterModel = gridApi.value.getFilterModel();
+            const state = gridApi.value.getState();
+            const sortModel = state?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearchParam ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          }, 300);
+        }
+        // For local data, the rowData computed will automatically filter
+      }
+    );
 
     function refreshData() {
       nextTick(() => {
@@ -520,6 +1039,7 @@ export default {
       onRowDragged,
       onRowDragEnter,
       onColumnMoved,
+      onPaginationChanged,
       onBodyScroll,
       gridContainerRef,
       initialState,
