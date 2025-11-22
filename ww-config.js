@@ -1939,6 +1939,35 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              userIdFormula: {
+                label: "User ID Formula",
+                type: "Formula",
+                hidden: array?.item?.cellDataType !== "user",
+                options: (content) => {
+                  // Get a sample row from rowData for template
+                  const rowData = content?.rowData;
+                  const sampleRow = Array.isArray(rowData) && rowData.length > 0 ? rowData[0] : null;
+                  const fieldValue = sampleRow?.[array?.item?.field];
+                  
+                  return {
+                    template: fieldValue || null,
+                  };
+                },
+                defaultValue: {
+                  type: 'f',
+                  code: "context.mapping",
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: 'any',
+                  tooltip: 'Formula to extract user ID(s) from the cell value. Can return a single ID or an array of IDs.',
+                },
+                propertyHelp: {
+                  label: 'Formula to extract user ID(s) from the cell value',
+                  description: 'By default, uses the cell value directly (context.mapping). Use this if user IDs are nested in objects or arrays. The formula should return either a single user ID or an array of user IDs.',
+                },
+                /* wwEditor:end */
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -1961,6 +1990,7 @@ export default {
               "optionsColorFormula",
               "users",
               "maxNumberOfUsers",
+              "userIdFormula",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",

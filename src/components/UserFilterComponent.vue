@@ -283,6 +283,7 @@ export default {
             let userFocusColor = null;
             let cellFontFamily = null;
             let resolveMappingFormula = null;
+            let userIdFormula = null;
             let isLoading = null;
             
             // Try to get from filterParams first
@@ -293,6 +294,7 @@ export default {
                 userFocusColor = filterParams.userFocusColor;
                 cellFontFamily = filterParams.cellFontFamily;
                 resolveMappingFormula = filterParams.resolveMappingFormula;
+                userIdFormula = filterParams.userIdFormula;
                 isLoading = filterParams.isLoading;
             }
             
@@ -302,6 +304,7 @@ export default {
                 if (!userFocusColor) userFocusColor = editorParams.userFocusColor;
                 if (!cellFontFamily) cellFontFamily = editorParams.cellFontFamily;
                 if (!resolveMappingFormula) resolveMappingFormula = editorParams.resolveMappingFormula;
+                if (!userIdFormula) userIdFormula = editorParams.userIdFormula;
                 if (isLoading === null || isLoading === undefined) isLoading = editorParams.isLoading;
             }
             
@@ -311,6 +314,7 @@ export default {
                 if (!userFocusColor) userFocusColor = rendererParams.userFocusColor;
                 if (!cellFontFamily) cellFontFamily = rendererParams.cellFontFamily;
                 if (!resolveMappingFormula) resolveMappingFormula = rendererParams.resolveMappingFormula;
+                if (!userIdFormula) userIdFormula = rendererParams.userIdFormula;
                 if (isLoading === null || isLoading === undefined) isLoading = rendererParams.isLoading;
             }
             
@@ -324,6 +328,7 @@ export default {
                 userFocusColor: userFocusColor,
                 cellFontFamily: cellFontFamily,
                 resolveMappingFormula: resolveMappingFormula,
+                userIdFormula: userIdFormula,
                 isLoading: isLoading || false,
             };
             
@@ -446,15 +451,22 @@ export default {
         },
         getRowValue(filterParams) {
             // AG Grid passes the result of filterValueGetter as params.value
-            // For user columns, this is the user name(s), not the raw ID(s)
+            // For user columns, this should be the user name(s), not the raw ID(s)
             if (filterParams && "value" in filterParams) {
-                return filterParams.value;
+                const value = filterParams.value;
+                // If value is already a string (user names from filterValueGetter), return it directly
+                if (typeof value === 'string') {
+                    return value;
+                }
+                // If value is not a string, it might be raw data that needs formula extraction
+                // This can happen if filterValueGetter didn't process it correctly
+                return this.getUserNamesFromValue(value);
             }
             // Fallback: try to get from data field directly
             const field = this.params?.colDef?.field;
             if (field && filterParams?.data && Object.prototype.hasOwnProperty.call(filterParams.data, field)) {
                 // If filterValueGetter is defined, we shouldn't reach here
-                // But if we do, we need to convert ID(s) to name(s)
+                // But if we do, we need to convert ID(s) to name(s) using formula if available
                 const rawValue = filterParams.data[field];
                 return this.getUserNamesFromValue(rawValue);
             }
@@ -464,7 +476,14 @@ export default {
             // Convert user ID(s) to user name(s)
             if (!value) return '';
             
-            const userIds = Array.isArray(value) ? value : [value];
+            // Apply userIdFormula if available to extract user ID(s) from nested structures
+            let extractedValue = value;
+            if (this.userParams?.userIdFormula && this.userParams?.resolveMappingFormula) {
+                const resolved = this.userParams.resolveMappingFormula(this.userParams.userIdFormula, value);
+                extractedValue = resolved ?? value; // Fallback to raw value if formula returns null/undefined
+            }
+            
+            const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
             const userNames = userIds
                 .map(id => {
                     const user = this.availableUsers.find(u => u.id === id);

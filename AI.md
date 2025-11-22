@@ -130,7 +130,23 @@ A highly customizable data grid/table component that supports features like sort
     sortable: boolean,
     editable: boolean,
     pinned: undefined | 'left' | 'right'
-  }>` - Column configurations. Each object describe a column of the grid, and some options may depends on the selected type of data. For each object, width can be undefined, if defined its must be a string in the shape of {value}px. Flex will be ignore if width is defined or equal to auto and must be an integer. For custom columns, displayLabelFormula and useDisplayValueForFilterSort allow you to filter/sort by a different value than what's stored (e.g., filter by user name when the field contains user ID).`
+  } | {
+    headerName: string,
+    cellDataType: 'user',
+    field: string,
+    users: Array<{id: string, name?: string, firstname?: string, lastname?: string, email?: string, avatar_url?: string, bio?: string, phone?: string | {phone_number: string}}>, // Array of user objects
+    maxNumberOfUsers: number, // Default: 4. If 1, stores a string ID. If > 1, stores an array of IDs.
+    userIdFormula: Formula, // Optional: Formula to extract user ID(s) from the cell value. Default: context.mapping (uses cell value directly). Use this if user IDs are nested in objects or arrays. Should return either a single user ID or an array of user IDs.
+    widthAlgo: 'flex' | 'fixed',
+    width: string,
+    flex: number,
+    minWidth: string,
+    maxWidth: string,
+    filter: boolean,
+    sortable: boolean,
+    editable: boolean,
+    pinned: undefined | 'left' | 'right'
+  }>` - Column configurations. Each object describe a column of the grid, and some options may depends on the selected type of data. For each object, width can be undefined, if defined its must be a string in the shape of {value}px. Flex will be ignore if width is defined or equal to auto and must be an integer. For custom columns, displayLabelFormula and useDisplayValueForFilterSort allow you to filter/sort by a different value than what's stored (e.g., filter by user name when the field contains user ID). For user columns, userIdFormula allows you to extract user IDs from complex data structures (e.g., nested objects or arrays).`
 
 ***Exposed Variables:***
 - selectedRows: ***READ ONLY*** Array of currently selected rows.

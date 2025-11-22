@@ -138,6 +138,105 @@ export default {
       for (const [columnId, filter] of Object.entries(filterModel)) {
         if (!filter) continue;
 
+        // Handle user filters (custom filter type)
+        if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
+          // User filter stores user names in filter.values
+          // We need to convert names to IDs for Supabase filtering
+          // Find the column definition to get the users array
+          const column = props.content?.columns?.find(col => {
+            const colId = col?.actionName || col?.field;
+            return colId === columnId || col?.field === columnId;
+          });
+          
+          if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
+            // Helper function to get user name (same logic as in renderer)
+            const getUserName = (user) => {
+              if (user.name) return user.name;
+              if (user.firstname || user.lastname) {
+                return [user.firstname, user.lastname].filter(Boolean).join(' ');
+              }
+              return user.email || user.id || '';
+            };
+            
+            // Map selected user names to user IDs
+            const selectedUserIds = filter.values
+              .map(selectedName => {
+                const user = column.users.find(u => {
+                  const userName = getUserName(u);
+                  return userName === selectedName || u.id === selectedName || u.email === selectedName;
+                });
+                return user?.id;
+              })
+              .filter(id => id != null); // Remove any null/undefined IDs
+            
+              if (selectedUserIds.length > 0) {
+              // CRITICAL FIX: Check if column stores single user (UUID) or multiple users (UUID[])
+              // When maxNumberOfUsers === 1, the database column is a single UUID
+              // When maxNumberOfUsers > 1, the database column might be UUID[] (array) or still UUID
+              // Since we can't know the actual column type, we'll use .in() which works for both
+              // For UUID columns: .in() filters where column value is IN the provided array
+              // For UUID[] columns: We'll need a different approach, but .in() won't work for arrays
+              
+              const isMultiple = (column.maxNumberOfUsers ?? 4) > 1;
+              
+              // For single UUID columns (maxNumberOfUsers === 1), always use .in() or .eq()
+              // This works because the column is a single UUID value, not an array
+              if (!isMultiple) {
+                // Single user: column is UUID type, use .in() for multiple values or .eq() for single
+                if (selectedUserIds.length === 1) {
+                  currentQuery = currentQuery.eq(columnId, selectedUserIds[0]);
+                } else {
+                  currentQuery = currentQuery.in(columnId, selectedUserIds);
+                }
+              } else {
+                // Multiple users: column might be UUID[] (array) or still UUID
+                // If it's UUID[] (Postgres array type), we can use .overlaps()
+                // If it's UUID (single value), we need to use .in() or .eq()
+                // Since we can't reliably detect the column type, we'll try a safer approach:
+                // For UUID[] columns: use .overlaps() to check if arrays have any common elements
+                // However, if the column is actually UUID (not UUID[]), this will fail
+                // So we'll use .in() for now, which works for UUID columns
+                // TODO: If you have UUID[] columns, you may need to use a different approach
+                // such as using Postgres array functions or casting
+                
+                // For now, use .in() which is safe for UUID columns
+                // If you have UUID[] columns and want to filter by "contains any of these IDs",
+                // you might need to use Postgres array operators, but that requires knowing the column type
+                if (selectedUserIds.length === 1) {
+                  // Even for "multiple" mode, if only one ID selected, use .eq()
+                  currentQuery = currentQuery.eq(columnId, selectedUserIds[0]);
+                } else {
+                  // Use .in() which works for UUID columns
+                  // Note: This assumes the column stores a single UUID value
+                  // If you have UUID[] columns, you'll need array-specific filtering
+                  currentQuery = currentQuery.in(columnId, selectedUserIds);
+                }
+                
+                // Alternative for UUID[] arrays (uncomment if your columns are UUID[] type):
+                // if (selectedUserIds.length === 1) {
+                //   currentQuery = currentQuery.contains(columnId, [selectedUserIds[0]]);
+                // } else {
+                //   currentQuery = currentQuery.overlaps(columnId, selectedUserIds);
+                // }
+              }
+              
+              debugLog('[Supabase Filter] User filter applied:', {
+                columnId,
+                selectedNames: filter.values,
+                selectedIds: selectedUserIds,
+                isMultiple,
+                filterMethod: selectedUserIds.length === 1 ? 'eq' : 'in',
+                note: isMultiple ? 'Assuming UUID column (not UUID[]). If column is UUID[], use array operators.' : 'UUID column (single user)',
+              });
+            } else {
+              debugLog('[Supabase Filter] Warning: No valid user IDs found for names:', filter.values);
+            }
+          } else {
+            debugLog('[Supabase Filter] Warning: Could not find user column or users array for:', columnId);
+          }
+          continue;
+        }
+
         // Handle different filter types
         if (filter.filterType === 'text') {
           // Text filters
@@ -531,63 +630,72 @@ export default {
       });
     };
 
-    let initialFilter = "";
-    let initialSort = "";
-    let initialColumnsOrder = "";
+    // CRITICAL FIX: Track if initial filters/sorts have been applied
+    // They should only be applied ONCE on mount, not continuously
+    const initialFiltersApplied = ref(false);
+    const initialSortApplied = ref(false);
+    const initialColumnsOrderApplied = ref(false);
 
-    watchEffect(() => {
-      // Both initial filters and sort should be set here to avoid conflicts with column state application
-      // We keep track of previous values to avoid reinitializing one when only the other changes
-      if (!gridApi.value) return;
-      if (
-        props.content.initialFilters &&
-        initialFilter !== JSON.stringify(props.content.initialFilters)
-      ) {
-        gridApi.value.setFilterModel(props.content.initialFilters);
-        initialFilter = JSON.stringify(props.content.initialFilters);
-      }
-      if (
-        props.content.initialSort &&
-        initialSort !== JSON.stringify(props.content.initialSort)
-      ) {
-        gridApi.value.applyColumnState({
-          state: props.content.initialSort || [],
-          defaultState: { sort: null },
-        });
-        initialSort = JSON.stringify(props.content.initialSort);
-      }
-      if (
-        props.content.initialColumnsOrder &&
-        Array.isArray(props.content.initialColumnsOrder) &&
-        initialColumnsOrder !== JSON.stringify(props.content.initialColumnsOrder)
-      ) {
-        gridApi.value.applyColumnState({
-          state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
-          applyOrder: true,
-        });
-        // Update the column order variable to match
-        setColumnOrder([...props.content.initialColumnsOrder]);
-        initialColumnsOrder = JSON.stringify(props.content.initialColumnsOrder);
-      }
-    });
+    // Watch for grid ready to apply initial filters/sorts ONCE
+    watch(
+      () => gridReady.value,
+      (ready) => {
+        if (!ready || !gridApi.value) return;
+        
+        // Apply initial filters only once
+        if (props.content.initialFilters && !initialFiltersApplied.value) {
+          gridApi.value.setFilterModel(props.content.initialFilters);
+          initialFiltersApplied.value = true;
+        }
+        
+        // Apply initial sort only once
+        if (props.content.initialSort && !initialSortApplied.value) {
+          gridApi.value.applyColumnState({
+            state: props.content.initialSort || [],
+            defaultState: { sort: null },
+          });
+          initialSortApplied.value = true;
+        }
+        
+        // Apply initial column order only once
+        if (
+          props.content.initialColumnsOrder &&
+          Array.isArray(props.content.initialColumnsOrder) &&
+          !initialColumnsOrderApplied.value
+        ) {
+          gridApi.value.applyColumnState({
+            state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
+            applyOrder: true,
+          });
+          setColumnOrder([...props.content.initialColumnsOrder]);
+          initialColumnsOrderApplied.value = true;
+        }
+      },
+      { immediate: true }
+    );
 
-    const initialState = computed(() => {
+    // CRITICAL FIX: initialState should only be set once on mount, not reactive
+    // If it's reactive, it will reset filters/sorting whenever props change
+    // We use a ref to ensure it's set only once and never changes
+    const initialState = ref(null);
+    
+    // Set initial state only once when component mounts
+    // After the grid is ready and applies this state, we don't use it again
+    // This prevents overriding user-applied filters and sorts
+    if (!initialState.value) {
       const state = {
         partialColumnState: true,
       };
-      if (props.content.initialFilters) {
-        state.filter = { filterModel: props.content.initialFilters };
-      }
-      if (props.content.initialSort) {
-        state.sort = { sortModel: props.content.initialSort };
-      }
+      // NOTE: Initial filters and sorts are applied via watcher (lines 541-575)
+      // We don't include them in initialState to avoid AG Grid re-applying them
+      // when the component updates. Instead, they're applied once via API calls.
       if (props.content.initialColumnsOrder && Array.isArray(props.content.initialColumnsOrder)) {
         state.columnOrder = {
           orderedColIds: props.content.initialColumnsOrder,
         };
       }
-      return state;
-    });
+      initialState.value = state;
+    }
 
     const onRowSelected = (event) => {
       const name = event.node.isSelected() ? "rowSelected" : "rowDeselected";
@@ -653,8 +761,27 @@ export default {
           filterDebounceTimer.value = setTimeout(() => {
             if (isInfiniteScrollEnabled.value) {
               // For infinite scrolling, refresh the datasource
+              // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
               if (gridApi.value) {
+                const currentFilters = gridApi.value.getFilterModel();
+                const currentSort = gridApi.value.getState()?.sort?.sortModel;
                 gridApi.value.setGridOption('datasource', datasource.value);
+                // AG Grid should preserve filters, but ensure they're still there
+                nextTick(() => {
+                  const newFilters = gridApi.value.getFilterModel();
+                  if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
+                    gridApi.value.setFilterModel(currentFilters);
+                  }
+                  if (currentSort && currentSort.length > 0) {
+                    const newSort = gridApi.value.getState()?.sort?.sortModel;
+                    if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
+                      gridApi.value.applyColumnState({
+                        state: currentSort,
+                        defaultState: { sort: null },
+                      });
+                    }
+                  }
+                });
               }
             } else {
               // For pagination mode, fetch data
@@ -687,8 +814,27 @@ export default {
         if (props.content?.dataSource === 'supabase') {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, refresh the datasource
+            // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
             if (gridApi.value) {
+              const currentFilters = gridApi.value.getFilterModel();
+              const currentSort = gridApi.value.getState()?.sort?.sortModel;
               gridApi.value.setGridOption('datasource', datasource.value);
+              // AG Grid should preserve filters and sorts, but ensure they're still there
+              nextTick(() => {
+                const newFilters = gridApi.value.getFilterModel();
+                if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
+                  gridApi.value.setFilterModel(currentFilters);
+                }
+                if (currentSort && currentSort.length > 0) {
+                  const newSort = gridApi.value.getState()?.sort?.sortModel;
+                  if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
+                    gridApi.value.applyColumnState({
+                      state: currentSort,
+                      defaultState: { sort: null },
+                    });
+                  }
+                }
+              });
             }
           } else {
             // For pagination mode, fetch data
@@ -894,8 +1040,18 @@ export default {
             // Determine if this is the last row
             // If we got fewer rows than requested, or if we've reached the total count, we're done
             const rowCount = data.length;
-            const isLastBlock = totalCount > 0 && (endRow >= totalCount || rowCount < requestedBlockSize);
-            const lastRow = isLastBlock ? totalCount : undefined;
+            
+            // CRITICAL FIX: Handle 0 rows case
+            // If totalCount is 0, we're definitely done (no rows to show)
+            // If we got fewer rows than requested, we're done (last block)
+            // If we've reached or exceeded totalCount, we're done
+            const isLastBlock = totalCount === 0 || 
+                                rowCount < requestedBlockSize || 
+                                (totalCount > 0 && endRow >= totalCount);
+            
+            // CRITICAL FIX: Set lastRow to 0 when totalCount is 0 (no rows)
+            // This tells AG Grid to stop fetching and show "no rows" message
+            const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
 
             debugLog('[Infinite Scroll] Data fetched:', {
               fetchedRows: rowCount,
@@ -1024,7 +1180,21 @@ export default {
         if (newSource === 'supabase' && newSource !== oldSource && gridApi.value) {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, set the datasource
+            // CRITICAL FIX: Preserve filters and sorts when switching to server-side mode
+            const currentFilters = gridApi.value.getFilterModel();
+            const currentSort = gridApi.value.getState()?.sort?.sortModel;
             gridApi.value.setGridOption('datasource', datasource.value);
+            nextTick(() => {
+              if (currentFilters && Object.keys(currentFilters).length > 0) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+              if (currentSort && currentSort.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            });
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -1053,7 +1223,21 @@ export default {
         if (props.content?.dataSource === 'supabase' && gridApi.value) {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, refresh the datasource
+            // CRITICAL FIX: Preserve filters and sorts when table/query changes
+            const currentFilters = gridApi.value.getFilterModel();
+            const currentSort = gridApi.value.getState()?.sort?.sortModel;
             gridApi.value.setGridOption('datasource', datasource.value);
+            nextTick(() => {
+              if (currentFilters && Object.keys(currentFilters).length > 0) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+              if (currentSort && currentSort.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            });
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -1106,6 +1290,10 @@ export default {
             const currentRowModel = gridApi.value.getState()?.rowModel?.type;
             debugLog('[Infinite Scroll] Current row model type:', currentRowModel);
             
+            // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
+            const currentFilters = gridApi.value.getFilterModel();
+            const currentSort = gridApi.value.getState()?.sort?.sortModel;
+            
             gridApi.value.setGridOption('rowModelType', 'infinite');
             gridApi.value.setGridOption('cacheBlockSize', cacheBlockSize.value);
             debugLog('[Infinite Scroll] Set rowModelType to infinite, cacheBlockSize to', cacheBlockSize.value);
@@ -1120,12 +1308,24 @@ export default {
             
             gridApi.value.setGridOption('datasource', datasource.value);
             
-            // Verify it was set
+            // Restore filters and sorts after setting datasource
             nextTick(() => {
+              if (currentFilters && Object.keys(currentFilters).length > 0) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+              if (currentSort && currentSort.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+              
               const state = gridApi.value?.getState();
               debugLog('[Infinite Scroll] Grid state after setting datasource:', {
                 rowModelType: state?.rowModel?.type,
                 hasDatasource: !!gridApi.value?.getGridOption('datasource'),
+                filters: gridApi.value.getFilterModel(),
+                sorts: state?.sort?.sortModel,
               });
             });
             
@@ -1161,8 +1361,26 @@ export default {
             newBlockSize: cacheBlockSize.value,
             enableInfiniteScroll: newValues[0],
           });
+          
+          // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
+          const currentFilters = gridApi.value.getFilterModel();
+          const currentSort = gridApi.value.getState()?.sort?.sortModel;
+          
           gridApi.value.setGridOption('cacheBlockSize', cacheBlockSize.value);
           gridApi.value.setGridOption('datasource', datasource.value);
+          
+          nextTick(() => {
+            if (currentFilters && Object.keys(currentFilters).length > 0) {
+              gridApi.value.setFilterModel(currentFilters);
+            }
+            if (currentSort && currentSort.length > 0) {
+              gridApi.value.applyColumnState({
+                state: currentSort,
+                defaultState: { sort: null },
+              });
+            }
+          });
+          
           debugLog('[Infinite Scroll] Datasource refreshed');
           debugLog('[Infinite Scroll] ================================================');
         }
@@ -1188,8 +1406,22 @@ export default {
           searchDebounceTimer.value = setTimeout(() => {
             if (isInfiniteScrollEnabled.value) {
               // For infinite scrolling, refresh the datasource
+              // CRITICAL FIX: Preserve filters and sorts when search changes
               if (gridApi.value) {
+                const currentFilters = gridApi.value.getFilterModel();
+                const currentSort = gridApi.value.getState()?.sort?.sortModel;
                 gridApi.value.setGridOption('datasource', datasource.value);
+                nextTick(() => {
+                  if (currentFilters && Object.keys(currentFilters).length > 0) {
+                    gridApi.value.setFilterModel(currentFilters);
+                  }
+                  if (currentSort && currentSort.length > 0) {
+                    gridApi.value.applyColumnState({
+                      state: currentSort,
+                      defaultState: { sort: null },
+                    });
+                  }
+                });
               }
             } else {
               // For pagination mode, fetch data
@@ -2016,13 +2248,26 @@ export default {
           }
           case "user": {
             const rawUsers = col?.users;
+            const userIdFormula = col?.userIdFormula || { type: 'f', code: 'context.mapping' };
             const userParams = {
               users: Array.isArray(rawUsers) ? rawUsers : [],
               maxNumberOfUsers: col?.maxNumberOfUsers ?? 4,
               userFocusColor: this.content.userFocusColor,
               cellFontFamily: this.content.cellFontFamily,
               resolveMappingFormula: this.resolveMappingFormula,
+              userIdFormula: userIdFormula,
               isLoading: this.isLoading,
+            };
+            
+            // Helper function to extract user ID(s) from raw cell value using userIdFormula
+            const extractUserIds = (rawValue, rowData) => {
+              if (!rawValue) return null;
+              
+              // Apply userIdFormula to extract user ID(s) from potentially nested structures
+              const extractedValue = this.resolveMappingFormula(userIdFormula, rawValue);
+              
+              // Return the extracted value, or fallback to raw value if formula returns null/undefined
+              return extractedValue ?? rawValue;
             };
             
             // Helper function to get user name from ID
@@ -2072,22 +2317,26 @@ export default {
                       userFocusColor: userParams.userFocusColor,
                       cellFontFamily: userParams.cellFontFamily,
                       resolveMappingFormula: userParams.resolveMappingFormula,
+                      userIdFormula: userParams.userIdFormula,
                       isLoading: userParams.isLoading,
                       closeOnApply: true,
                     },
                   }
                 : {}),
               // Use user name for filtering and sorting instead of ID
+              // Apply userIdFormula first to extract user IDs from the raw cell value
               valueGetter: (params) => {
-                const value = params.data?.[col?.field];
-                if (!value) return '';
+                const rawValue = params.data?.[col?.field];
+                const extractedValue = extractUserIds(rawValue, params.data);
+                if (!extractedValue) return '';
+                
                 if (isMultiple) {
                   // Multiple users: return comma-separated names
-                  const userIds = Array.isArray(value) ? value : [value];
+                  const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
                   return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
                 } else {
                   // Single user: return name
-                  return getUserNameFromId(value);
+                  return getUserNameFromId(extractedValue);
                 }
               },
               // Ensure the raw value (ID or array of IDs) is stored
@@ -2099,13 +2348,15 @@ export default {
                 return false;
               }),
               filterValueGetter: (params) => {
-                const value = params.data?.[col?.field];
-                if (!value) return '';
+                const rawValue = params.data?.[col?.field];
+                const extractedValue = extractUserIds(rawValue, params.data);
+                if (!extractedValue) return '';
+                
                 if (isMultiple) {
-                  const userIds = Array.isArray(value) ? value : [value];
+                  const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
                   return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
                 } else {
-                  return getUserNameFromId(value);
+                  return getUserNameFromId(extractedValue);
                 }
               },
             };
@@ -2118,12 +2369,25 @@ export default {
               cellDataType: col?.cellDataType,
             });
 
+            // Determine the correct filter type based on cellDataType
+            let filterType = false;
+            if (col?.filter) {
+              if (col?.cellDataType === 'number') {
+                filterType = 'agNumberColumnFilter';
+              } else if (col?.cellDataType === 'boolean') {
+                filterType = 'agSetColumnFilter';
+              } else {
+                // Default to text filter for text, undefined, or other types
+                filterType = 'agTextColumnFilter';
+              }
+            }
+
             const result = {
               ...commonProperties,
               headerName: col?.headerName,
               field: col?.field,
               sortable: col?.sortable,
-              filter: col?.filter,
+              filter: filterType,
               editable: col?.editable,
             };
 
@@ -2409,6 +2673,42 @@ export default {
     },
   },
   methods: {
+    /* wwEditor:start */
+    checkIfColumnsStructureChanged(newDefs, oldDefs) {
+      // If no old defs, structure changed (initial load)
+      if (!oldDefs || !Array.isArray(oldDefs)) return false;
+      
+      // If no new defs or not an array, no structure change
+      if (!newDefs || !Array.isArray(newDefs)) return false;
+      
+      // If number of columns changed, structure changed
+      if (newDefs.length !== oldDefs.length) return true;
+      
+      // Check if column IDs or key properties changed
+      for (let i = 0; i < newDefs.length; i++) {
+        const newCol = newDefs[i];
+        const oldCol = oldDefs[i];
+        
+        // If either column is undefined/null, consider it a change
+        if (!newCol || !oldCol) return true;
+        
+        // Check if column ID changed
+        const newColId = newCol.colId || newCol.field;
+        const oldColId = oldCol.colId || oldCol.field;
+        if (newColId !== oldColId) return true;
+        
+        // Check if filter/sortable flags changed
+        if (newCol.filter !== oldCol.filter) return true;
+        if (newCol.sortable !== oldCol.sortable) return true;
+        
+        // Check if header name changed
+        if (newCol.headerName !== oldCol.headerName) return true;
+      }
+      
+      // No structural changes detected
+      return false;
+    },
+    /* wwEditor:end */
     getRowId(params) {
       // Get ID from formula
       let rowId = this.resolveMappingFormula(this.content.idFormula, params.data);
@@ -2812,9 +3112,42 @@ export default {
   /* wwEditor:start */
   watch: {
     columnDefs: {
-      async handler() {
+      async handler(newDefs, oldDefs) {
         if (this.wwEditorState?.boundProps?.columns) return;
-        this.gridApi?.resetColumnState();
+        
+        // Skip if grid is not ready yet
+        if (!this.gridApi) return;
+        
+        // CRITICAL FIX: Only reset column state if columns structure actually changed
+        // Don't reset if only data or other reactive dependencies changed
+        // This preserves user-applied filters and sorting
+        const shouldResetState = this.checkIfColumnsStructureChanged(newDefs, oldDefs);
+        if (shouldResetState && this.gridApi) {
+          // Save current filters and sorting before reset
+          const currentFilters = this.gridApi.getFilterModel();
+          const currentSort = this.gridApi.getState()?.sort?.sortModel;
+          
+          this.gridApi.resetColumnState();
+          
+          // Restore filters and sorting after reset if they exist
+          if (currentFilters && Object.keys(currentFilters).length > 0) {
+            this.$nextTick(() => {
+              if (this.gridApi) {
+                this.gridApi.setFilterModel(currentFilters);
+              }
+            });
+          }
+          if (currentSort && currentSort.length > 0) {
+            this.$nextTick(() => {
+              if (this.gridApi) {
+                this.gridApi.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            });
+          }
+        }
 
         if (this.wwEditorState.isACopy) return;
 

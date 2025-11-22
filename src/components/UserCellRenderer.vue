@@ -245,7 +245,15 @@ export default {
     },
     computed: {
         isEditMode() {
-            return this.params?.api && this.params?.stopEditing;
+            // Check if stopEditing is present (indicates cell editor mode)
+            const hasStopEditing = this.params?.api && this.params?.stopEditing;
+            if (!hasStopEditing) return false;
+            
+            // Check if the column is editable
+            const colDef = this.params?.colDef;
+            const isEditable = colDef?.editable !== false;
+            
+            return isEditable;
         },
         isLoadingState() {
             const editorParams = this.params?.colDef?.cellEditorParams || {};
@@ -287,9 +295,36 @@ export default {
         isMultiple() {
             return this.maxNumberOfUsers > 1;
         },
+        userIdFormula() {
+            const editorParams = this.params?.colDef?.cellEditorParams || {};
+            const rendererParams = this.params?.colDef?.cellRendererParams || {};
+            
+            return this.params?.userIdFormula || 
+                   editorParams?.userIdFormula || 
+                   rendererParams?.userIdFormula || 
+                   null;
+        },
+        resolveMappingFormula() {
+            const editorParams = this.params?.colDef?.cellEditorParams || {};
+            const rendererParams = this.params?.colDef?.cellRendererParams || {};
+            
+            return this.params?.resolveMappingFormula || 
+                   editorParams?.resolveMappingFormula || 
+                   rendererParams?.resolveMappingFormula || 
+                   null;
+        },
         currentValue() {
             const field = this.params?.colDef?.field;
-            return this.params?.data?.[field] ?? this.params?.value;
+            const rawValue = this.params?.data?.[field] ?? this.params?.value;
+            
+            // If no formula, return raw value directly
+            if (!this.userIdFormula || !this.resolveMappingFormula) {
+                return rawValue;
+            }
+            
+            // Apply formula to extract user ID(s)
+            const extractedValue = this.resolveMappingFormula(this.userIdFormula, rawValue);
+            return extractedValue ?? rawValue; // Fallback to raw value if formula returns null/undefined
         },
         displayUsers() {
             if (!this.currentValue) return [];
