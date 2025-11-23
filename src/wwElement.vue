@@ -501,7 +501,22 @@ export default {
 
     // Fetch data from Supabase
     const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
+      // Log the call stack and flag state to trace where fetch is triggered from
+      const callStack = new Error().stack;
+      const isUpdatingLocally = isUpdatingDataLocally.value;
+      debugLog('[Supabase Fetch] ========== FETCH CALLED ==========');
+      debugLog('[Supabase Fetch] Call stack:', callStack?.split('\n').slice(0, 10).join('\n'));
+      debugLog('[Supabase Fetch] Flag state:', { isUpdatingDataLocally: isUpdatingLocally });
+      debugLog('[Supabase Fetch] Params:', { page, pageSize, hasFilterModel: !!filterModel, hasSortModel: !!sortModel, searchValue });
+      
+      // Skip fetch if we're updating data locally
+      if (isUpdatingLocally) {
+        debugLog('[Supabase Fetch] ⚠️ SKIPPING FETCH - local data update in progress');
+        return;
+      }
+      
       if (props.content?.dataSource !== 'supabase') {
+        debugLog('[Supabase Fetch] Not using Supabase data source, skipping');
         return;
       }
 
@@ -510,6 +525,7 @@ export default {
 
       if (!tableName) {
         supabaseError.value = 'Supabase table name is required';
+        debugLog('[Supabase Fetch] No table name, skipping');
         return;
       }
 
@@ -518,13 +534,13 @@ export default {
       
       // Prevent duplicate/recursive calls
       if (isFetchingData.value) {
-        debugLog('[Supabase] Already fetching, skipping duplicate call');
+        debugLog('[Supabase Fetch] Already fetching, skipping duplicate call');
         return;
       }
       
       // Check if this is the same request as the last one
       if (lastFetchParams.value === fetchKey) {
-        debugLog('[Supabase] Same request as last fetch, skipping');
+        debugLog('[Supabase Fetch] Same request as last fetch, skipping');
         return;
       }
 
@@ -589,11 +605,19 @@ export default {
         }
 
         debugLog('[Supabase] Data fetched:', { count: supabaseData.value.length, total: supabaseTotalCount.value });
+        
+        // Update records after data is fetched (records will also be updated via rowData watch, but this ensures it's immediate)
+        nextTick(() => {
+          setTimeout(() => {
+            updateRecordsFromGrid();
+          }, 100);
+        });
       } catch (error) {
         console.error('[Supabase] Error fetching data:', error);
         supabaseError.value = error.message || 'Failed to fetch data from Supabase';
         supabaseData.value = [];
         supabaseTotalCount.value = 0;
+        setRecords([]);
       } finally {
         supabaseLoading.value = false;
         // Clear fetching flag after a short delay to allow grid to update
@@ -645,6 +669,30 @@ export default {
         readonly: true,
       });
 
+    // Function to update records variable from grid API (gets displayed rows)
+    // Defined early so it can be used in onGridReady and other handlers
+    const updateRecordsFromGrid = () => {
+      if (!gridApi.value) {
+        setRecords([]);
+        return;
+      }
+
+      try {
+        const displayedRows = [];
+        // Get all displayed row nodes from the grid
+        gridApi.value.forEachNode((node) => {
+          if (node.data) {
+            displayedRows.push(node.data);
+          }
+        });
+        setRecords(displayedRows);
+        debugLog('[Records] Updated records from grid:', { count: displayedRows.length });
+      } catch (error) {
+        console.error('[Records] Error updating records from grid:', error);
+        setRecords([]);
+      }
+    };
+
     const gridReady = ref(false);
     const dataRendered = ref(false);
     const dataLoadingTimeout = ref(null);
@@ -661,6 +709,17 @@ export default {
     // Guard to prevent duplicate/recursive fetches
     const isFetchingData = ref(false);
     const lastFetchParams = ref(null);
+    
+    // Flag to prevent data fetching when we're updating data locally (e.g., fake junction records)
+    const isUpdatingDataLocally = ref(false);
+    
+    // Helper functions to set/get the flag from methods
+    const setUpdatingDataLocally = (value) => {
+      isUpdatingDataLocally.value = value;
+    };
+    const getUpdatingDataLocally = () => {
+      return isUpdatingDataLocally.value;
+    };
 
     const onGridReady = (params) => {
       gridApi.value = params.api;
@@ -674,6 +733,13 @@ export default {
       } else {
         setColumnOrder(columns.map((col) => col.getColId()));
       }
+      
+      // Update records from grid after grid is ready
+      nextTick(() => {
+        setTimeout(() => {
+          updateRecordsFromGrid();
+        }, 200);
+      });
       
       // If data is already present when grid is ready, mark as rendered after a short delay
       nextTick(() => {
@@ -841,18 +907,33 @@ export default {
                       });
                     }
                   }
+                  // Update records after datasource refresh
+                  setTimeout(() => {
+                    updateRecordsFromGrid();
+                  }, 200);
                 });
               }
             } else {
               // For pagination mode, fetch data
+              debugLog('[onFilterChanged] Calling fetchSupabaseData from filter change handler (pagination mode)', {
+                isUpdatingDataLocally: isUpdatingDataLocally.value,
+              });
               const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
               const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
               const state = gridApi.value.getState();
               const sortModel = state?.sort?.sortModel || [];
               const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
               fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+              // Records will be updated when rowData changes (via watch)
             }
           }, 300);
+        } else {
+          // For non-Supabase, update records after filter change
+          nextTick(() => {
+            setTimeout(() => {
+              updateRecordsFromGrid();
+            }, 100);
+          });
         }
       }
     };
@@ -893,18 +974,33 @@ export default {
                       defaultState: { sort: null },
                     });
                   }
+                  // Update records after datasource refresh
+                  setTimeout(() => {
+                    updateRecordsFromGrid();
+                  }, 200);
                 }
               });
             }
           } else {
             // For pagination mode, fetch data
+            debugLog('[onSortChanged] Calling fetchSupabaseData from sort change handler (pagination mode)', {
+              isUpdatingDataLocally: isUpdatingDataLocally.value,
+            });
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
             const filterModel = gridApi.value.getFilterModel();
             const sortModel = state.sort?.sortModel || [];
             const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
             fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+            // Records will be updated when rowData changes (via watch)
           }
+        } else {
+          // For non-Supabase, update records after sort change
+          nextTick(() => {
+            setTimeout(() => {
+              updateRecordsFromGrid();
+            }, 100);
+          });
         }
       }
     };
@@ -917,8 +1013,18 @@ export default {
         return;
       }
       
+      // Skip if we're updating data locally (e.g., fake junction records)
+      // This prevents refreshCells from triggering unnecessary fetches
+      if (isUpdatingDataLocally.value) {
+        debugLog('[onPaginationChanged] ⚠️ SKIPPING - local data update in progress');
+        return;
+      }
+      
       // If using Supabase, refetch data for new page
       if (props.content?.dataSource === 'supabase') {
+        debugLog('[onPaginationChanged] Calling fetchSupabaseData from pagination change handler', {
+          isUpdatingDataLocally: isUpdatingDataLocally.value,
+        });
         const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
         const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
         const filterModel = gridApi.value.getFilterModel();
@@ -926,6 +1032,14 @@ export default {
         const sortModel = state?.sort?.sortModel || [];
         const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
         fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+        // Records will be updated when rowData changes (via watch)
+      } else {
+        // For non-Supabase, update records after pagination change
+        nextTick(() => {
+          setTimeout(() => {
+            updateRecordsFromGrid();
+          }, 100);
+        });
       }
     };
 
@@ -1136,6 +1250,13 @@ export default {
             supabaseData.value = data;
             supabaseTotalCount.value = totalCount;
 
+            // Update records from grid after data is loaded
+            nextTick(() => {
+              setTimeout(() => {
+                updateRecordsFromGrid();
+              }, 100);
+            });
+
             debugLog('[Infinite Scroll] ========== BLOCK COMPLETE ==========');
           } catch (error) {
             console.error('[Infinite Scroll] Error in getRows:', error);
@@ -1166,8 +1287,25 @@ export default {
 
     // Watch for data changes to detect loading state and update records variable
     watch(() => rowData.value, (newData, oldData) => {
-      // Update records variable whenever rowData changes
-      setRecords(Array.isArray(newData) ? [...newData] : []);
+      // Skip processing if we're updating data locally (e.g., fake junction records)
+      // This prevents triggering loading states or unnecessary updates during local modifications
+      if (isUpdatingDataLocally.value) {
+        debugLog('[RowData Watch] Skipping watch handler - local data update in progress');
+        return;
+      }
+      
+      // For non-infinite scroll modes, update records from rowData
+      // For infinite scroll, records will be updated via grid API watchers
+      if (!isInfiniteScrollEnabled.value) {
+        setRecords(Array.isArray(newData) ? [...newData] : []);
+      } else {
+        // For infinite scroll, update from grid API after a short delay to let grid update
+        nextTick(() => {
+          setTimeout(() => {
+            updateRecordsFromGrid();
+          }, 100);
+        });
+      }
       
       // If we've already rendered data once, don't show loading skeleton for updates
       // This prevents select cells from flickering when bound data is updated
@@ -1236,6 +1374,18 @@ export default {
     watch(
       () => props.content?.dataSource,
       (newSource, oldSource) => {
+        debugLog('[dataSource Watch] Triggered', {
+          newSource,
+          oldSource,
+          isUpdatingDataLocally: isUpdatingDataLocally.value,
+        });
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          debugLog('[dataSource Watch] ⚠️ SKIPPING - local data update in progress');
+          return;
+        }
+        
         // Only fetch if source actually changed to supabase
         if (newSource === 'supabase' && newSource !== oldSource && gridApi.value) {
           if (isInfiniteScrollEnabled.value) {
@@ -1257,6 +1407,9 @@ export default {
             });
           } else {
             // Reset last fetch params to allow new fetch
+            debugLog('[dataSource Watch] Calling fetchSupabaseData from dataSource watch handler (pagination mode)', {
+              isUpdatingDataLocally: isUpdatingDataLocally.value,
+            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1275,8 +1428,21 @@ export default {
     watch(
       () => [props.content?.supabaseTable, props.content?.supabaseQuery],
       (newValues, oldValues) => {
+        debugLog('[supabaseTable/Query Watch] Triggered', {
+          newValues,
+          oldValues,
+          isUpdatingDataLocally: isUpdatingDataLocally.value,
+        });
+        
         // Only fetch if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
+          debugLog('[supabaseTable/Query Watch] Values unchanged, skipping');
+          return;
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          debugLog('[supabaseTable/Query Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
@@ -1300,6 +1466,9 @@ export default {
             });
           } else {
             // Reset last fetch params to allow new fetch
+            debugLog('[supabaseTable/Query Watch] Calling fetchSupabaseData from table/query watch handler (pagination mode)', {
+              isUpdatingDataLocally: isUpdatingDataLocally.value,
+            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1318,11 +1487,21 @@ export default {
     watch(
       () => [gridReady.value, props.content?.dataSource, props.content?.supabaseTable],
       ([ready, source, table], oldValues) => {
+        debugLog('[Initial Fetch Watch] Triggered', {
+          ready,
+          source,
+          table,
+          oldValues,
+          initialFetchDone: initialFetchDone.value,
+          isUpdatingDataLocally: isUpdatingDataLocally.value,
+        });
+        
         // Handle undefined oldValues on first run
         if (oldValues) {
           const [oldReady, oldSource, oldTable] = oldValues;
           // Only fetch if values actually changed and we haven't done initial fetch yet
           if (ready === oldReady && source === oldSource && table === oldTable) {
+            debugLog('[Initial Fetch Watch] Values unchanged, skipping');
             return;
           }
           
@@ -1332,8 +1511,15 @@ export default {
           }
         }
         
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          debugLog('[Initial Fetch Watch] ⚠️ SKIPPING - local data update in progress');
+          return;
+        }
+        
         // Handle initial setup
         if (ready && source === 'supabase' && table && gridApi.value && !initialFetchDone.value) {
+          debugLog('[Initial Fetch Watch] Conditions met, setting initialFetchDone and proceeding');
           initialFetchDone.value = true;
           
           if (isInfiniteScrollEnabled.value) {
@@ -1393,6 +1579,9 @@ export default {
             debugLog('[Infinite Scroll] ================================================');
           } else {
             // For pagination mode, fetch initial data
+            debugLog('[Initial Fetch Watch] Calling fetchSupabaseData from initial fetch watch handler (pagination mode)', {
+              isUpdatingDataLocally: isUpdatingDataLocally.value,
+            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1451,8 +1640,21 @@ export default {
     watch(
       () => [props.content?.enableSearch, props.content?.searchValue, props.content?.searchableColumns],
       (newValues, oldValues) => {
+        debugLog('[Search Watch] Triggered', {
+          newValues,
+          oldValues,
+          isUpdatingDataLocally: isUpdatingDataLocally.value,
+        });
+        
         // Only fetch if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
+          debugLog('[Search Watch] Values unchanged, skipping');
+          return;
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          debugLog('[Search Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
@@ -1485,6 +1687,9 @@ export default {
               }
             } else {
               // For pagination mode, fetch data
+              debugLog('[Search Watch] Calling fetchSupabaseData from search watch handler (pagination mode)', {
+                isUpdatingDataLocally: isUpdatingDataLocally.value,
+              });
               lastFetchParams.value = null;
               const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
               const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1525,6 +1730,8 @@ export default {
       gridApi,
       onFilterChanged,
       onSortChanged,
+      setUpdatingDataLocally, // Expose setter so methods can update the flag
+      getUpdatingDataLocally, // Expose getter so methods can check the flag
       localeText: computed(() => {
         switch (props.content.lang) {
           case "fr":
@@ -2877,11 +3084,109 @@ export default {
         return; // Skip emitting event when values are the same (cancelled edit)
       }
       
+      // Check if this is a user column (all user columns need safeguard to prevent data fetching)
+      const isUserColumn = columnConfig?.cellDataType === 'user';
+      const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
+      const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
+      const isForeignKeyColumn = isUserColumn && 
+        JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+      
+      // Set flag to prevent data fetching during ANY user column update
+      // This prevents watchers from triggering Supabase fetches when we modify user data
+      if (isUserColumn) {
+        this.debugLog('[User Column Update] Setting isUpdatingDataLocally flag to TRUE');
+        this.setUpdatingDataLocally(true);
+        this.debugLog('[User Column Update] Flag set, about to process update');
+      }
+      
+      // If it's a foreign key user column, simulate creating a fake junction record
+      if (isForeignKeyColumn && newValue) {
+        const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
+        const userIds = isMultiple && Array.isArray(newValue) ? newValue : (isMultiple ? [newValue] : newValue);
+        
+        // Helper function to create fake junction record structure based on userIdFormula
+        const createFakeJunctionRecord = (userId, formula) => {
+          // Parse the formula code to understand the nested structure
+          const formulaCode = formula?.code || '';
+          
+          // Extract path from formula (e.g., "profile.id" from "context.mapping?.profile?.id")
+          // Pattern: mapping?.profile?.id or mapping?.['profile']?.['id'] or mapping?.profile?.['id']
+          const pathMatch = formulaCode.match(/mapping\?\.?\[?['"]?(\w+)['"]?\]?\?\.?\[?['"]?(\w+)['"]?\]?/);
+          
+          if (pathMatch && pathMatch.length >= 3) {
+            const [, ...pathParts] = pathMatch;
+            const path = pathParts.filter(Boolean);
+            
+            if (path.length > 0) {
+              // Create nested structure: { [path[0]]: { [path[1]]: userId } }
+              const result = {};
+              let current = result;
+              for (let i = 0; i < path.length - 1; i++) {
+                current[path[i]] = {};
+                current = current[path[i]];
+              }
+              current[path[path.length - 1]] = userId;
+              return result;
+            }
+          }
+          
+          // Fallback: try common patterns
+          if (formulaCode.includes('profile') && formulaCode.includes('id')) {
+            return { profile: { id: userId } };
+          }
+          
+          // Default: return simple structure with id
+          return { id: userId };
+        };
+        
+        // Create fake junction records
+        let fakeJunctionRecord;
+        if (isMultiple && Array.isArray(userIds)) {
+          fakeJunctionRecord = userIds.map(userId => createFakeJunctionRecord(userId, userIdFormula));
+        } else {
+          fakeJunctionRecord = createFakeJunctionRecord(userIds, userIdFormula);
+        }
+        
+        try {
+          // Update the row data with the fake junction record
+          event.data[columnId] = fakeJunctionRecord;
+          
+          // Refresh the cell to show the updated value
+          if (this.gridApi && event.node) {
+            this.gridApi.refreshCells({
+              rowNodes: [event.node],
+              columns: [columnId],
+              force: true,
+            });
+          }
+          
+          this.debugLog('[Foreign Key] Created fake junction record:', {
+            columnId,
+            userIdFormula: userIdFormula,
+            fakeRecord: fakeJunctionRecord,
+          });
+        } catch (error) {
+          console.error('[Foreign Key] Error creating fake junction record:', error);
+        }
+      }
+      
+      // Clear flag after a short delay for ALL user column updates
+      // This ensures watchers don't trigger fetches during the update
+      if (isUserColumn) {
+        this.$nextTick(() => {
+          setTimeout(() => {
+            this.debugLog('[User Column Update] Clearing isUpdatingDataLocally flag');
+            this.setUpdatingDataLocally(false);
+            this.debugLog('[User Column Update] Flag cleared');
+          }, 200); // Delay to ensure all watchers have processed
+        });
+      }
+      
       this.$emit("trigger-event", {
         name: "cellValueChanged",
         event: {
           oldValue: oldValue,
-          newValue: newValue, // Actual ID/value from the data field
+          newValue: isForeignKeyColumn && event.data?.[columnId] ? event.data[columnId] : newValue, // Use fake junction record if created
           columnId: columnId,
           row: event.data,
           isDirectUpdate: columnConfig?.isDirectUpdate || false,
