@@ -1305,6 +1305,44 @@ export default {
                 type: "Text",
                 hidden: array?.item?.cellDataType === "action",
               },
+              supabaseFilterField: {
+                label: { en: "Supabase Filter Field" },
+                type: "Text",
+                section: "settings",
+                bindable: true,
+                hidden: (content, sidePanelContent, boundProperties, wwProps, array) => {
+                  // Only show when using Supabase data source
+                  return content?.dataSource !== 'supabase' || array?.item?.cellDataType === "action";
+                },
+                propertyHelp: {
+                  en: "Optional: Supabase field path for filtering (e.g., 'case_owners.profile.id'). Use dot notation for nested relationships. If empty, uses the Key field above."
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: 'string',
+                  tooltip: 'Supabase field path for filtering (supports dot notation for nested relationships)'
+                },
+                /* wwEditor:end */
+              },
+              supabaseSortField: {
+                label: { en: "Supabase Sort Field" },
+                type: "Text",
+                section: "settings",
+                bindable: true,
+                hidden: (content, sidePanelContent, boundProperties, wwProps, array) => {
+                  // Only show when using Supabase data source
+                  return content?.dataSource !== 'supabase' || array?.item?.cellDataType === "action";
+                },
+                propertyHelp: {
+                  en: "Optional: Supabase field path for sorting (e.g., 'case_owners.profile.name'). Use dot notation for nested relationships. If empty, uses the Key field above."
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: 'string',
+                  tooltip: 'Supabase field path for sorting (supports dot notation for nested relationships)'
+                },
+                /* wwEditor:end */
+              },
               dateFormat: {
                 label: "Date Format",
                 type: "TextSelect",

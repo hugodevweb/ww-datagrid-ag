@@ -126,6 +126,42 @@ export default {
       }
     };
 
+    // Helper function to get the Supabase field path for filtering a column
+    // Only used when dataSource is 'supabase'
+    const getSupabaseFilterField = (columnId) => {
+      // Only use Supabase-specific fields when dataSource is 'supabase'
+      if (props.content?.dataSource !== 'supabase') {
+        return columnId;
+      }
+      
+      const column = props.content?.columns?.find(col => {
+        const colId = col?.actionName || col?.field;
+        return colId === columnId || col?.field === columnId;
+      });
+      
+      // Return supabaseFilterField if provided and not empty, otherwise fall back to columnId
+      const supabaseField = column?.supabaseFilterField?.trim();
+      return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
+    };
+
+    // Helper function to get the Supabase field path for sorting a column
+    // Only used when dataSource is 'supabase'
+    const getSupabaseSortField = (columnId) => {
+      // Only use Supabase-specific fields when dataSource is 'supabase'
+      if (props.content?.dataSource !== 'supabase') {
+        return columnId;
+      }
+      
+      const column = props.content?.columns?.find(col => {
+        const colId = col?.actionName || col?.field;
+        return colId === columnId || col?.field === columnId;
+      });
+      
+      // Return supabaseSortField if provided and not empty, otherwise fall back to columnId
+      const supabaseField = column?.supabaseSortField?.trim();
+      return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
+    };
+
     // Convert AG Grid filter model to Supabase filter chain
     const convertFilterToSupabase = (filterModel, query) => {
       if (!filterModel || Object.keys(filterModel).length === 0) {
@@ -137,6 +173,11 @@ export default {
       // Process each column filter
       for (const [columnId, filter] of Object.entries(filterModel)) {
         if (!filter) continue;
+
+        // Get the Supabase field path for this column (supports nested relationships)
+        // This will return the supabaseFilterField if set, otherwise columnId
+        // For non-Supabase data sources, it just returns columnId
+        const supabaseField = getSupabaseFilterField(columnId);
 
         // Handle user filters (custom filter type)
         if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
@@ -184,9 +225,9 @@ export default {
               if (!isMultiple) {
                 // Single user: column is UUID type, use .in() for multiple values or .eq() for single
                 if (selectedUserIds.length === 1) {
-                  currentQuery = currentQuery.eq(columnId, selectedUserIds[0]);
+                  currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
                 } else {
-                  currentQuery = currentQuery.in(columnId, selectedUserIds);
+                  currentQuery = currentQuery.in(supabaseField, selectedUserIds);
                 }
               } else {
                 // Multiple users: column might be UUID[] (array) or still UUID
@@ -204,24 +245,25 @@ export default {
                 // you might need to use Postgres array operators, but that requires knowing the column type
                 if (selectedUserIds.length === 1) {
                   // Even for "multiple" mode, if only one ID selected, use .eq()
-                  currentQuery = currentQuery.eq(columnId, selectedUserIds[0]);
+                  currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
                 } else {
                   // Use .in() which works for UUID columns
                   // Note: This assumes the column stores a single UUID value
                   // If you have UUID[] columns, you'll need array-specific filtering
-                  currentQuery = currentQuery.in(columnId, selectedUserIds);
+                  currentQuery = currentQuery.in(supabaseField, selectedUserIds);
                 }
                 
                 // Alternative for UUID[] arrays (uncomment if your columns are UUID[] type):
                 // if (selectedUserIds.length === 1) {
-                //   currentQuery = currentQuery.contains(columnId, [selectedUserIds[0]]);
+                //   currentQuery = currentQuery.contains(supabaseField, [selectedUserIds[0]]);
                 // } else {
-                //   currentQuery = currentQuery.overlaps(columnId, selectedUserIds);
+                //   currentQuery = currentQuery.overlaps(supabaseField, selectedUserIds);
                 // }
               }
               
               debugLog('[Supabase Filter] User filter applied:', {
                 columnId,
+                supabaseField,
                 selectedNames: filter.values,
                 selectedIds: selectedUserIds,
                 isMultiple,
@@ -241,35 +283,35 @@ export default {
         if (filter.filterType === 'text') {
           // Text filters
           if (filter.type === 'equals') {
-            currentQuery = currentQuery.eq(columnId, filter.filter);
+            currentQuery = currentQuery.eq(supabaseField, filter.filter);
           } else if (filter.type === 'notEqual') {
-            currentQuery = currentQuery.neq(columnId, filter.filter);
+            currentQuery = currentQuery.neq(supabaseField, filter.filter);
           } else if (filter.type === 'contains') {
-            currentQuery = currentQuery.ilike(columnId, `%${filter.filter}%`);
+            currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}%`);
           } else if (filter.type === 'notContains') {
-            currentQuery = currentQuery.not('ilike', columnId, `%${filter.filter}%`);
+            currentQuery = currentQuery.not('ilike', supabaseField, `%${filter.filter}%`);
           } else if (filter.type === 'startsWith') {
-            currentQuery = currentQuery.ilike(columnId, `${filter.filter}%`);
+            currentQuery = currentQuery.ilike(supabaseField, `${filter.filter}%`);
           } else if (filter.type === 'endsWith') {
-            currentQuery = currentQuery.ilike(columnId, `%${filter.filter}`);
+            currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}`);
           }
         } else if (filter.filterType === 'number') {
           // Number filters
           if (filter.type === 'equals') {
-            currentQuery = currentQuery.eq(columnId, Number(filter.filter));
+            currentQuery = currentQuery.eq(supabaseField, Number(filter.filter));
           } else if (filter.type === 'notEqual') {
-            currentQuery = currentQuery.neq(columnId, Number(filter.filter));
+            currentQuery = currentQuery.neq(supabaseField, Number(filter.filter));
           } else if (filter.type === 'greaterThan') {
-            currentQuery = currentQuery.gt(columnId, Number(filter.filter));
+            currentQuery = currentQuery.gt(supabaseField, Number(filter.filter));
           } else if (filter.type === 'greaterThanOrEqual') {
-            currentQuery = currentQuery.gte(columnId, Number(filter.filter));
+            currentQuery = currentQuery.gte(supabaseField, Number(filter.filter));
           } else if (filter.type === 'lessThan') {
-            currentQuery = currentQuery.lt(columnId, Number(filter.filter));
+            currentQuery = currentQuery.lt(supabaseField, Number(filter.filter));
           } else if (filter.type === 'lessThanOrEqual') {
-            currentQuery = currentQuery.lte(columnId, Number(filter.filter));
+            currentQuery = currentQuery.lte(supabaseField, Number(filter.filter));
           } else if (filter.type === 'inRange') {
-            currentQuery = currentQuery.gte(columnId, Number(filter.filter))
-              .lte(columnId, Number(filter.filterTo));
+            currentQuery = currentQuery.gte(supabaseField, Number(filter.filter))
+              .lte(supabaseField, Number(filter.filterTo));
           }
         } else if (filter.filterType === 'date') {
           // Date filters
@@ -282,8 +324,8 @@ export default {
             startOfDay.setHours(0, 0, 0, 0);
             const endOfDay = new Date(filterDate);
             endOfDay.setHours(23, 59, 59, 999);
-            currentQuery = currentQuery.gte(columnId, startOfDay.toISOString())
-              .lte(columnId, endOfDay.toISOString());
+            currentQuery = currentQuery.gte(supabaseField, startOfDay.toISOString())
+              .lte(supabaseField, endOfDay.toISOString());
           } else if (filter.type === 'notEqual') {
             // Not equal for dates: filter out the specific day
             // We'll use a workaround: filter for dates less than start of day OR greater than end of day
@@ -292,26 +334,26 @@ export default {
             const endOfDay = new Date(filterDate);
             endOfDay.setHours(23, 59, 59, 999);
             // Use .or() with proper Supabase syntax
-            currentQuery = currentQuery.or(`and(${columnId}.lt.${startOfDay.toISOString()},${columnId}.gt.${endOfDay.toISOString()})`);
+            currentQuery = currentQuery.or(`and(${supabaseField}.lt.${startOfDay.toISOString()},${supabaseField}.gt.${endOfDay.toISOString()})`);
           } else if (filter.type === 'greaterThan') {
-            currentQuery = currentQuery.gt(columnId, new Date(filterDate).toISOString());
+            currentQuery = currentQuery.gt(supabaseField, new Date(filterDate).toISOString());
           } else if (filter.type === 'greaterThanOrEqual') {
-            currentQuery = currentQuery.gte(columnId, new Date(filterDate).toISOString());
+            currentQuery = currentQuery.gte(supabaseField, new Date(filterDate).toISOString());
           } else if (filter.type === 'lessThan') {
-            currentQuery = currentQuery.lt(columnId, new Date(filterDate).toISOString());
+            currentQuery = currentQuery.lt(supabaseField, new Date(filterDate).toISOString());
           } else if (filter.type === 'lessThanOrEqual') {
-            currentQuery = currentQuery.lte(columnId, new Date(filterDate).toISOString());
+            currentQuery = currentQuery.lte(supabaseField, new Date(filterDate).toISOString());
           } else if (filter.type === 'inRange') {
-            currentQuery = currentQuery.gte(columnId, new Date(filterDate).toISOString())
-              .lte(columnId, new Date(filterToDate).toISOString());
+            currentQuery = currentQuery.gte(supabaseField, new Date(filterDate).toISOString())
+              .lte(supabaseField, new Date(filterToDate).toISOString());
           }
         } else if (filter.filterType === 'set') {
           // Set filters (for select columns)
           if (filter.values && filter.values.length > 0) {
             if (filter.values.length === 1) {
-              currentQuery = currentQuery.eq(columnId, filter.values[0]);
+              currentQuery = currentQuery.eq(supabaseField, filter.values[0]);
             } else {
-              currentQuery = currentQuery.in(columnId, filter.values);
+              currentQuery = currentQuery.in(supabaseField, filter.values);
             }
           }
         }
@@ -333,18 +375,32 @@ export default {
         return query;
       }
 
+      // Map searchable columns to their Supabase field paths
+      // This allows searchableColumns to contain either column IDs or direct Supabase paths
+      const supabaseSearchFields = validColumns.map(col => {
+        // Check if this is a column ID that has a supabaseFilterField
+        const column = props.content?.columns?.find(c => {
+          const colId = c?.actionName || c?.field;
+          return colId === col || c?.field === col;
+        });
+        // Use supabaseFilterField if provided and not empty, otherwise use the column ID as-is
+        // This allows searchableColumns to contain either column IDs or direct Supabase paths
+        const supabaseField = column?.supabaseFilterField?.trim();
+        return (supabaseField && supabaseField.length > 0) ? supabaseField : col;
+      });
+
       // Build OR condition for all searchable columns
       // For Supabase, we need to use .or() with proper syntax
       // Format: or('col1.ilike.%term%,col2.ilike.%term%,...')
-      if (validColumns.length === 1) {
+      if (supabaseSearchFields.length === 1) {
         // Single column: just use ilike
-        return query.ilike(validColumns[0], `%${searchTerm}%`);
+        return query.ilike(supabaseSearchFields[0], `%${searchTerm}%`);
       } else {
         // Multiple columns: use OR condition
         // Supabase OR syntax: or('col1.ilike.%term%,col2.ilike.%term%')
         // Note: The pattern needs to be properly escaped for special characters
         const escapedTerm = searchTerm.replace(/'/g, "''"); // Escape single quotes
-        const orConditions = validColumns
+        const orConditions = supabaseSearchFields
           .map(col => `${col}.ilike.%${escapedTerm}%`)
           .join(',');
         return query.or(orConditions);
@@ -394,8 +450,10 @@ export default {
         if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
           for (const sort of sortModel) {
             const columnId = sort.colId;
+            // Get the Supabase field path for this column (supports nested relationships)
+            const supabaseField = getSupabaseSortField(columnId);
             const order = sort.sort === 'asc' ? true : false;
-            query = query.order(columnId, { ascending: order });
+            query = query.order(supabaseField, { ascending: order });
           }
         }
 
@@ -501,8 +559,10 @@ export default {
         if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
           for (const sort of sortModel) {
             const columnId = sort.colId;
+            // Get the Supabase field path for this column (supports nested relationships)
+            const supabaseField = getSupabaseSortField(columnId);
             const order = sort.sort === 'asc' ? true : false;
-            query = query.order(columnId, { ascending: order });
+            query = query.order(supabaseField, { ascending: order });
           }
         }
 
@@ -1695,7 +1755,7 @@ export default {
             case 'custom':
               if (rule.custom) {
                 // Create context with new value for the field
-                const validationContext = { ...rowData, [col.field]: newValue };
+                const validationContext = { ...rowData, ...(col?.field ? { [col.field]: newValue } : {}) };
                 this.debugLog('[Validation Debug] Custom validation context:', validationContext);
                 const result = this.resolveMappingFormula(rule.custom, validationContext);
                 this.debugLog('[Validation Debug] Custom validation result:', result);
@@ -1743,14 +1803,16 @@ export default {
           }
           
           // Default behavior
-          if (newValue !== oldValue) {
+          if (newValue !== oldValue && col?.field) {
              data[col.field] = newValue;
              return true;
           }
           return false;
         };
       };
-      const allColumnDefs = this.content.columns.map((col, index) => {
+      const allColumnDefs = this.content.columns
+        .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
+        .map((col, index) => {
         this.debugLog('[Validation Debug] Processing column', {
           index,
           field: col?.field,
@@ -2508,13 +2570,13 @@ export default {
       this.debugLog('[Validation Debug] All column definitions created', {
         count: allColumnDefs.length,
         columns: allColumnDefs.map(col => ({
-          field: col.field,
-          cellDataType: col.cellDataType,
-          editable: col.editable,
-          cellEditor: col.cellEditor,
-          hasCellEditorParams: !!col.cellEditorParams,
-          hasGetValidationErrors: !!col.cellEditorParams?.getValidationErrors,
-          validation: this.content.columns.find(c => c.field === col.field || c.actionName === col.field)?.validation,
+          field: col?.field,
+          cellDataType: col?.cellDataType,
+          editable: col?.editable,
+          cellEditor: col?.cellEditor,
+          hasCellEditorParams: !!col?.cellEditorParams,
+          hasGetValidationErrors: !!col?.cellEditorParams?.getValidationErrors,
+          validation: this.content.columns.find(c => (c?.field === col?.field || c?.actionName === col?.field))?.validation,
         })),
       });
 
@@ -3055,8 +3117,8 @@ export default {
       if (!data || !data[0]) throw new Error("No data found");
       return {
         toIndex: 1,
-        columnId: data[0].field,
-        columnsOrder: data.map((col) => col.field),
+        columnId: data[0]?.field,
+        columnsOrder: data.map((col) => col?.field).filter(Boolean),
       };
     },
     getCellEditStartTestEvent() {
