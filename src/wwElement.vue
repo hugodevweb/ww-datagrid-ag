@@ -3067,7 +3067,111 @@ export default {
       // For select columns: read the value directly from the data to ensure we get the ID, not the label
       // The valueSetter ensures the actual value (ID) is stored in the data field
       const newValue = event.data?.[columnId];
-      const oldValue = event.oldValue;
+      
+      // Check if this is a user column (all user columns need safeguard to prevent data fetching)
+      const isUserColumn = columnConfig?.cellDataType === 'user';
+      const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
+      const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
+      const isForeignKeyColumn = isUserColumn && 
+        JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+      
+      // For user columns, get oldValue as raw user IDs (not display names)
+      // AG Grid's event.oldValue might be the display value (names) due to valueGetter
+      let oldValue = event.oldValue;
+      
+      if (isUserColumn && event.node) {
+        // Helper function to extract user ID(s) from raw cell value using userIdFormula
+        const extractUserIds = (rawValue, rowData) => {
+          if (!rawValue) return null;
+          // Apply userIdFormula to extract user ID(s) from potentially nested structures
+          const extractedValue = this.resolveMappingFormula(userIdFormula, rawValue);
+          // Return the extracted value, or fallback to raw value if formula returns null/undefined
+          return extractedValue ?? rawValue;
+        };
+        
+        // Helper function to get user name (for reverse lookup)
+        const getUserName = (user) => {
+          if (user.name) return user.name;
+          if (user.firstname || user.lastname) {
+            return [user.firstname, user.lastname].filter(Boolean).join(' ');
+          }
+          return user.email || user.id || '';
+        };
+        
+        // Helper function to find user ID by name
+        const findUserIdByName = (name, users) => {
+          if (!name || !users || !Array.isArray(users)) return null;
+          const user = users.find(u => {
+            const userName = getUserName(u);
+            return userName === name || u.id === name || u.email === name;
+          });
+          return user?.id || null;
+        };
+        
+        // Get users array from column config
+        const users = columnConfig?.users || [];
+        const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
+        
+        // Try to get raw value from node's data (before it was changed)
+        // Check if oldValue looks like a display value (names) or if it's already IDs
+        const isDisplayValue = typeof oldValue === 'string' && 
+          (oldValue.includes(',') || (oldValue.includes(' ') && !oldValue.match(/^[a-f0-9-]{36}$/i)));
+        
+        let normalizedOldValue;
+        
+        if (isDisplayValue) {
+          // oldValue appears to be display names - convert to IDs
+          if (oldValue.includes(',')) {
+            // Multiple users: comma-separated names
+            const names = oldValue.split(',').map(n => n.trim()).filter(Boolean);
+            const ids = names.map(name => findUserIdByName(name, users)).filter(id => id != null);
+            normalizedOldValue = ids.length > 0 ? ids : null;
+          } else {
+            // Single user: name
+            normalizedOldValue = findUserIdByName(oldValue, users);
+          }
+        } else {
+          // oldValue might already be IDs - extract using formula if needed
+          normalizedOldValue = extractUserIds(oldValue, event.node.data);
+          
+          // If extraction returned the same value and it's a string, check if it's a name
+          if (normalizedOldValue === oldValue && typeof oldValue === 'string' && users.length > 0) {
+            // Check if it's already a valid ID
+            const isValidId = users.some(u => u.id === oldValue);
+            if (!isValidId) {
+              // Might be a name - try to find ID
+              const foundId = findUserIdByName(oldValue, users);
+              if (foundId) {
+                normalizedOldValue = foundId;
+              }
+            }
+          }
+        }
+        
+        // Ensure format matches setCellValue expectations:
+        // - Single user: string ID
+        // - Multiple users: array of string IDs
+        if (isMultiple) {
+          // Ensure it's an array
+          if (Array.isArray(normalizedOldValue)) {
+            oldValue = normalizedOldValue;
+          } else if (normalizedOldValue != null) {
+            oldValue = [normalizedOldValue];
+          } else {
+            oldValue = [];
+          }
+        } else {
+          // Ensure it's a single value (not array)
+          if (Array.isArray(normalizedOldValue) && normalizedOldValue.length > 0) {
+            oldValue = normalizedOldValue[0];
+          } else {
+            oldValue = normalizedOldValue;
+          }
+        }
+      } else {
+        // For non-user columns, use oldValue as-is
+        oldValue = event.oldValue;
+      }
       
       // Don't emit event if values are the same (e.g., when edit was cancelled with Escape)
       // This handles both primitive values and arrays
@@ -3083,13 +3187,8 @@ export default {
       if (valuesEqual) {
         return; // Skip emitting event when values are the same (cancelled edit)
       }
-      
-      // Check if this is a user column (all user columns need safeguard to prevent data fetching)
-      const isUserColumn = columnConfig?.cellDataType === 'user';
-      const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
-      const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
-      const isForeignKeyColumn = isUserColumn && 
-        JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+      // For select columns, oldValue should already be the option value (not label)
+      // AG Grid's oldValue should match what's stored in data, which is the option value
       
       // Set flag to prevent data fetching during ANY user column update
       // This prevents watchers from triggering Supabase fetches when we modify user data
@@ -3219,6 +3318,194 @@ export default {
         },
       });
     },
+    /**
+     * Component action: Set a cell value for a specific row and column
+     * @param {string|number} rowId - The ID of the row (must match the idFormula output)
+     * @param {string} columnId - The column ID (field name or actionName)
+     * @param {any} newValue - The new value to set for the cell
+     * @returns {boolean} - Returns true if successful, false otherwise
+     */
+    setCellValue(rowId, columnId, newValue) {
+      if (!this.gridApi) {
+        console.warn("[Datagrid] Grid API is not initialized yet");
+        return false;
+      }
+      
+      if (!rowId || columnId === undefined || columnId === null) {
+        console.warn("[Datagrid] setCellValue requires rowId and columnId parameters");
+        return false;
+      }
+      
+      // Try to get the row node
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found and rowId is a number, try converting to string and vice versa
+      if (!rowNode) {
+        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
+        if (!isNaN(alternativeId)) {
+          rowNode = this.gridApi.getRowNode(alternativeId);
+        }
+      }
+      
+      // If still not found, search through all rows by matching the ID formula
+      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
+      // by the base ID (from formula) rather than the full node.id
+      if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            // Get the base ID using the same formula as getRowId (without hash)
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // If formula returns the field name instead of value, try direct access
+            // This handles cases where the formula might not resolve correctly
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              // Try common ID field names directly from node.data
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            // Convert to string for comparison
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            // Try exact match with base ID (what user provides)
+            if (baseIdStr === rowIdStr) {
+              rowNode = node;
+            }
+            // Also check if the provided rowId matches the start of node.id
+            // (in case getRowId appended a hash: "uuid-hash")
+            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
+              rowNode = node;
+            }
+            // Also check if node.id exactly matches (in case user provided full ID with hash)
+            else if (node.id && String(node.id) === rowIdStr) {
+              rowNode = node;
+            }
+            // Fallback: check if rowId exists as a property value in node.data
+            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
+      if (!rowNode) {
+        console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
+        // Debug: log available row IDs to help troubleshoot
+        if (this.content?.enableDebugLogs) {
+          const availableIds = [];
+          this.gridApi.forEachNode((node) => {
+            if (node.data) {
+              let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+              if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+                baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+              }
+              availableIds.push({ 
+                baseId, 
+                nodeId: node.id,
+                dataId: node.data.id,
+                dataKeys: Object.keys(node.data || {})
+              });
+            }
+          });
+          console.log('[Datagrid] Available row IDs:', availableIds);
+        }
+        return false;
+      }
+      
+      if (!rowNode.data) {
+        console.warn(`[Datagrid] Row node found but has no data`);
+        return false;
+      }
+      
+      // Find the column configuration
+      const columnConfig = this.content.columns?.find(
+        (col) => col?.field === columnId || col?.actionName === columnId
+      );
+      
+      if (!columnConfig) {
+        console.warn(`[Datagrid] Column "${columnId}" not found in column configuration`);
+      }
+      
+      // Handle user columns with foreign keys - convert user ID(s) to nested structure if needed
+      let valueToSet = newValue;
+      const isUserColumn = columnConfig?.cellDataType === 'user';
+      if (isUserColumn) {
+        const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
+        const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
+        const isForeignKeyColumn = JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+        const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
+        
+        if (isForeignKeyColumn && newValue) {
+          // Helper function to create fake junction record structure based on userIdFormula
+          const createFakeJunctionRecord = (userId, formula) => {
+            // Parse the formula code to understand the nested structure
+            const formulaCode = formula?.code || '';
+            
+            // Extract path from formula (e.g., "profile.id" from "context.mapping?.profile?.id")
+            const pathMatch = formulaCode.match(/mapping\?\.?\[?['"]?(\w+)['"]?\]?\?\.?\[?['"]?(\w+)['"]?\]?/);
+            
+            if (pathMatch && pathMatch.length >= 3) {
+              const [, ...pathParts] = pathMatch;
+              const path = pathParts.filter(Boolean);
+              
+              if (path.length > 0) {
+                // Create nested structure: { [path[0]]: { [path[1]]: userId } }
+                const result = {};
+                let current = result;
+                for (let i = 0; i < path.length - 1; i++) {
+                  current[path[i]] = {};
+                  current = current[path[i]];
+                }
+                current[path[path.length - 1]] = userId;
+                return result;
+              }
+            }
+            
+            // Fallback: try common patterns
+            if (formulaCode.includes('profile') && formulaCode.includes('id')) {
+              return { profile: { id: userId } };
+            }
+            
+            // Default: return simple structure with id
+            return { id: userId };
+          };
+          
+          // Convert user ID(s) to nested structure
+          if (isMultiple && Array.isArray(newValue)) {
+            // Multiple users: array of IDs -> array of nested structures
+            valueToSet = newValue.map(userId => createFakeJunctionRecord(userId, userIdFormula));
+          } else if (isMultiple && newValue) {
+            // Multiple users: single ID -> array with one nested structure
+            valueToSet = [createFakeJunctionRecord(newValue, userIdFormula)];
+          } else if (!isMultiple && newValue) {
+            // Single user: ID -> nested structure
+            valueToSet = createFakeJunctionRecord(newValue, userIdFormula);
+          }
+        }
+        // For non-foreign-key user columns, valueToSet remains as newValue (user ID or array of IDs)
+      }
+      
+      // Update the data directly
+      rowNode.data[columnId] = valueToSet;
+      
+      // Refresh the cells to show the updated value
+      // Use setTimeout to avoid calling grid API during render phase
+      setTimeout(() => {
+        if (this.gridApi) {
+          this.gridApi.refreshCells({
+            rowNodes: [rowNode],
+            columns: [columnId],
+            force: true,
+          });
+        }
+      }, 0);
+      
+      // Note: We don't trigger the cellValueChanged event here because this is a programmatic
+      // update via component action. The event should only fire for user-initiated edits.
+      
+      return true;
+    },
     triggerCellValueChanged(rowId, columnId, newValue) {
       if (!this.gridApi) {
         console.log("Grid API is not initialized yet");
@@ -3237,18 +3524,38 @@ export default {
       }
       
       // If still not found, search through all rows by matching the ID formula
+      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
+      // by the base ID (from formula) rather than the full node.id
       if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
         this.gridApi.forEachNode((node) => {
-          if (!rowNode) {
-            // Get the ID using the same formula as getRowId
-            const nodeId = this.resolveMappingFormula(this.content.idFormula, node.data);
+          if (!rowNode && node.data) {
+            // Get the base ID using the same formula as getRowId (without hash)
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
             
-            // Try exact match first
-            if (nodeId === rowId) {
+            // If formula returns the field name instead of value, try direct access
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            // Convert to string for comparison
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            // Try exact match with base ID (what user provides)
+            if (baseIdStr === rowIdStr) {
               rowNode = node;
             }
-            // Try string comparison
-            else if (String(nodeId) === String(rowId)) {
+            // Also check if the provided rowId matches the start of node.id
+            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
+              rowNode = node;
+            }
+            // Also check if node.id exactly matches
+            else if (node.id && String(node.id) === rowIdStr) {
+              rowNode = node;
+            }
+            // Fallback: check if rowId exists as a property value in node.data
+            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
               rowNode = node;
             }
           }
@@ -3332,14 +3639,70 @@ export default {
     },
     selectRow(rowId) {
       if (!this.gridApi) return;
-      const rowNode = this.gridApi.getRowNode(rowId);
+      
+      // Try to get the row node directly first
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found, search by base ID (getRowId appends a hash)
+      if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // If formula returns the field name instead of value, try direct access
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            if (baseIdStr === rowIdStr || 
+                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+                (node.id && String(node.id) === rowIdStr) ||
+                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
       if (rowNode) {
         rowNode.setSelected(true);
       }
     },
     deselectRow(rowId) {
       if (!this.gridApi) return;
-      const rowNode = this.gridApi.getRowNode(rowId);
+      
+      // Try to get the row node directly first
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found, search by base ID (getRowId appends a hash)
+      if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // If formula returns the field name instead of value, try direct access
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            if (baseIdStr === rowIdStr || 
+                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+                (node.id && String(node.id) === rowIdStr) ||
+                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
       if (rowNode) {
         rowNode.setSelected(false);
       }

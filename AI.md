@@ -154,7 +154,20 @@ A highly customizable data grid/table component that supports features like sort
 - sort: ***READ ONLY*** Current sort state as an array of sort configurations.
 - columnsOrder: ***READ ONLY*** Current columns order state as an array of column id.
 
-
+***Component Actions:***
+- setCellValue(rowId, columnId, newValue): Sets a cell value for a specific row and column. Returns `true` if successful, `false` otherwise.
+  - `rowId` (string|number): The ID of the row (must match the idFormula output)
+  - `columnId` (string): The column ID (field name or actionName)
+  - `newValue` (any): The new value to set for the cell
+  - Example: `datagrid.setCellValue('user-123', 'status', 'active')`
+- resetFilters(): Clears all active filters in the grid.
+- resetSort(): Clears all sorting in the grid.
+- deselectAll(): Deselects all currently selected rows.
+- selectAll(mode): Selects all rows. `mode` can be 'all', 'currentPage', or 'filtered' (defaults to content.selectAll).
+- selectRow(rowId): Selects a specific row by its ID.
+- deselectRow(rowId): Deselects a specific row by its ID.
+- stopCellEditing(cancel): Stops cell editing. `cancel` (boolean, default: false) - if true, cancels the edit and reverts the value.
+- refreshData(): Refreshes all cells in the grid to reflect data changes.
 
 ***Events:***
 - action: Triggered when clicking on a action cell. Payload: { actionName: 'name of the column', row: { /* row data */}, id: 0, index: 0, displayIndex: 0 }

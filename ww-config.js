@@ -329,6 +329,42 @@ export default {
       action: "refreshData",
     },
     {
+      label: "Set cell value",
+      action: "setCellValue",
+      args: [
+        {
+          name: "Row id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The ID of the row to update (must match the idFormula output)",
+          },
+          /* wwEditor:end */
+        },
+        {
+          name: "Column id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The column ID (field name or actionName) to update",
+          },
+          /* wwEditor:end */
+        },
+        {
+          name: "New value",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "any",
+            tooltip: "The new value to set for the cell (can be any type: string, number, object, array, etc.)",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
+    {
       label: "Trigger cell value changed",
       action: "triggerCellValueChanged",
       args: [
