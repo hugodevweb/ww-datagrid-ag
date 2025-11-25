@@ -119,6 +119,18 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
+    // Translation helper for filter buttons
+    const getFilterTranslations = (lang) => {
+      const translations = {
+        en: { reset: 'Reset', apply: 'Apply' },
+        fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
+        es: { reset: 'Restablecer', apply: 'Aplicar' },
+        de: { reset: 'Zurücksetzen', apply: 'Anwenden' },
+        pt: { reset: 'Redefinir', apply: 'Aplicar' },
+      };
+      return translations[lang] || translations.en;
+    };
+
     // Debug logging helper
     const debugLog = (...args) => {
       if (props.content?.enableDebugLogs) {
@@ -160,6 +172,110 @@ export default {
       // Return supabaseSortField if provided and not empty, otherwise fall back to columnId
       const supabaseField = column?.supabaseSortField?.trim();
       return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
+    };
+
+    // Helper function to format filters for logging
+    const formatFiltersForLog = (filterModel) => {
+      if (!filterModel || Object.keys(filterModel).length === 0) {
+        return 'none';
+      }
+      
+      const filterStrings = [];
+      for (const [columnId, filter] of Object.entries(filterModel)) {
+        if (!filter) continue;
+        
+        let filterDesc = `${columnId}: `;
+        
+        if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
+          // Convert user names to IDs for logging (same as in convertFilterToSupabase)
+          const column = props.content?.columns?.find(col => {
+            const colId = col?.actionName || col?.field;
+            return colId === columnId || col?.field === columnId;
+          });
+          
+          if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
+            // Helper function to get user name (same logic as in renderer)
+            const getUserName = (user) => {
+              if (user.name) return user.name;
+              if (user.firstname || user.lastname) {
+                return [user.firstname, user.lastname].filter(Boolean).join(' ');
+              }
+              return user.email || user.id || '';
+            };
+            
+            // Map selected user names to user IDs
+            const selectedUserIds = filter.values
+              .map(selectedName => {
+                const user = column.users.find(u => {
+                  const userName = getUserName(u);
+                  return userName === selectedName || u.id === selectedName || u.email === selectedName;
+                });
+                return user?.id;
+              })
+              .filter(id => id != null); // Remove any null/undefined IDs
+            
+            if (selectedUserIds.length > 0) {
+              filterDesc += `in [${selectedUserIds.join(', ')}]`;
+            } else {
+              filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to names if IDs not found
+            }
+          } else {
+            filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
+          }
+        } else if (filter.filterType === 'text') {
+          filterDesc += `${filter.type} "${filter.filter}"`;
+        } else if (filter.filterType === 'number') {
+          if (filter.type === 'inRange') {
+            filterDesc += `${filter.filter} to ${filter.filterTo}`;
+          } else {
+            filterDesc += `${filter.type} ${filter.filter}`;
+          }
+        } else if (filter.filterType === 'date') {
+          if (filter.type === 'inRange') {
+            filterDesc += `${filter.dateFrom} to ${filter.dateTo}`;
+          } else {
+            filterDesc += `${filter.type} ${filter.dateFrom || filter.filter}`;
+          }
+        } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
+          // Select filters store labels, need to convert to option values for logging
+          const column = props.content?.columns?.find(col => {
+            const colId = col?.actionName || col?.field;
+            return colId === columnId || col?.field === columnId;
+          });
+          
+          if (column && column.cellDataType === 'select' && Array.isArray(column.options)) {
+            // Convert labels to option values
+            const optionValues = filter.values
+              .map(selectedLabel => {
+                const option = column.options.find(opt => {
+                  const optionLabel = resolveMappingFormula(column.optionsLabelFormula, opt) ?? opt.label;
+                  return optionLabel === selectedLabel || opt.label === selectedLabel;
+                });
+                if (option) {
+                  return resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
+                }
+                return null;
+              })
+              .filter(val => val != null);
+            
+            if (optionValues.length > 0) {
+              filterDesc += `in [${optionValues.join(', ')}]`;
+            } else {
+              filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to labels
+            }
+          } else {
+            filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
+          }
+        } else if (filter.filterType === 'set' && filter.values) {
+          filterDesc += `in [${filter.values.join(', ')}]`;
+        } else {
+          filterDesc += `${filter.type || filter.filterType || 'unknown'}`;
+        }
+        
+        filterStrings.push(filterDesc);
+      }
+      
+      return filterStrings.length > 0 ? filterStrings.join(' | ') : 'none';
     };
 
     // Convert AG Grid filter model to Supabase filter chain
@@ -220,6 +336,12 @@ export default {
               
               const isMultiple = (column.maxNumberOfUsers ?? 4) > 1;
               
+              // Check if this is a foreign key column (junction table) by comparing userIdFormula
+              // If userIdFormula is not the default, it's likely a foreign key/junction table
+              const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
+              const userIdFormula = column?.userIdFormula || defaultUserIdFormula;
+              const isForeignKeyColumn = JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+              
               // For single UUID columns (maxNumberOfUsers === 1), always use .in() or .eq()
               // This works because the column is a single UUID value, not an array
               if (!isMultiple) {
@@ -261,15 +383,43 @@ export default {
                 // }
               }
               
-              debugLog('[Supabase Filter] User filter applied:', {
-                columnId,
-                supabaseField,
-                selectedNames: filter.values,
-                selectedIds: selectedUserIds,
-                isMultiple,
-                filterMethod: selectedUserIds.length === 1 ? 'eq' : 'in',
-                note: isMultiple ? 'Assuming UUID column (not UUID[]). If column is UUID[], use array operators.' : 'UUID column (single user)',
-              });
+              // CRITICAL FIX: For user columns (especially junction tables), explicitly exclude null values
+              // This prevents returning rows where the relationship doesn't exist
+              // Supabase syntax: .not(field, 'is', null) to exclude null values
+              // Apply to all user columns when filtering, as junction tables always need this
+              
+              // Check if this is a nested path (e.g., "case_owners.profile.id")
+              const isNestedPath = supabaseField.includes('.');
+              
+              if (isNestedPath) {
+                // For nested paths in junction tables, we need to check each level of the path
+                // to ensure the entire relationship chain exists
+                // Example: for "case_owners.profile.id", check:
+                // - case_owners is not null (junction table exists)
+                // - case_owners.profile is not null (nested relationship exists)
+                // - case_owners.profile.id is not null (field exists)
+                const pathParts = supabaseField.split('.');
+                
+                // Build and check each intermediate path level
+                // This ensures that if any part of the relationship chain is null, the row is excluded
+                let currentPath = '';
+                for (let i = 0; i < pathParts.length; i++) {
+                  if (i === 0) {
+                    currentPath = pathParts[i];
+                  } else {
+                    currentPath += '.' + pathParts[i];
+                  }
+                  // Exclude rows where this path level is null
+                  // Note: If this doesn't work for junction tables, we may need to use
+                  // an inner join in the select statement (e.g., 'case_owners!inner(*)')
+                  currentQuery = currentQuery.not(currentPath, 'is', null);
+                }
+              } else {
+                // For direct fields, just exclude null values
+                // Supabase syntax: .not(field, 'is', null)
+                currentQuery = currentQuery.not(supabaseField, 'is', null);
+              }
+              
             } else {
               debugLog('[Supabase Filter] Warning: No valid user IDs found for names:', filter.values);
             }
@@ -347,8 +497,47 @@ export default {
             currentQuery = currentQuery.gte(supabaseField, new Date(filterDate).toISOString())
               .lte(supabaseField, new Date(filterToDate).toISOString());
           }
+        } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
+          // Select filters store labels in filter.values, need to convert to option values
+          const column = props.content?.columns?.find(col => {
+            const colId = col?.actionName || col?.field;
+            return colId === columnId || col?.field === columnId;
+          });
+          
+          if (column && column.cellDataType === 'select' && Array.isArray(column.options)) {
+            // Convert labels to option values
+            const optionValues = filter.values
+              .map(selectedLabel => {
+                // Find the option that matches this label
+                const option = column.options.find(opt => {
+                  const optionLabel = resolveMappingFormula(column.optionsLabelFormula, opt) ?? opt.label;
+                  return optionLabel === selectedLabel || opt.label === selectedLabel;
+                });
+                if (option) {
+                  // Get the option value using the formula if available
+                  return resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
+                }
+                return null;
+              })
+              .filter(val => val != null);
+            
+            if (optionValues.length > 0) {
+              if (optionValues.length === 1) {
+                currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
+              } else {
+                currentQuery = currentQuery.in(supabaseField, optionValues);
+              }
+            }
+          } else {
+            // Fallback: use values as-is (assuming they're already values, not labels)
+            if (filter.values.length === 1) {
+              currentQuery = currentQuery.eq(supabaseField, filter.values[0]);
+            } else {
+              currentQuery = currentQuery.in(supabaseField, filter.values);
+            }
+          }
         } else if (filter.filterType === 'set') {
-          // Set filters (for select columns)
+          // Set filters (for other column types)
           if (filter.values && filter.values.length > 0) {
             if (filter.values.length === 1) {
               currentQuery = currentQuery.eq(supabaseField, filter.values[0]);
@@ -413,8 +602,6 @@ export default {
         return { data: [], totalCount: 0 };
       }
 
-      debugLog('[Supabase Infinite] Fetching data for infinite scroll:', { startRow, endRow, blockSize: endRow - startRow });
-
       const tableName = props.content?.supabaseTable;
       const queryString = props.content?.supabaseQuery || '*';
 
@@ -464,19 +651,16 @@ export default {
         const supabaseTo = endRow - 1;
         query = query.range(supabaseFrom, supabaseTo);
 
-        debugLog('[Supabase Infinite] Executing query with range:', {
-          tableName,
-          queryString,
-          agGridStartRow: startRow,
-          agGridEndRow: endRow,
-          agGridBlockSize: endRow - startRow,
-          supabaseFrom,
-          supabaseTo,
-          supabaseRange: `${supabaseFrom}-${supabaseTo}`,
-          hasFilters: filterModel && Object.keys(filterModel).length > 0,
-          hasSort: sortModel && Array.isArray(sortModel) && sortModel.length > 0,
-          hasSearch: !!(searchValue && searchValue.trim()),
-        });
+        // Log query details
+        const filtersText = formatFiltersForLog(filterModel);
+        const sortText = sortModel && sortModel.length > 0 
+          ? sortModel.map(s => `${s.colId} ${s.sort}`).join(', ')
+          : 'none';
+        const searchText = (props.content?.enableSearch && searchValue && searchValue.trim()) 
+          ? `"${searchValue}"` 
+          : 'none';
+        
+        console.log(`[Supabase Query] Table: ${tableName} | Filters: ${filtersText} | Sort: ${sortText} | Search: ${searchText} | Range: ${supabaseFrom}-${supabaseTo}`);
 
         const { data, error, count } = await query;
 
@@ -486,8 +670,6 @@ export default {
 
         const resultData = Array.isArray(data) ? data : [];
         const totalCount = count || 0;
-
-        debugLog('[Supabase Infinite] Data fetched:', { count: resultData.length, total: totalCount });
 
         return { data: resultData, totalCount };
       } catch (error) {
@@ -501,22 +683,12 @@ export default {
 
     // Fetch data from Supabase
     const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
-      // Log the call stack and flag state to trace where fetch is triggered from
-      const callStack = new Error().stack;
-      const isUpdatingLocally = isUpdatingDataLocally.value;
-      debugLog('[Supabase Fetch] ========== FETCH CALLED ==========');
-      debugLog('[Supabase Fetch] Call stack:', callStack?.split('\n').slice(0, 10).join('\n'));
-      debugLog('[Supabase Fetch] Flag state:', { isUpdatingDataLocally: isUpdatingLocally });
-      debugLog('[Supabase Fetch] Params:', { page, pageSize, hasFilterModel: !!filterModel, hasSortModel: !!sortModel, searchValue });
-      
       // Skip fetch if we're updating data locally
-      if (isUpdatingLocally) {
-        debugLog('[Supabase Fetch] ⚠️ SKIPPING FETCH - local data update in progress');
+      if (isUpdatingDataLocally.value) {
         return;
       }
       
       if (props.content?.dataSource !== 'supabase') {
-        debugLog('[Supabase Fetch] Not using Supabase data source, skipping');
         return;
       }
 
@@ -525,7 +697,6 @@ export default {
 
       if (!tableName) {
         supabaseError.value = 'Supabase table name is required';
-        debugLog('[Supabase Fetch] No table name, skipping');
         return;
       }
 
@@ -534,13 +705,11 @@ export default {
       
       // Prevent duplicate/recursive calls
       if (isFetchingData.value) {
-        debugLog('[Supabase Fetch] Already fetching, skipping duplicate call');
         return;
       }
       
       // Check if this is the same request as the last one
       if (lastFetchParams.value === fetchKey) {
-        debugLog('[Supabase Fetch] Same request as last fetch, skipping');
         return;
       }
 
@@ -587,7 +756,16 @@ export default {
         const to = from + pageSize - 1;
         query = query.range(from, to);
 
-        debugLog('[Supabase] Fetching data:', { tableName, queryString, page, pageSize, filterModel, sortModel, searchValue, from, to });
+        // Log query details
+        const filtersText = formatFiltersForLog(filterModel);
+        const sortText = sortModel && sortModel.length > 0 
+          ? sortModel.map(s => `${s.colId} ${s.sort}`).join(', ')
+          : 'none';
+        const searchText = (props.content?.enableSearch && searchValue && searchValue.trim()) 
+          ? `"${searchValue}"` 
+          : 'none';
+        
+        console.log(`[Supabase Query] Table: ${tableName} | Filters: ${filtersText} | Sort: ${sortText} | Search: ${searchText} | Page: ${page} (${from}-${to})`);
 
         const { data, error, count } = await query;
 
@@ -598,14 +776,6 @@ export default {
         supabaseData.value = Array.isArray(data) ? data : [];
         supabaseTotalCount.value = count || 0;
 
-        // Update grid row count if available
-        if (gridApi.value && supabaseTotalCount.value > 0) {
-          // Note: AG Grid client-side model doesn't support setting total count directly
-          // The pagination will work with the data provided, but total count display may be limited
-        }
-
-        debugLog('[Supabase] Data fetched:', { count: supabaseData.value.length, total: supabaseTotalCount.value });
-        
         // Update records after data is fetched (records will also be updated via rowData watch, but this ensures it's immediate)
         nextTick(() => {
           setTimeout(() => {
@@ -668,6 +838,14 @@ export default {
         defaultValue: [],
         readonly: true,
       });
+    const { value: isFetching, setValue: setIsFetching } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "isFetching",
+        type: "boolean",
+        defaultValue: false,
+        readonly: true,
+      });
 
     // Function to update records variable from grid API (gets displayed rows)
     // Defined early so it can be used in onGridReady and other handlers
@@ -686,7 +864,6 @@ export default {
           }
         });
         setRecords(displayedRows);
-        debugLog('[Records] Updated records from grid:', { count: displayedRows.length });
       } catch (error) {
         console.error('[Records] Error updating records from grid:', error);
         setRecords([]);
@@ -915,9 +1092,6 @@ export default {
               }
             } else {
               // For pagination mode, fetch data
-              debugLog('[onFilterChanged] Calling fetchSupabaseData from filter change handler (pagination mode)', {
-                isUpdatingDataLocally: isUpdatingDataLocally.value,
-              });
               const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
               const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
               const state = gridApi.value.getState();
@@ -983,9 +1157,6 @@ export default {
             }
           } else {
             // For pagination mode, fetch data
-            debugLog('[onSortChanged] Calling fetchSupabaseData from sort change handler (pagination mode)', {
-              isUpdatingDataLocally: isUpdatingDataLocally.value,
-            });
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
             const filterModel = gridApi.value.getFilterModel();
@@ -1016,15 +1187,11 @@ export default {
       // Skip if we're updating data locally (e.g., fake junction records)
       // This prevents refreshCells from triggering unnecessary fetches
       if (isUpdatingDataLocally.value) {
-        debugLog('[onPaginationChanged] ⚠️ SKIPPING - local data update in progress');
         return;
       }
       
       // If using Supabase, refetch data for new page
       if (props.content?.dataSource === 'supabase') {
-        debugLog('[onPaginationChanged] Calling fetchSupabaseData from pagination change handler', {
-          isUpdatingDataLocally: isUpdatingDataLocally.value,
-        });
         const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
         const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
         const filterModel = gridApi.value.getFilterModel();
@@ -1093,18 +1260,6 @@ export default {
       const distanceFromBottom = scrollHeight - (scrollTopPos + clientHeight);
       const isNearBottom = distanceFromBottom <= 100;
       const isAtBottom = distanceFromBottom <= 5;
-
-      // Debug logging for infinite scroll
-      if (isInfiniteScrollEnabled.value) {
-        debugLog('[Infinite Scroll] Scroll event:', {
-          scrollTop: scrollTopPos,
-          scrollHeight,
-          clientHeight,
-          distanceFromBottom,
-          isNearBottom,
-          isAtBottom,
-        });
-      }
       
       // Debounce to avoid too many events
       if (scrollDebounceTimer.value) {
@@ -1179,29 +1334,15 @@ export default {
         return undefined;
       }
 
-      debugLog('[Infinite Scroll] Creating datasource, blockSize:', props.content?.infiniteBlockSize || 100);
-
       return {
         rowCount: undefined, // Will be determined dynamically
         getRows: async (params) => {
           const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
           const requestedBlockSize = endRow - startRow;
 
-          debugLog('[Infinite Scroll] ========== BLOCK REQUEST ==========');
-          debugLog('[Infinite Scroll] getRows called with params:', {
-            startRow,
-            endRow,
-            requestedBlockSize,
-            sortModel: JSON.stringify(sortModel),
-            filterModel: Object.keys(filterModel || {}),
-            hasFilters: Object.keys(filterModel || {}).length > 0,
-          });
-
           try {
             const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-            debugLog('[Infinite Scroll] Fetching data from Supabase...');
             
-            const fetchStartTime = Date.now();
             const { data, totalCount } = await fetchSupabaseDataForInfinite(
               startRow,
               endRow,
@@ -1209,7 +1350,6 @@ export default {
               sortModel,
               searchValue
             );
-            const fetchDuration = Date.now() - fetchStartTime;
 
             // Determine if this is the last row
             // If we got fewer rows than requested, or if we've reached the total count, we're done
@@ -1227,20 +1367,6 @@ export default {
             // This tells AG Grid to stop fetching and show "no rows" message
             const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
 
-            debugLog('[Infinite Scroll] Data fetched:', {
-              fetchedRows: rowCount,
-              requestedRows: requestedBlockSize,
-              totalCount,
-              isLastBlock,
-              lastRow,
-              fetchDuration: `${fetchDuration}ms`,
-            });
-
-            debugLog('[Infinite Scroll] Calling successCallback with:', {
-              dataLength: data.length,
-              lastRow,
-            });
-
             // Call success callback with the data
             successCallback(data, lastRow);
 
@@ -1256,11 +1382,8 @@ export default {
                 updateRecordsFromGrid();
               }, 100);
             });
-
-            debugLog('[Infinite Scroll] ========== BLOCK COMPLETE ==========');
           } catch (error) {
             console.error('[Infinite Scroll] Error in getRows:', error);
-            debugLog('[Infinite Scroll] Calling failCallback due to error');
             failCallback();
           }
         },
@@ -1290,7 +1413,6 @@ export default {
       // Skip processing if we're updating data locally (e.g., fake junction records)
       // This prevents triggering loading states or unnecessary updates during local modifications
       if (isUpdatingDataLocally.value) {
-        debugLog('[RowData Watch] Skipping watch handler - local data update in progress');
         return;
       }
       
@@ -1370,19 +1492,21 @@ export default {
       return false;
     });
 
+    // Watch loading state and update isFetching exposed variable
+    watch(
+      () => isLoading.value,
+      (loading) => {
+        setIsFetching(loading);
+      },
+      { immediate: true }
+    );
+
     // Watch for dataSource changes and fetch initial data
     watch(
       () => props.content?.dataSource,
       (newSource, oldSource) => {
-        debugLog('[dataSource Watch] Triggered', {
-          newSource,
-          oldSource,
-          isUpdatingDataLocally: isUpdatingDataLocally.value,
-        });
-        
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
-          debugLog('[dataSource Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
@@ -1407,9 +1531,6 @@ export default {
             });
           } else {
             // Reset last fetch params to allow new fetch
-            debugLog('[dataSource Watch] Calling fetchSupabaseData from dataSource watch handler (pagination mode)', {
-              isUpdatingDataLocally: isUpdatingDataLocally.value,
-            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1428,21 +1549,13 @@ export default {
     watch(
       () => [props.content?.supabaseTable, props.content?.supabaseQuery],
       (newValues, oldValues) => {
-        debugLog('[supabaseTable/Query Watch] Triggered', {
-          newValues,
-          oldValues,
-          isUpdatingDataLocally: isUpdatingDataLocally.value,
-        });
-        
         // Only fetch if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
-          debugLog('[supabaseTable/Query Watch] Values unchanged, skipping');
           return;
         }
         
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
-          debugLog('[supabaseTable/Query Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
@@ -1466,9 +1579,6 @@ export default {
             });
           } else {
             // Reset last fetch params to allow new fetch
-            debugLog('[supabaseTable/Query Watch] Calling fetchSupabaseData from table/query watch handler (pagination mode)', {
-              isUpdatingDataLocally: isUpdatingDataLocally.value,
-            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1487,21 +1597,11 @@ export default {
     watch(
       () => [gridReady.value, props.content?.dataSource, props.content?.supabaseTable],
       ([ready, source, table], oldValues) => {
-        debugLog('[Initial Fetch Watch] Triggered', {
-          ready,
-          source,
-          table,
-          oldValues,
-          initialFetchDone: initialFetchDone.value,
-          isUpdatingDataLocally: isUpdatingDataLocally.value,
-        });
-        
         // Handle undefined oldValues on first run
         if (oldValues) {
           const [oldReady, oldSource, oldTable] = oldValues;
           // Only fetch if values actually changed and we haven't done initial fetch yet
           if (ready === oldReady && source === oldSource && table === oldTable) {
-            debugLog('[Initial Fetch Watch] Values unchanged, skipping');
             return;
           }
           
@@ -1513,45 +1613,21 @@ export default {
         
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
-          debugLog('[Initial Fetch Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
         // Handle initial setup
         if (ready && source === 'supabase' && table && gridApi.value && !initialFetchDone.value) {
-          debugLog('[Initial Fetch Watch] Conditions met, setting initialFetchDone and proceeding');
           initialFetchDone.value = true;
           
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, set the datasource and cacheBlockSize
-            debugLog('[Infinite Scroll] ========== INITIALIZING INFINITE SCROLL ==========');
-            debugLog('[Infinite Scroll] Grid ready, setting up infinite scroll:', {
-              blockSize: cacheBlockSize.value,
-              tableName: props.content?.supabaseTable,
-              queryString: props.content?.supabaseQuery,
-              enableSearch: props.content?.enableSearch,
-            });
-            
-            // Check current grid state
-            const currentRowModel = gridApi.value.getState()?.rowModel?.type;
-            debugLog('[Infinite Scroll] Current row model type:', currentRowModel);
-            
             // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
             const currentFilters = gridApi.value.getFilterModel();
             const currentSort = gridApi.value.getState()?.sort?.sortModel;
             
             gridApi.value.setGridOption('rowModelType', 'infinite');
             gridApi.value.setGridOption('cacheBlockSize', cacheBlockSize.value);
-            debugLog('[Infinite Scroll] Set rowModelType to infinite, cacheBlockSize to', cacheBlockSize.value);
-            
-            // Verify datasource object
-            const ds = datasource.value;
-            debugLog('[Infinite Scroll] Datasource object:', {
-              hasGetRows: typeof ds?.getRows === 'function',
-              rowCount: ds?.rowCount,
-              datasourceType: typeof ds,
-            });
-            
             gridApi.value.setGridOption('datasource', datasource.value);
             
             // Restore filters and sorts after setting datasource
@@ -1565,23 +1641,9 @@ export default {
                   defaultState: { sort: null },
                 });
               }
-              
-              const state = gridApi.value?.getState();
-              debugLog('[Infinite Scroll] Grid state after setting datasource:', {
-                rowModelType: state?.rowModel?.type,
-                hasDatasource: !!gridApi.value?.getGridOption('datasource'),
-                filters: gridApi.value.getFilterModel(),
-                sorts: state?.sort?.sortModel,
-              });
             });
-            
-            debugLog('[Infinite Scroll] Datasource set, waiting for AG Grid to request first block...');
-            debugLog('[Infinite Scroll] ================================================');
           } else {
             // For pagination mode, fetch initial data
-            debugLog('[Initial Fetch Watch] Calling fetchSupabaseData from initial fetch watch handler (pagination mode)', {
-              isUpdatingDataLocally: isUpdatingDataLocally.value,
-            });
             lastFetchParams.value = null;
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
             const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1604,13 +1666,6 @@ export default {
         
         if (props.content?.dataSource === 'supabase' && props.content?.enableInfiniteScroll && gridApi.value) {
           // Refresh the datasource and cacheBlockSize when infinite scrolling settings change
-          debugLog('[Infinite Scroll] ========== REFRESHING INFINITE SCROLL ==========');
-          debugLog('[Infinite Scroll] Configuration changed, refreshing datasource:', {
-            oldBlockSize: oldValues?.[1],
-            newBlockSize: cacheBlockSize.value,
-            enableInfiniteScroll: newValues[0],
-          });
-          
           // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
           const currentFilters = gridApi.value.getFilterModel();
           const currentSort = gridApi.value.getState()?.sort?.sortModel;
@@ -1629,9 +1684,6 @@ export default {
               });
             }
           });
-          
-          debugLog('[Infinite Scroll] Datasource refreshed');
-          debugLog('[Infinite Scroll] ================================================');
         }
       }
     );
@@ -1640,21 +1692,13 @@ export default {
     watch(
       () => [props.content?.enableSearch, props.content?.searchValue, props.content?.searchableColumns],
       (newValues, oldValues) => {
-        debugLog('[Search Watch] Triggered', {
-          newValues,
-          oldValues,
-          isUpdatingDataLocally: isUpdatingDataLocally.value,
-        });
-        
         // Only fetch if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
-          debugLog('[Search Watch] Values unchanged, skipping');
           return;
         }
         
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
-          debugLog('[Search Watch] ⚠️ SKIPPING - local data update in progress');
           return;
         }
         
@@ -1687,9 +1731,6 @@ export default {
               }
             } else {
               // For pagination mode, fetch data
-              debugLog('[Search Watch] Calling fetchSupabaseData from search watch handler (pagination mode)', {
-                isUpdatingDataLocally: isUpdatingDataLocally.value,
-              });
               lastFetchParams.value = null;
               const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
               const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
@@ -1811,32 +1852,15 @@ export default {
         },
       };
 
-      this.debugLog('[Validation Debug] Data type definitions:', definitions);
-
       return definitions;
     },
     columnDefs() {
       // First, map all columns to their definitions
       const columnsMap = new Map();
 
-      this.debugLog('[Validation Debug] Column definitions being built', {
-        columns: this.content.columns,
-        validationMode: this.content.invalidEditValueMode,
-      });
-
       // Helper to get validation errors for a value
       const getValidationErrors = (col, newValue, rowData) => {
-        this.debugLog('[Validation Debug] getValidationErrors called', {
-          column: col?.field || col?.headerName,
-          newValue,
-          rowData,
-          validationRules: col?.validation,
-          hasValidation: !!col?.validation,
-          isArray: Array.isArray(col?.validation),
-        });
-
         if (!col?.validation || !Array.isArray(col.validation)) {
-          this.debugLog('[Validation Debug] No validation rules found or not an array');
           return null;
         }
 
@@ -1844,16 +1868,8 @@ export default {
 
         for (const rule of col.validation) {
           if (!rule?.type) {
-            this.debugLog('[Validation Debug] Skipping rule without type:', rule);
             continue;
           }
-
-          this.debugLog('[Validation Debug] Checking rule:', {
-            type: rule.type,
-            value: rule.value,
-            message: rule.message,
-            custom: rule.custom,
-          });
 
           let isValid = true;
           let errorMessage = null;
@@ -1862,11 +1878,6 @@ export default {
             case 'required':
               isValid = newValue !== null && newValue !== undefined && newValue !== '';
               errorMessage = rule.message || 'This field is required.';
-              this.debugLog('[Validation Debug] Required check:', {
-                newValue,
-                isValid,
-                result: newValue !== null && newValue !== undefined && newValue !== '',
-              });
               break;
 
             case 'minLength':
@@ -1876,12 +1887,6 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at least ${minLength} characters long.`;
                 }
-                this.debugLog('[Validation Debug] MinLength check:', {
-                  newValue,
-                  valueLength: String(newValue).length,
-                  minLength,
-                  isValid: String(newValue).length >= minLength,
-                });
               }
               break;
 
@@ -1892,12 +1897,6 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at most ${maxLength} characters long.`;
                 }
-                this.debugLog('[Validation Debug] MaxLength check:', {
-                  newValue,
-                  valueLength: String(newValue).length,
-                  maxLength,
-                  isValid: String(newValue).length <= maxLength,
-                });
               }
               break;
 
@@ -1909,12 +1908,6 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at least ${min}.`;
                 }
-                this.debugLog('[Validation Debug] Min check:', {
-                  newValue,
-                  numValue,
-                  min,
-                  isValid: numValue >= min,
-                });
               }
               break;
 
@@ -1926,12 +1919,6 @@ export default {
                   isValid = false;
                   errorMessage = rule.message || `Value must be at most ${max}.`;
                 }
-                this.debugLog('[Validation Debug] Max check:', {
-                  newValue,
-                  numValue,
-                  max,
-                  isValid: numValue <= max,
-                });
               }
               break;
 
@@ -1944,16 +1931,7 @@ export default {
                     isValid = false;
                     errorMessage = rule.message || 'Value does not match the required pattern.';
                   }
-                  this.debugLog('[Validation Debug] Pattern check:', {
-                    newValue,
-                    pattern: rule.value,
-                    matches,
-                    isValid: matches,
-                  });
                 } catch (e) {
-                  if (this.content?.enableDebugLogs) {
-                    console.warn('[Validation Debug] Invalid regex pattern:', rule.value, e);
-                  }
                   // If pattern is invalid, don't fail validation
                 }
               }
@@ -1963,40 +1941,20 @@ export default {
               if (rule.custom) {
                 // Create context with new value for the field
                 const validationContext = { ...rowData, ...(col?.field ? { [col.field]: newValue } : {}) };
-                this.debugLog('[Validation Debug] Custom validation context:', validationContext);
                 const result = this.resolveMappingFormula(rule.custom, validationContext);
-                this.debugLog('[Validation Debug] Custom validation result:', result);
                 // Formula should return true for valid, false for invalid
                 isValid = Boolean(result);
                 errorMessage = rule.message || 'Custom validation failed.';
-                this.debugLog('[Validation Debug] Custom check:', {
-                  formula: rule.custom,
-                  result,
-                  isValid,
-                });
               }
               break;
           }
 
           if (!isValid && errorMessage) {
-            this.debugLog('[Validation Debug] Validation failed for rule:', {
-              type: rule.type,
-              errorMessage,
-            });
             errors.push(errorMessage);
-          } else {
-            this.debugLog('[Validation Debug] Validation passed for rule:', rule.type);
           }
         }
 
-        const finalResult = errors.length > 0 ? errors : null;
-        this.debugLog('[Validation Debug] Final validation result:', {
-          errorsCount: errors.length,
-          errors,
-          finalResult,
-        });
-
-        return finalResult;
+        return errors.length > 0 ? errors : null;
       };
 
       // Helper to create value setter (validation is handled separately via getValidationErrors)
@@ -2020,14 +1978,6 @@ export default {
       const allColumnDefs = this.content.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
         .map((col, index) => {
-        this.debugLog('[Validation Debug] Processing column', {
-          index,
-          field: col?.field,
-          headerName: col?.headerName,
-          cellDataType: col?.cellDataType,
-          editable: col?.editable,
-          validation: col?.validation,
-        });
 
         const minWidth =
           !col?.minWidth || col?.minWidth === "auto"
@@ -2065,12 +2015,6 @@ export default {
         };
 
         const cellDataType = col?.cellDataType;
-        this.debugLog('[Validation Debug] Column cellDataType:', {
-          field: col?.field,
-          cellDataType,
-          typeof: typeof cellDataType,
-          isUndefined: cellDataType === undefined,
-        });
 
         switch (cellDataType) {
           case "action": {
@@ -2090,12 +2034,6 @@ export default {
             };
           }
           case "custom": {
-            this.debugLog('[Validation Debug] Building custom column', {
-              field: col?.field,
-              editable: col?.editable,
-              validation: col?.validation,
-            });
-
             const customColumn = {
               ...commonProperties,
               headerName: col?.headerName,
@@ -2112,11 +2050,6 @@ export default {
                 trigger: this.onCustomCellEdit,
                 suppressRowInteraction: col?.suppressRowInteraction,
                 getValidationErrors: (params) => {
-                  this.debugLog('[Validation Debug] Custom column getValidationErrors called', {
-                    params,
-                    columnField: col?.field,
-                    columnValidation: col?.validation,
-                  });
                   return getValidationErrors(col, params.value, params.data);
                 },
               },
@@ -2124,13 +2057,6 @@ export default {
               sortable: col?.sortable,
               filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
             };
-
-            this.debugLog('[Validation Debug] Custom column built', {
-              field: customColumn.field,
-              editable: customColumn.editable,
-              hasCellEditorParams: !!customColumn.cellEditorParams,
-              hasGetValidationErrors: !!customColumn.cellEditorParams?.getValidationErrors,
-            });
             
             // Use display value for filtering and sorting if enabled
             if (col?.useDisplayValueForFilterSort && col?.displayLabelFormula) {
@@ -2205,12 +2131,6 @@ export default {
           }
           case "dateString":
           case "dateTime": {
-            this.debugLog('[Validation Debug] Building date column', {
-              field: col?.field,
-              editable: col?.editable,
-              validation: col?.validation,
-            });
-
             // Helper function to format date based on configuration
             const formatDateValue = (value) => {
               if (!value) return '';
@@ -2288,11 +2208,6 @@ export default {
               cellEditorParams: {
                 isDateTime: col?.cellDataType === 'dateTime',
                 getValidationErrors: (params) => {
-                  this.debugLog('[Validation Debug] Date column getValidationErrors called', {
-                    params,
-                    columnField: col?.field,
-                    columnValidation: col?.validation,
-                  });
                   return getValidationErrors(col, params.value, params.data);
                 },
               },
@@ -2305,22 +2220,9 @@ export default {
               },
             };
 
-            this.debugLog('[Validation Debug] Date column built', {
-              field: dateColumn.field,
-              editable: dateColumn.editable,
-              hasCellEditorParams: !!dateColumn.cellEditorParams,
-              hasGetValidationErrors: !!dateColumn.cellEditorParams?.getValidationErrors,
-            });
-
             return dateColumn;
           }
           case "currency": {
-            this.debugLog('[Validation Debug] Building currency column', {
-              field: col?.field,
-              editable: col?.editable,
-              validation: col?.validation,
-            });
-
             // Helper function to get currency code from row data or column config
             const getCurrencyCode = (rowData, col) => {
               if (col?.currencyMode === 'perRow' && col?.currencyCodeField) {
@@ -2381,11 +2283,6 @@ export default {
               editable: col?.editable,
               cellEditorParams: {
                 getValidationErrors: (params) => {
-                  this.debugLog('[Validation Debug] Currency column getValidationErrors called', {
-                    params,
-                    columnField: col?.field,
-                    columnValidation: col?.validation,
-                  });
                   return getValidationErrors(col, params.value, params.data);
                 },
               },
@@ -2479,11 +2376,6 @@ export default {
               cellEditorParams: {
                 ...selectParams,
                 getValidationErrors: (params) => {
-                  this.debugLog('[Validation Debug] Select column getValidationErrors called', {
-                    params,
-                    columnField: col?.field,
-                    columnValidation: col?.validation,
-                  });
                   return getValidationErrors(col, params.value, params.data);
                 },
               },
@@ -2495,6 +2387,17 @@ export default {
                     filterParams: {
                       selectOptions: selectParams,
                       closeOnApply: true,
+                      translations: (() => {
+                        const lang = this.content?.lang || 'en';
+                        const translations = {
+                          en: { reset: 'Reset', apply: 'Apply' },
+                          fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
+                          es: { reset: 'Restablecer', apply: 'Aplicar' },
+                          de: { reset: 'Zurücksetzen', apply: 'Anwenden' },
+                          pt: { reset: 'Redefinir', apply: 'Aplicar' },
+                        };
+                        return translations[lang] || translations.en;
+                      })(),
                     },
                   }
                 : {}),
@@ -2567,11 +2470,6 @@ export default {
               cellEditorParams: {
                 ...userParams,
                 getValidationErrors: (params) => {
-                  this.debugLog('[Validation Debug] User column getValidationErrors called', {
-                    params,
-                    columnField: col?.field,
-                    columnValidation: col?.validation,
-                  });
                   return getValidationErrors(col, params.value, params.data);
                 },
               },
@@ -2589,6 +2487,17 @@ export default {
                       userIdFormula: userParams.userIdFormula,
                       isLoading: userParams.isLoading,
                       closeOnApply: true,
+                      translations: (() => {
+                        const lang = this.content?.lang || 'en';
+                        const translations = {
+                          en: { reset: 'Reset', apply: 'Apply' },
+                          fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
+                          es: { reset: 'Restablecer', apply: 'Aplicar' },
+                          de: { reset: 'Zurücksetzen', apply: 'Anwenden' },
+                          pt: { reset: 'Redefinir', apply: 'Aplicar' },
+                        };
+                        return translations[lang] || translations.en;
+                      })(),
                     },
                   }
                 : {}),
@@ -2631,13 +2540,6 @@ export default {
             };
           }
           default: {
-            this.debugLog('[Validation Debug] Building default column', {
-              field: col?.field,
-              editable: col?.editable,
-              validation: col?.validation,
-              cellDataType: col?.cellDataType,
-            });
-
             // Determine the correct filter type based on cellDataType
             let filterType = false;
             if (col?.filter) {
@@ -2664,51 +2566,17 @@ export default {
             if (col?.editable) {
               // Create the validation function
               const validationFn = (params) => {
-                this.debugLog('[Validation Debug] Default column getValidationErrors called - FUNCTION EXECUTED', {
-                  params,
-                  columnField: col?.field,
-                  columnValidation: col?.validation,
-                  value: params?.value,
-                  data: params?.data,
-                  paramsKeys: params ? Object.keys(params) : 'params is null',
-                });
-                const errors = getValidationErrors(col, params?.value, params?.data);
-                this.debugLog('[Validation Debug] Validation result:', errors);
-                return errors;
+                return getValidationErrors(col, params?.value, params?.data);
               };
 
               // Explicitly set cellEditor to ensure validation is triggered
               // AG Grid's default editor might not call getValidationErrors consistently
               result.cellEditor = 'agTextCellEditor';
               
-              this.debugLog('[Validation Debug] Setting cellEditorParams for default column', {
-                field: col?.field,
-                cellEditor: result.cellEditor,
-                hasValidationFn: !!validationFn,
-                validationFnType: typeof validationFn,
-              });
-
               result.cellEditorParams = {
                 getValidationErrors: validationFn,
               };
-
-              this.debugLog('[Validation Debug] cellEditorParams created', {
-                field: col?.field,
-                cellEditorParams: result.cellEditorParams,
-                hasGetValidationErrors: !!result.cellEditorParams?.getValidationErrors,
-                getValidationErrorsType: typeof result.cellEditorParams?.getValidationErrors,
-              });
             }
-
-            this.debugLog('[Validation Debug] Default column built', {
-              field: result.field,
-              editable: result.editable,
-              cellEditor: result.cellEditor,
-              hasCellEditorParams: !!result.cellEditorParams,
-              hasGetValidationErrors: !!result.cellEditorParams?.getValidationErrors,
-              cellEditorParams: result.cellEditorParams,
-              validation: col?.validation,
-            });
 
             if (col?.useCustomLabel) {
               result.valueFormatter = (params) => {
@@ -2764,27 +2632,7 @@ export default {
           }
         }
 
-        // This should never be reached, but just in case
-        if (this.content?.enableDebugLogs) {
-          console.warn('[Validation Debug] Column did not match any case', {
-            field: col?.field,
-            cellDataType: cellDataType,
-          });
-        }
         return result;
-      });
-
-      this.debugLog('[Validation Debug] All column definitions created', {
-        count: allColumnDefs.length,
-        columns: allColumnDefs.map(col => ({
-          field: col?.field,
-          cellDataType: col?.cellDataType,
-          editable: col?.editable,
-          cellEditor: col?.cellEditor,
-          hasCellEditorParams: !!col?.cellEditorParams,
-          hasGetValidationErrors: !!col?.cellEditorParams?.getValidationErrors,
-          validation: this.content.columns.find(c => (c?.field === col?.field || c?.actionName === col?.field))?.validation,
-        })),
       });
 
       // Build a map of column definitions by their colId/field for reordering
@@ -2921,9 +2769,7 @@ export default {
       return false;
     },
     invalidEditValueMode() {
-      const mode = this.content?.invalidEditValueMode || "revert";
-      this.debugLog('[Validation Debug] invalidEditValueMode computed:', mode);
-      return mode;
+      return this.content?.invalidEditValueMode || "revert";
     },
     paginationPageSizeSelector() {
       if (
@@ -3020,44 +2866,9 @@ export default {
       });
     },
     onCellEditRequest(event) {
-      const colDef = event.column?.getColDef();
-      const cellEditorParams = colDef?.cellEditorParams;
-      this.debugLog('[Validation Debug] Cell edit requested', {
-        column: event.column?.getColId(),
-        newValue: event.newValue,
-        oldValue: event.oldValue,
-        data: event.data,
-        columnDef: colDef,
-        cellEditor: colDef?.cellEditor,
-        hasCellEditorParams: !!cellEditorParams,
-        cellEditorParams: cellEditorParams,
-        hasGetValidationErrors: !!cellEditorParams?.getValidationErrors,
-        getValidationErrorsType: typeof cellEditorParams?.getValidationErrors,
-        allCellEditorParamsKeys: cellEditorParams ? Object.keys(cellEditorParams) : [],
-      });
-
-      // Try to manually check if validation would be called
-      if (cellEditorParams?.getValidationErrors && typeof cellEditorParams.getValidationErrors === 'function') {
-        this.debugLog('[Validation Debug] Attempting manual validation call');
-        try {
-          const manualResult = cellEditorParams.getValidationErrors({
-            value: event.newValue,
-            data: event.data,
-          });
-          this.debugLog('[Validation Debug] Manual validation result:', manualResult);
-        } catch (e) {
-          console.error('[Validation Debug] Error calling validation manually:', e);
-        }
-      }
+      // Method kept for potential future use
     },
     onCellValueChanged(event) {
-      this.debugLog('[Validation Debug] Cell value changed', {
-        column: event.column?.getColId(),
-        newValue: event.data?.[event.column.getColId()],
-        oldValue: event.oldValue,
-        data: event.data,
-      });
-
       // Find the column configuration to get isDirectUpdate
       const columnId = event.column.getColId();
       const columnConfig = this.content.columns.find(

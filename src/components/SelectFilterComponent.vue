@@ -31,7 +31,7 @@
                 :disabled="!canReset"
                 @click="onReset"
             >
-                Reset
+                {{ translations.reset }}
             </button>
             <button
                 type="button"
@@ -39,7 +39,7 @@
                 :disabled="!canApply"
                 @click="onApply"
             >
-                Apply
+                {{ translations.apply }}
             </button>
         </div>
     </div>
@@ -140,6 +140,11 @@ export default {
         },
         isLoadingOptions() {
             return !!this.selectParams?.isLoading;
+        },
+        translations() {
+            const filterParams = this.params?.colDef?.filterParams || this.params?.filterParams || {};
+            const defaultTranslations = { reset: 'Reset', apply: 'Apply' };
+            return filterParams.translations || defaultTranslations;
         },
         canApply() {
             if (!this.pendingSelection.size && !this.appliedSelection.size) {
