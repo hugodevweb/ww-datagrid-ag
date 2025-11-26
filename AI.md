@@ -160,6 +160,10 @@ A highly customizable data grid/table component that supports features like sort
   - `columnId` (string): The column ID (field name or actionName)
   - `newValue` (any): The new value to set for the cell
   - Example: `datagrid.setCellValue('user-123', 'status', 'active')`
+- setInFocus(rowId, columnId?): Scrolls to a row by ID and sets focus on a cell in that row. If rowId is null, clears focus from all cells. Returns `true` if successful, `false` otherwise.
+  - `rowId` (string|number|null): The ID of the row (must match the idFormula output), or null to clear focus
+  - `columnId` (string, optional): The column ID to focus. If not provided, focuses the first column.
+  - Example: `datagrid.setInFocus('user-123', 'email')` or `datagrid.setInFocus('user-123')` or `datagrid.setInFocus(null)` to clear focus
 - resetFilters(): Clears all active filters in the grid.
 - resetSort(): Clears all sorting in the grid.
 - deselectAll(): Deselects all currently selected rows.

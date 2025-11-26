@@ -365,6 +365,32 @@ export default {
       ],
     },
     {
+      label: "Set in focus",
+      action: "setInFocus",
+      args: [
+        {
+          name: "Row id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The ID of the row to focus (must match the idFormula output). Pass null to clear focus from all cells.",
+          },
+          /* wwEditor:end */
+        },
+        {
+          name: "Column id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The column ID to focus (optional - if not provided, focuses the first column)",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
+    {
       label: "Trigger cell value changed",
       action: "triggerCellValueChanged",
       args: [

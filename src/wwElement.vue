@@ -3481,6 +3481,166 @@ export default {
         rowNode.setSelected(false);
       }
     },
+    setInFocus(rowId, columnId) {
+      if (!this.gridApi) {
+        console.warn("[Datagrid] Grid API is not initialized yet");
+        return false;
+      }
+      
+      // Helper function to clear custom action focus class from all cells
+      const clearActionFocusClass = () => {
+        if (this.gridContainerRef) {
+          const focusedCells = this.gridContainerRef.querySelectorAll('.ag-cell-action-focus');
+          focusedCells.forEach(cell => cell.classList.remove('ag-cell-action-focus'));
+        }
+      };
+      
+      // If rowId is null/undefined, clear focus from all cells
+      if (rowId === null || rowId === undefined) {
+        clearActionFocusClass();
+        this.gridApi.clearFocusedCell();
+        return true;
+      }
+      
+      // Clear any previous action focus class
+      clearActionFocusClass();
+      
+      // Try to get the row node
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found and rowId is a number, try converting to string and vice versa
+      if (!rowNode) {
+        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
+        if (!isNaN(alternativeId)) {
+          rowNode = this.gridApi.getRowNode(alternativeId);
+        }
+      }
+      
+      // If still not found, search through all rows by matching the ID formula
+      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
+      // by the base ID (from formula) rather than the full node.id
+      if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            // Get the base ID using the same formula as getRowId (without hash)
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // If formula returns the field name instead of value, try direct access
+            // This handles cases where the formula might not resolve correctly
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              // Try common ID field names directly from node.data
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            // Convert to string for comparison
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            // Try exact match with base ID (what user provides)
+            if (baseIdStr === rowIdStr) {
+              rowNode = node;
+            }
+            // Also check if the provided rowId matches the start of node.id
+            // (in case getRowId appended a hash: "uuid-hash")
+            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
+              rowNode = node;
+            }
+            // Also check if node.id exactly matches (in case user provided full ID with hash)
+            else if (node.id && String(node.id) === rowIdStr) {
+              rowNode = node;
+            }
+            // Fallback: check if rowId exists as a property value in node.data
+            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
+      if (!rowNode) {
+        console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
+        // Debug: log available row IDs to help troubleshoot
+        if (this.content?.enableDebugLogs) {
+          const availableIds = [];
+          this.gridApi.forEachNode((node) => {
+            if (node.data) {
+              let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+              if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+                baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+              }
+              availableIds.push({ 
+                baseId, 
+                nodeId: node.id,
+                dataId: node.data.id,
+                dataKeys: Object.keys(node.data || {})
+              });
+            }
+          });
+          console.log('[Datagrid] Available row IDs:', availableIds);
+        }
+        return false;
+      }
+      
+      if (!rowNode.data) {
+        console.warn(`[Datagrid] Row node found but has no data`);
+        return false;
+      }
+      
+      // Determine which column to focus
+      let targetColumnId = columnId;
+      
+      if (!targetColumnId) {
+        // If columnId not provided, use the first column
+        const allColumns = this.gridApi.getAllGridColumns();
+        if (allColumns && allColumns.length > 0) {
+          targetColumnId = allColumns[0].getColId();
+        } else {
+          console.warn(`[Datagrid] No columns available to focus`);
+          return false;
+        }
+      } else {
+        // Validate that the column exists
+        const allColumns = this.gridApi.getAllGridColumns();
+        const columnExists = allColumns.some(col => col.getColId() === targetColumnId);
+        if (!columnExists) {
+          console.warn(`[Datagrid] Column "${targetColumnId}" not found in the grid`);
+          return false;
+        }
+      }
+      
+      // Get row index
+      const rowIndex = rowNode.rowIndex;
+      if (rowIndex === null || rowIndex === undefined) {
+        console.warn(`[Datagrid] Row node found but has no row index`);
+        return false;
+      }
+      
+      // Scroll to center the row in the viewport using ensureIndexVisible with 'middle' position
+      this.gridApi.ensureIndexVisible(rowIndex, 'middle');
+      
+      // Set focus on the cell using nextTick to ensure grid is ready after scrolling
+      this.$nextTick(() => {
+        setTimeout(() => {
+          if (this.gridApi) {
+            this.gridApi.setFocusedCell(rowIndex, targetColumnId);
+            
+            // Add custom action focus class to the focused cell for dedicated styling
+            this.$nextTick(() => {
+              if (this.gridContainerRef) {
+                // Find the focused cell and add the action focus class
+                const focusedCell = this.gridContainerRef.querySelector('.ag-cell-focus');
+                if (focusedCell) {
+                  focusedCell.classList.add('ag-cell-action-focus');
+                }
+              }
+            });
+          }
+        }, 100);
+      });
+      
+      return true;
+    },
     /* wwEditor:start */
     generateColumns() {
       this.$emit("update:content", {
@@ -3793,6 +3953,18 @@ export default {
         border-color: transparent !important;
       }
     }
+  }
+
+  // Action focus styling - applies ONLY when cell is focused via setInFocus action (not keyboard navigation)
+  :deep(.ag-cell-action-focus:not(.-suppress-row-interaction)) {
+    // Background highlight for action-focused cell
+    background-color: var(--ag-range-selection-background-color, rgba(33, 150, 243, 0.1)) !important;
+    
+    // Border highlight using box-shadow for clean rendering
+    box-shadow: inset 0 0 0 2px var(--ag-range-selection-border-color, var(--ag-active-color, #2196f3)) !important;
+    
+    // Smooth transition for focus effect
+    transition: background-color 0.15s ease, box-shadow 0.15s ease !important;
   }
 
   // Suppress cell focus border styling for suppress-row-interaction cells (stronger selectors)
