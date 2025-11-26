@@ -2013,10 +2013,27 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              isManyToMany: {
+                label: "Is Many to Many",
+                type: "OnOff",
+                hidden: array?.item?.cellDataType !== "user",
+                bindable: true,
+                defaultValue: false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "Set to true if this column represents a many-to-many relationship (junction table). When true, the User ID Formula field will be shown to extract user IDs from nested structures.",
+                },
+                propertyHelp: {
+                  tooltip: "Enable this for junction table relationships where user IDs are nested in objects (e.g., case_owners.profile.id). When enabled, you can use the User ID Formula to extract the user ID from the nested structure.",
+                },
+                /* wwEditor:end */
+              },
               userIdFormula: {
                 label: "User ID Formula",
                 type: "Formula",
-                hidden: array?.item?.cellDataType !== "user",
+                hidden: (content, sidePanelContent, boundProperties, wwProps, array) => 
+                  array?.item?.cellDataType !== "user" || !array?.item?.isManyToMany,
                 options: (content) => {
                   // Get a sample row from rowData for template
                   const rowData = content?.rowData;
@@ -2064,6 +2081,7 @@ export default {
               "optionsColorFormula",
               "users",
               "maxNumberOfUsers",
+              "isManyToMany",
               "userIdFormula",
               "useCustomLabel",
               "displayLabelFormula",

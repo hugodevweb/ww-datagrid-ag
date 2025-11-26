@@ -327,60 +327,16 @@ export default {
               .filter(id => id != null); // Remove any null/undefined IDs
             
               if (selectedUserIds.length > 0) {
-              // CRITICAL FIX: Check if column stores single user (UUID) or multiple users (UUID[])
-              // When maxNumberOfUsers === 1, the database column is a single UUID
-              // When maxNumberOfUsers > 1, the database column might be UUID[] (array) or still UUID
-              // Since we can't know the actual column type, we'll use .in() which works for both
-              // For UUID columns: .in() filters where column value is IN the provided array
-              // For UUID[] columns: We'll need a different approach, but .in() won't work for arrays
+              // Check if this is a junction table (many-to-many) using isManyToMany property
+              // This is the ONLY condition that determines if a column is managed as many-to-many
+              const isManyToMany = column?.isManyToMany === true;
               
-              const isMultiple = (column.maxNumberOfUsers ?? 4) > 1;
-              
-              // Check if this is a foreign key column (junction table) by comparing userIdFormula
-              // If userIdFormula is not the default, it's likely a foreign key/junction table
-              const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
-              const userIdFormula = column?.userIdFormula || defaultUserIdFormula;
-              const isForeignKeyColumn = JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
-              
-              // For single UUID columns (maxNumberOfUsers === 1), always use .in() or .eq()
-              // This works because the column is a single UUID value, not an array
-              if (!isMultiple) {
-                // Single user: column is UUID type, use .in() for multiple values or .eq() for single
-                if (selectedUserIds.length === 1) {
-                  currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
-                } else {
-                  currentQuery = currentQuery.in(supabaseField, selectedUserIds);
-                }
+              // For junction tables (many-to-many), use .in() for filtering
+              // For direct foreign keys (not many-to-many), use .in() or .eq() based on selection count
+              if (selectedUserIds.length === 1) {
+                currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
               } else {
-                // Multiple users: column might be UUID[] (array) or still UUID
-                // If it's UUID[] (Postgres array type), we can use .overlaps()
-                // If it's UUID (single value), we need to use .in() or .eq()
-                // Since we can't reliably detect the column type, we'll try a safer approach:
-                // For UUID[] columns: use .overlaps() to check if arrays have any common elements
-                // However, if the column is actually UUID (not UUID[]), this will fail
-                // So we'll use .in() for now, which works for UUID columns
-                // TODO: If you have UUID[] columns, you may need to use a different approach
-                // such as using Postgres array functions or casting
-                
-                // For now, use .in() which is safe for UUID columns
-                // If you have UUID[] columns and want to filter by "contains any of these IDs",
-                // you might need to use Postgres array operators, but that requires knowing the column type
-                if (selectedUserIds.length === 1) {
-                  // Even for "multiple" mode, if only one ID selected, use .eq()
-                  currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
-                } else {
-                  // Use .in() which works for UUID columns
-                  // Note: This assumes the column stores a single UUID value
-                  // If you have UUID[] columns, you'll need array-specific filtering
-                  currentQuery = currentQuery.in(supabaseField, selectedUserIds);
-                }
-                
-                // Alternative for UUID[] arrays (uncomment if your columns are UUID[] type):
-                // if (selectedUserIds.length === 1) {
-                //   currentQuery = currentQuery.contains(supabaseField, [selectedUserIds[0]]);
-                // } else {
-                //   currentQuery = currentQuery.overlaps(supabaseField, selectedUserIds);
-                // }
+                currentQuery = currentQuery.in(supabaseField, selectedUserIds);
               }
               
               // CRITICAL FIX: For user columns (especially junction tables), explicitly exclude null values
@@ -2881,10 +2837,10 @@ export default {
       
       // Check if this is a user column (all user columns need safeguard to prevent data fetching)
       const isUserColumn = columnConfig?.cellDataType === 'user';
+      // isManyToMany is the ONLY condition that determines if a column is managed as many-to-many
+      const isForeignKeyColumn = isUserColumn && columnConfig?.isManyToMany === true;
       const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
       const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
-      const isForeignKeyColumn = isUserColumn && 
-        JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
       
       // For user columns, get oldValue as raw user IDs (not display names)
       // AG Grid's event.oldValue might be the display value (names) due to valueGetter
@@ -3009,10 +2965,13 @@ export default {
         this.debugLog('[User Column Update] Flag set, about to process update');
       }
       
-      // If it's a foreign key user column, simulate creating a fake junction record
+      // If it's a many-to-many user column (junction table), simulate creating a fake junction record
+      // isManyToMany is the ONLY condition that determines if a column is managed as many-to-many
+      // maxNumberOfUsers only affects whether the result is stored as an array or single object
       if (isForeignKeyColumn && newValue) {
-        const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
-        const userIds = isMultiple && Array.isArray(newValue) ? newValue : (isMultiple ? [newValue] : newValue);
+        // Normalize newValue to array format for processing
+        const userIds = Array.isArray(newValue) ? newValue : [newValue];
+        const userIdFormulaForJunction = columnConfig?.userIdFormula || defaultUserIdFormula;
         
         // Helper function to create fake junction record structure based on userIdFormula
         const createFakeJunctionRecord = (userId, formula) => {
@@ -3049,12 +3008,16 @@ export default {
           return { id: userId };
         };
         
-        // Create fake junction records
+        // Create fake junction records - always create array structure for many-to-many
+        // Check maxNumberOfUsers to determine if we should store as array or single object
+        const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
         let fakeJunctionRecord;
-        if (isMultiple && Array.isArray(userIds)) {
-          fakeJunctionRecord = userIds.map(userId => createFakeJunctionRecord(userId, userIdFormula));
+        if (isMultiple) {
+          // Multiple users: array of nested structures
+          fakeJunctionRecord = userIds.map(userId => createFakeJunctionRecord(userId, userIdFormulaForJunction));
         } else {
-          fakeJunctionRecord = createFakeJunctionRecord(userIds, userIdFormula);
+          // Single user: single nested structure (not array)
+          fakeJunctionRecord = createFakeJunctionRecord(userIds[0], userIdFormulaForJunction);
         }
         
         try {
@@ -3072,7 +3035,7 @@ export default {
           
           this.debugLog('[Foreign Key] Created fake junction record:', {
             columnId,
-            userIdFormula: userIdFormula,
+            userIdFormula: userIdFormulaForJunction,
             fakeRecord: fakeJunctionRecord,
           });
         } catch (error) {
@@ -3238,16 +3201,16 @@ export default {
         console.warn(`[Datagrid] Column "${columnId}" not found in column configuration`);
       }
       
-      // Handle user columns with foreign keys - convert user ID(s) to nested structure if needed
+      // Handle user columns - convert user ID(s) to nested structure if many-to-many
+      // isManyToMany is the ONLY condition that determines if a column is managed as many-to-many
       let valueToSet = newValue;
       const isUserColumn = columnConfig?.cellDataType === 'user';
       if (isUserColumn) {
-        const defaultUserIdFormula = { type: 'f', code: 'context.mapping' };
-        const userIdFormula = columnConfig?.userIdFormula || defaultUserIdFormula;
-        const isForeignKeyColumn = JSON.stringify(userIdFormula) !== JSON.stringify(defaultUserIdFormula);
+        const isManyToMany = columnConfig?.isManyToMany === true;
+        const userIdFormula = columnConfig?.userIdFormula || { type: 'f', code: 'context.mapping' };
         const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
         
-        if (isForeignKeyColumn && newValue) {
+        if (isManyToMany && newValue) {
           // Helper function to create fake junction record structure based on userIdFormula
           const createFakeJunctionRecord = (userId, formula) => {
             // Parse the formula code to understand the nested structure
@@ -3282,19 +3245,19 @@ export default {
             return { id: userId };
           };
           
-          // Convert user ID(s) to nested structure
-          if (isMultiple && Array.isArray(newValue)) {
-            // Multiple users: array of IDs -> array of nested structures
-            valueToSet = newValue.map(userId => createFakeJunctionRecord(userId, userIdFormula));
-          } else if (isMultiple && newValue) {
-            // Multiple users: single ID -> array with one nested structure
-            valueToSet = [createFakeJunctionRecord(newValue, userIdFormula)];
-          } else if (!isMultiple && newValue) {
-            // Single user: ID -> nested structure
-            valueToSet = createFakeJunctionRecord(newValue, userIdFormula);
+          // Normalize newValue to array for processing
+          const userIds = Array.isArray(newValue) ? newValue : [newValue];
+          
+          // Convert user ID(s) to nested structure based on maxNumberOfUsers
+          if (isMultiple) {
+            // Multiple users: array of nested structures
+            valueToSet = userIds.map(userId => createFakeJunctionRecord(userId, userIdFormula));
+          } else {
+            // Single user: single nested structure (not array)
+            valueToSet = createFakeJunctionRecord(userIds[0], userIdFormula);
           }
         }
-        // For non-foreign-key user columns, valueToSet remains as newValue (user ID or array of IDs)
+        // For non-many-to-many user columns, valueToSet remains as newValue (user ID or array of IDs)
       }
       
       // Update the data directly

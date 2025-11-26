@@ -40,11 +40,12 @@ export default {
             if (!this.value) return '';
 
             try {
-                const date = new Date(this.value);
-                if (isNaN(date.getTime())) return '';
-
                 if (this.isDateTimeMode) {
-                    // Format for datetime-local input: YYYY-MM-DDTHH:mm
+                    // For datetime, parse ISO string and format for datetime-local input
+                    const date = new Date(this.value);
+                    if (isNaN(date.getTime())) return '';
+                    
+                    // Format for datetime-local input: YYYY-MM-DDTHH:mm (use local time)
                     const year = date.getFullYear();
                     const month = String(date.getMonth() + 1).padStart(2, '0');
                     const day = String(date.getDate()).padStart(2, '0');
@@ -52,11 +53,22 @@ export default {
                     const minutes = String(date.getMinutes()).padStart(2, '0');
                     return `${year}-${month}-${day}T${hours}:${minutes}`;
                 } else {
-                    // Format for date input: YYYY-MM-DD
-                    const year = date.getFullYear();
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    return `${year}-${month}-${day}`;
+                    // For date-only, value is already in YYYY-MM-DD format
+                    // If it's an ISO string, extract just the date part
+                    if (typeof this.value === 'string' && this.value.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                        // Already in YYYY-MM-DD format
+                        return this.value;
+                    } else {
+                        // Might be an ISO string, extract date part
+                        const date = new Date(this.value);
+                        if (isNaN(date.getTime())) return '';
+                        
+                        // Use UTC methods to avoid timezone issues
+                        const year = date.getUTCFullYear();
+                        const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+                        const day = String(date.getUTCDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                    }
                 }
             } catch (e) {
                 return '';
@@ -98,14 +110,16 @@ export default {
                 return;
             }
 
-            // Convert input value to ISO string for storage
+            // Convert input value for storage
             if (this.isDateTimeMode) {
-                // datetime-local gives us YYYY-MM-DDTHH:mm
-                this.value = new Date(inputValue).toISOString();
+                // datetime-local gives us YYYY-MM-DDTHH:mm (in local time)
+                // Create date from local time string, then convert to ISO
+                const date = new Date(inputValue);
+                this.value = date.toISOString();
             } else {
                 // date input gives us YYYY-MM-DD
-                // Store as ISO string at midnight UTC
-                this.value = new Date(inputValue + 'T00:00:00').toISOString();
+                // Store as simple date string (YYYY-MM-DD) to avoid timezone issues
+                this.value = inputValue;
             }
         },
 
