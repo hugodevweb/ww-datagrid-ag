@@ -1,7 +1,17 @@
 <template>
     <div class="select-filter">
-        <div v-if="isLoadingOptions" class="select-filter-empty">
-            Loading options...
+        <div v-if="isLoadingOptions || isLoadingOptionsState" class="select-filter-empty">
+            <div class="loading-with-refresh">
+                <span>Loading options...</span>
+                <button 
+                    type="button" 
+                    class="refresh-btn" 
+                    @click="refreshOptions"
+                    title="Refresh options list"
+                >
+                    <span class="refresh-icon">↻</span>
+                </button>
+            </div>
         </div>
         <div v-else-if="orderedOptions.length" class="select-filter-options">
             <button
@@ -63,15 +73,32 @@ export default {
             pendingSelection: new Set(),
             appliedSelection: new Set(),
             refreshTimer: null,
+            loadingStartTime: null, // Track when loading started
         };
     },
     created() {
-        console.log('[SelectFilterComponent] created() called with params:', this.params);
-        if (!this.params) {
-            console.error('[SelectFilterComponent] ERROR: params is null/undefined in created()!');
-        } else {
-            console.log('[SelectFilterComponent] params.filterParams:', this.params.filterParams);
-            console.log('[SelectFilterComponent] params.colDef:', this.params.colDef);
+        // Try to load options immediately when component is created
+        // This helps in production where reactive properties might not be immediately available
+        if (this.params) {
+            const colDef = this.params.colDef || {};
+            const filterParams = colDef.filterParams || this.params.filterParams || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Try filterParams first
+            if (filterParams && Object.keys(filterParams).length > 0) {
+                this.setSelectParams(filterParams);
+            }
+            
+            // If still no options, try editor params
+            if (this.rawOptions.length === 0 && editorParams && Object.keys(editorParams).length > 0) {
+                this.setSelectParams(editorParams);
+            }
+            
+            // If still no options, try renderer params
+            if (this.rawOptions.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
+                this.setSelectParams(rendererParams);
+            }
         }
     },
     mounted() {
@@ -139,7 +166,51 @@ export default {
             return [...selected, ...unselected];
         },
         isLoadingOptions() {
-            return !!this.selectParams?.isLoading;
+            // Priority: Show data if available, regardless of isLoading flag
+            const hasOptions = Array.isArray(this.processedOptions) && this.processedOptions.length > 0;
+            const isLoading = !!this.selectParams?.isLoading;
+            
+            // If we have options, never show loading
+            if (hasOptions) {
+                this.loadingStartTime = null; // Reset loading timer
+                return false;
+            }
+            
+            // Only show loading if flag is true AND we don't have options
+            // Add timeout: if loading > 3s, show refresh button instead
+            if (isLoading && !hasOptions) {
+                // Track when loading started
+                if (!this.loadingStartTime) {
+                    this.loadingStartTime = Date.now();
+                }
+                
+                // Check if we've been loading too long (> 3 seconds)
+                const loadingDuration = Date.now() - this.loadingStartTime;
+                if (loadingDuration > 3000) {
+                    // Stop showing loading, show refresh button instead
+                    return false;
+                }
+                return true;
+            }
+            
+            // Reset loading timer if not loading
+            this.loadingStartTime = null;
+            return false;
+        },
+        isLoadingOptionsState() {
+            // Check if we should show refresh button (loading > 3s with no options)
+            const hasOptions = Array.isArray(this.processedOptions) && this.processedOptions.length > 0;
+            const isLoading = !!this.selectParams?.isLoading;
+            
+            if (hasOptions) return false;
+            if (!isLoading) return false;
+            
+            if (this.loadingStartTime) {
+                const loadingDuration = Date.now() - this.loadingStartTime;
+                return loadingDuration > 3000;
+            }
+            
+            return false;
         },
         translations() {
             const filterParams = this.params?.colDef?.filterParams || this.params?.filterParams || {};
@@ -165,7 +236,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: false,
+            immediate: true, // Run immediately for production
         },
         // Specifically watch for options changes in selectOptions
         'params.colDef.filterParams.selectOptions.options': {
@@ -177,7 +248,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: false,
+            immediate: true, // Run immediately for production
         },
         // Watch for changes in cellRendererParams and cellEditorParams options
         'params.colDef.cellRendererParams.options': {
@@ -188,7 +259,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: false,
+            immediate: true, // Run immediately for production
         },
         'params.colDef.cellEditorParams.options': {
             handler(newOptions, oldOptions) {
@@ -198,7 +269,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: false,
+            immediate: true, // Run immediately for production
         },
     },
     methods: {
@@ -324,6 +395,11 @@ export default {
             // Ensure options is always an array (default to empty array)
             if (!Array.isArray(options)) {
                 options = [];
+            }
+            
+            // If we have options, set isLoading to false (options are available)
+            if (options.length > 0) {
+                isLoading = false;
             }
             
             // Build merged params - ensure we always have an array, even if empty
@@ -481,6 +557,36 @@ export default {
                 "--select-filter-border": textColor,
             };
         },
+        refreshOptions() {
+            // Force refresh by re-checking all sources
+            this.loadingStartTime = Date.now(); // Reset loading timer
+            
+            // Try multiple sources
+            const colDef = this.params?.colDef || {};
+            const filterParams = colDef.filterParams || this.params?.filterParams || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Try filterParams first
+            if (filterParams && Object.keys(filterParams).length > 0) {
+                this.setSelectParams(filterParams);
+            }
+            
+            // If still no options, try editor params
+            if (this.rawOptions.length === 0 && editorParams && Object.keys(editorParams).length > 0) {
+                this.setSelectParams(editorParams);
+            }
+            
+            // If still no options, try renderer params
+            if (this.rawOptions.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
+                this.setSelectParams(rendererParams);
+            }
+            
+            // Also try to extract from grid data as fallback
+            if (this.params?.api) {
+                this.params.api.refreshCells();
+            }
+        },
     },
 };
 </script>
@@ -632,5 +738,45 @@ export default {
     padding: 16px;
     font-size: 13px;
     color: rgba(0, 0, 0, 0.6);
+}
+
+.loading-with-refresh {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.refresh-btn {
+    background: none;
+    border: 1px solid rgba(0, 0, 0, 0.2);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 4px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+    
+    &:hover {
+        background-color: rgba(0, 0, 0, 0.05);
+        border-color: rgba(0, 0, 0, 0.3);
+    }
+    
+    &:active {
+        transform: scale(0.95);
+    }
+}
+
+.refresh-icon {
+    font-size: 16px;
+    line-height: 1;
+    display: inline-block;
+    transition: transform 0.3s ease;
+}
+
+.refresh-btn:hover .refresh-icon {
+    transform: rotate(180deg);
 }
 </style>
