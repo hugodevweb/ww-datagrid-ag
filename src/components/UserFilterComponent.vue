@@ -129,7 +129,11 @@ export default {
             return Array.from(this.pendingSelection);
         },
         isLoadingUsers() {
-            return !!this.userParams?.isLoading;
+            // Show loading only if isLoading is true AND users array is empty or not available
+            // If users are available, don't show loading even if isLoading flag is true
+            const isLoading = !!this.userParams?.isLoading;
+            const hasUsers = Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
+            return isLoading && !hasUsers;
         },
         translations() {
             const filterParams = this.params?.colDef?.filterParams || this.params?.filterParams || {};
@@ -174,6 +178,40 @@ export default {
         this.initializeUsers();
         this.syncSelectionsFromModel(null, { updateApplied: true });
         
+        // Try to initialize users multiple times with different sources
+        // This helps in production where reactive properties might not be immediately available
+        const tryInitializeUsers = () => {
+            if (!this.params) return;
+            
+            // Try multiple sources
+            const colDef = this.params.colDef || {};
+            const filterParams = colDef.filterParams || this.params.filterParams || {};
+            const rendererParams = colDef.cellRendererParams || {};
+            const editorParams = colDef.cellEditorParams || {};
+            
+            // Try filterParams first
+            if (filterParams && Object.keys(filterParams).length > 0) {
+                this.setUserParams(filterParams);
+            }
+            
+            // If still no users, try editor params
+            if (this.availableUsers.length === 0 && editorParams && Object.keys(editorParams).length > 0) {
+                this.setUserParams(editorParams);
+            }
+            
+            // If still no users, try renderer params
+            if (this.availableUsers.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
+                this.setUserParams(rendererParams);
+            }
+        };
+        
+        // Try immediately
+        tryInitializeUsers();
+        
+        // Try again after a short delay (for async loading)
+        setTimeout(tryInitializeUsers, 100);
+        setTimeout(tryInitializeUsers, 500);
+        
         // Set up a periodic check for users (in case they load asynchronously)
         this.refreshTimer = setInterval(() => {
             if (!this.params) return;
@@ -183,7 +221,7 @@ export default {
             const availableUsersStr = JSON.stringify(this.availableUsers || []);
             
             if (currentUsersStr !== availableUsersStr) {
-                this.setUserParams(this.params.filterParams);
+                tryInitializeUsers();
             }
         }, 500);
     },
@@ -246,18 +284,19 @@ export default {
             if (!this.params) return null;
             
             const colDef = this.params.colDef || {};
-            const filterParams = this.params.filterParams || {};
+            const filterParams = colDef.filterParams || this.params.filterParams || {};
             const rendererParams = colDef.cellRendererParams || {};
             const editorParams = colDef.cellEditorParams || {};
             
-            // Check in priority order
-            if (Array.isArray(filterParams.users)) {
+            // Check in priority order: filterParams > editorParams > rendererParams
+            // Also check both colDef.filterParams and params.filterParams for compatibility
+            if (Array.isArray(filterParams.users) && filterParams.users.length > 0) {
                 return filterParams.users;
             }
-            if (Array.isArray(editorParams.users)) {
+            if (Array.isArray(editorParams.users) && editorParams.users.length > 0) {
                 return editorParams.users;
             }
-            if (Array.isArray(rendererParams.users)) {
+            if (Array.isArray(rendererParams.users) && rendererParams.users.length > 0) {
                 return rendererParams.users;
             }
             
@@ -283,6 +322,12 @@ export default {
             const rendererParams = colDef.cellRendererParams || {};
             const editorParams = colDef.cellEditorParams || {};
             
+            // Also check params.filterParams if filterParams is empty
+            const paramsFilterParams = this.params?.filterParams || {};
+            if (!filterParams || Object.keys(filterParams).length === 0) {
+                filterParams = paramsFilterParams;
+            }
+            
             // Priority order: filterParams > editorParams > rendererParams
             let users = null;
             let userFocusColor = null;
@@ -293,7 +338,7 @@ export default {
             
             // Try to get from filterParams first
             if (filterParams && typeof filterParams === 'object') {
-                if (Array.isArray(filterParams.users)) {
+                if (Array.isArray(filterParams.users) && filterParams.users.length > 0) {
                     users = filterParams.users;
                 }
                 userFocusColor = filterParams.userFocusColor;
@@ -304,7 +349,7 @@ export default {
             }
             
             // Fallback to editor params
-            if (users === null && Array.isArray(editorParams.users)) {
+            if ((users === null || (Array.isArray(users) && users.length === 0)) && Array.isArray(editorParams.users) && editorParams.users.length > 0) {
                 users = editorParams.users;
                 if (!userFocusColor) userFocusColor = editorParams.userFocusColor;
                 if (!cellFontFamily) cellFontFamily = editorParams.cellFontFamily;
@@ -314,7 +359,7 @@ export default {
             }
             
             // Fallback to renderer params
-            if (users === null && Array.isArray(rendererParams.users)) {
+            if ((users === null || (Array.isArray(users) && users.length === 0)) && Array.isArray(rendererParams.users) && rendererParams.users.length > 0) {
                 users = rendererParams.users;
                 if (!userFocusColor) userFocusColor = rendererParams.userFocusColor;
                 if (!cellFontFamily) cellFontFamily = rendererParams.cellFontFamily;
@@ -326,6 +371,11 @@ export default {
             // Ensure users is always an array
             if (!Array.isArray(users)) {
                 users = [];
+            }
+            
+            // If we have users, set isLoading to false (users are available)
+            if (users.length > 0) {
+                isLoading = false;
             }
             
             this.userParams = {

@@ -174,6 +174,49 @@ export default {
       return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
     };
 
+    // Helper function to find a user column by columnId (improved lookup for many-to-many relationships)
+    const findUserColumn = (columnId) => {
+      if (!columnId || !props.content?.columns) return null;
+      
+      // First, try standard lookup
+      let column = props.content.columns.find(col => {
+        const colId = col?.actionName || col?.field;
+        return colId === columnId || col?.field === columnId;
+      });
+      
+      // If not found, try matching by supabaseFilterField (for many-to-many relationships)
+      if (!column) {
+        column = props.content.columns.find(col => {
+          if (col?.cellDataType !== 'user') return false;
+          const supabaseField = col?.supabaseFilterField?.trim();
+          if (!supabaseField) return false;
+          // Check if columnId matches the supabaseFilterField or its base path
+          // e.g., columnId="case_owners" matches supabaseFilterField="case_owners.profile.id"
+          return supabaseField === columnId || supabaseField.startsWith(columnId + '.') || columnId.startsWith(supabaseField + '.');
+        });
+      }
+      
+      // If still not found, try a more flexible match (check if columnId contains field or vice versa)
+      if (!column) {
+        column = props.content.columns.find(col => {
+          if (col?.cellDataType !== 'user') return false;
+          const field = col?.field;
+          if (!field) return false;
+          // Check if columnId contains field or field contains columnId (case-insensitive)
+          const fieldLower = String(field).toLowerCase();
+          const columnIdLower = String(columnId).toLowerCase();
+          return fieldLower.includes(columnIdLower) || columnIdLower.includes(fieldLower);
+        });
+      }
+      
+      // Return column only if it's a user column with users array
+      if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
+        return column;
+      }
+      
+      return null;
+    };
+
     // Helper function to format filters for logging
     const formatFiltersForLog = (filterModel) => {
       if (!filterModel || Object.keys(filterModel).length === 0) {
@@ -188,12 +231,10 @@ export default {
         
         if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
           // Convert user names to IDs for logging (same as in convertFilterToSupabase)
-          const column = props.content?.columns?.find(col => {
-            const colId = col?.actionName || col?.field;
-            return colId === columnId || col?.field === columnId;
-          });
+          // Use improved column lookup for many-to-many relationships
+          const column = findUserColumn(columnId);
           
-          if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
+          if (column) {
             // Helper function to get user name (same logic as in renderer)
             const getUserName = (user) => {
               if (user.name) return user.name;
@@ -300,12 +341,10 @@ export default {
           // User filter stores user names in filter.values
           // We need to convert names to IDs for Supabase filtering
           // Find the column definition to get the users array
-          const column = props.content?.columns?.find(col => {
-            const colId = col?.actionName || col?.field;
-            return colId === columnId || col?.field === columnId;
-          });
+          // CRITICAL FIX: Use improved column lookup for many-to-many relationships
+          const column = findUserColumn(columnId);
           
-          if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
+          if (column) {
             // Helper function to get user name (same logic as in renderer)
             const getUserName = (user) => {
               if (user.name) return user.name;
@@ -380,7 +419,17 @@ export default {
               debugLog('[Supabase Filter] Warning: No valid user IDs found for names:', filter.values);
             }
           } else {
+            // Enhanced error logging to help diagnose the issue
             debugLog('[Supabase Filter] Warning: Could not find user column or users array for:', columnId);
+            debugLog('[Supabase Filter] Available columns:', props.content?.columns?.map(col => ({
+              field: col?.field,
+              actionName: col?.actionName,
+              cellDataType: col?.cellDataType,
+              supabaseFilterField: col?.supabaseFilterField,
+              hasUsers: Array.isArray(col?.users),
+              usersCount: Array.isArray(col?.users) ? col.users.length : 0
+            })));
+            debugLog('[Supabase Filter] Searching for columnId:', columnId);
           }
           continue;
         }
