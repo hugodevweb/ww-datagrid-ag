@@ -31,7 +31,7 @@
       :invalidEditValueMode="invalidEditValueMode"
       enableCellTextSelection
       ensureDomOrder
-      :row-drag-managed="true"
+      :row-drag-managed="rowDragManaged"
       @grid-ready="onGridReady"
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
@@ -1359,6 +1359,11 @@ export default {
       return isInfiniteScrollEnabled.value ? 'infinite' : undefined;
     });
 
+    // Row drag managed - disabled for infinite row model (not supported by AG Grid)
+    const rowDragManaged = computed(() => {
+      return !isInfiniteScrollEnabled.value;
+    });
+
     // Pagination should be disabled when infinite scrolling is enabled
     const paginationEnabled = computed(() => {
       if (isInfiniteScrollEnabled.value) {
@@ -1668,13 +1673,13 @@ export default {
           initialFetchDone.value = true;
           
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, set the datasource and cacheBlockSize
+            // For infinite scrolling, set the datasource
+            // Note: rowModelType is set via computed property at grid initialization
+            // and cannot be changed dynamically (AG Grid limitation)
             // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
             const currentFilters = gridApi.value.getFilterModel();
             const currentSort = gridApi.value.getState()?.sort?.sortModel;
             
-            gridApi.value.setGridOption('rowModelType', 'infinite');
-            gridApi.value.setGridOption('cacheBlockSize', cacheBlockSize.value);
             gridApi.value.setGridOption('datasource', datasource.value);
             
             // Restore filters and sorts after setting datasource
@@ -1703,6 +1708,8 @@ export default {
     );
 
     // Watch for infinite scrolling configuration changes
+    // Note: rowModelType and cacheBlockSize are initial properties and cannot be changed after grid init
+    // Users must reload the page to switch between row model types
     watch(
       () => [props.content?.enableInfiniteScroll, props.content?.infiniteBlockSize],
       (newValues, oldValues) => {
@@ -1712,12 +1719,12 @@ export default {
         }
         
         if (props.content?.dataSource === 'supabase' && props.content?.enableInfiniteScroll && gridApi.value) {
-          // Refresh the datasource and cacheBlockSize when infinite scrolling settings change
+          // Refresh the datasource when infinite scrolling settings change
+          // Note: cacheBlockSize is an initial property and cannot be changed dynamically
           // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
           const currentFilters = gridApi.value.getFilterModel();
           const currentSort = gridApi.value.getState()?.sort?.sortModel;
           
-          gridApi.value.setGridOption('cacheBlockSize', cacheBlockSize.value);
           gridApi.value.setGridOption('datasource', datasource.value);
           
           nextTick(() => {
@@ -1850,10 +1857,12 @@ export default {
       refreshData,
       rowData,
       rowModelType,
+      rowDragManaged,
       datasource,
       cacheBlockSize,
       paginationEnabled,
       isLoading,
+      isInfiniteScrollEnabled,
       gridComponents,
       /* wwEditor:start */
       createElement,
@@ -1882,24 +1891,10 @@ export default {
       };
     },
     dataTypeDefinitions() {
-      const definitions = {
-        dateString: {
-          baseDataType: 'dateString',
-          valueParser: (params) => {
-            if (params.newValue == null || params.newValue === '') {
-              return null;
-            }
-            return params.newValue;
-          },
-          valueFormatter: (params) => {
-            if (!params.value) return '';
-            return params.value;
-          },
-          dataTypeMatcher: (value) => typeof value === 'string' && !isNaN(Date.parse(value)),
-        },
-      };
-
-      return definitions;
+      // Return undefined to use AG Grid's default data type handling
+      // Custom formatting is handled via valueFormatter/valueParser on individual columns
+      // This avoids "data type definition undefined does not exist" errors
+      return undefined;
     },
     columnDefs() {
       // First, map all columns to their definitions
@@ -2718,7 +2713,9 @@ export default {
         columns = allColumnDefs;
       }
 
-      if (this.content.rowReorder && columns[0]) {
+      // Enable row drag only if rowReorder is enabled AND infinite scroll is NOT enabled
+      // (row dragging is not supported with infinite row model)
+      if (this.content.rowReorder && columns[0] && !this.isInfiniteScrollEnabled) {
         columns[0].rowDrag = true;
       }
 
