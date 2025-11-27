@@ -95,6 +95,7 @@ export default {
       "rowData",
       "supabaseTable",
       "supabaseQuery",
+      "supabaseFilters",
       {
         label: "Search",
         isCollapsible: true,
@@ -419,6 +420,22 @@ export default {
           bindingValidation: {
             type: "boolean",
             tooltip: "If true, cancels the edit and reverts to the original value. If false, saves the current value.",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
+    {
+      label: "Refresh row",
+      action: "refreshRow",
+      args: [
+        {
+          name: "Row id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The ID of the row to refresh from Supabase (must match the idFormula output / primary key)",
           },
           /* wwEditor:end */
         },
@@ -1129,6 +1146,71 @@ export default {
       },
       propertyHelp: {
         tooltip: "Supabase query string for selecting columns and relations. Use '*' for all columns, or specify columns and relations like '*, site:sites(id, name, code)'.",
+      },
+      /* wwEditor:end */
+    },
+    supabaseFilters: {
+      label: { en: "Manual Filters" },
+      type: "Array",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase",
+      defaultValue: [],
+      options: {
+        expandable: true,
+        getItemLabel(item) {
+          if (item?.field && item?.operator) {
+            return `${item.field} ${item.operator} ${item.value ?? ''}`;
+          }
+          return "Filter";
+        },
+        item: {
+          type: "Object",
+          defaultValue: { field: "", operator: "eq", value: "" },
+          options: {
+            item: {
+              field: {
+                label: { en: "Field" },
+                type: "Text",
+                options: { placeholder: "e.g., organization_id" },
+              },
+              operator: {
+                label: { en: "Operator" },
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "eq", label: "Equals (eq)" },
+                    { value: "neq", label: "Not Equals (neq)" },
+                    { value: "gt", label: "Greater Than (gt)" },
+                    { value: "gte", label: "Greater or Equal (gte)" },
+                    { value: "lt", label: "Less Than (lt)" },
+                    { value: "lte", label: "Less or Equal (lte)" },
+                    { value: "like", label: "Like (like)" },
+                    { value: "ilike", label: "Case-insensitive Like (ilike)" },
+                    { value: "is", label: "Is (is)" },
+                    { value: "in", label: "In Array (in)" },
+                    { value: "contains", label: "Contains (contains)" },
+                    { value: "containedBy", label: "Contained By (containedBy)" },
+                  ],
+                },
+              },
+              value: {
+                label: { en: "Value" },
+                type: "Text",
+                bindable: true,
+                options: { placeholder: "Filter value" },
+              },
+            },
+          },
+        },
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "array",
+        tooltip: "Array of filter objects: [{ field: 'org_id', operator: 'eq', value: 'xxx' }]",
+      },
+      propertyHelp: {
+        tooltip: "Add manual filter conditions that are always applied to the Supabase query. Use 'in' operator with comma-separated values for arrays (e.g., 'value1,value2'). Use 'is' operator with 'null' or 'true'/'false' for null/boolean checks.",
       },
       /* wwEditor:end */
     },

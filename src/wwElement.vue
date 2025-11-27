@@ -552,6 +552,85 @@ export default {
       }
     };
 
+    // Apply manual filters to Supabase query
+    const applyManualFilters = (query, manualFilters) => {
+      if (!manualFilters || !Array.isArray(manualFilters) || manualFilters.length === 0) {
+        return query;
+      }
+
+      let currentQuery = query;
+
+      for (const filter of manualFilters) {
+        if (!filter?.field || !filter?.operator) {
+          continue;
+        }
+
+        const field = filter.field;
+        const operator = filter.operator;
+        const value = filter.value;
+
+        // Handle different operators
+        switch (operator) {
+          case 'eq':
+            currentQuery = currentQuery.eq(field, value);
+            break;
+          case 'neq':
+            currentQuery = currentQuery.neq(field, value);
+            break;
+          case 'gt':
+            currentQuery = currentQuery.gt(field, value);
+            break;
+          case 'gte':
+            currentQuery = currentQuery.gte(field, value);
+            break;
+          case 'lt':
+            currentQuery = currentQuery.lt(field, value);
+            break;
+          case 'lte':
+            currentQuery = currentQuery.lte(field, value);
+            break;
+          case 'like':
+            currentQuery = currentQuery.like(field, value);
+            break;
+          case 'ilike':
+            currentQuery = currentQuery.ilike(field, value);
+            break;
+          case 'is':
+            // Handle 'is' for null/boolean checks
+            if (value === 'null' || value === null) {
+              currentQuery = currentQuery.is(field, null);
+            } else if (value === 'true') {
+              currentQuery = currentQuery.is(field, true);
+            } else if (value === 'false') {
+              currentQuery = currentQuery.is(field, false);
+            }
+            break;
+          case 'in':
+            // Handle 'in' for arrays - value should be comma-separated or array
+            if (Array.isArray(value)) {
+              currentQuery = currentQuery.in(field, value);
+            } else if (typeof value === 'string' && value.includes(',')) {
+              const values = value.split(',').map(v => v.trim());
+              currentQuery = currentQuery.in(field, values);
+            } else if (value) {
+              currentQuery = currentQuery.in(field, [value]);
+            }
+            break;
+          case 'contains':
+            currentQuery = currentQuery.contains(field, value);
+            break;
+          case 'containedBy':
+            currentQuery = currentQuery.containedBy(field, value);
+            break;
+          default:
+            // Default to eq if unknown operator
+            currentQuery = currentQuery.eq(field, value);
+        }
+      }
+
+      return currentQuery;
+    };
+
     // Fetch data from Supabase for infinite scrolling (returns data directly)
     const fetchSupabaseDataForInfinite = async (startRow, endRow, filterModel = null, sortModel = null, searchValue = null) => {
       if (props.content?.dataSource !== 'supabase') {
@@ -577,6 +656,12 @@ export default {
 
         // Start building the query
         let query = supabase.from(tableName).select(queryString, { count: 'exact' });
+
+        // Apply manual filters first (these are always applied)
+        const manualFilters = props.content?.supabaseFilters;
+        if (manualFilters && Array.isArray(manualFilters) && manualFilters.length > 0) {
+          query = applyManualFilters(query, manualFilters);
+        }
 
         // Apply search filter (before other filters)
         if (props.content?.enableSearch && searchValue && searchValue.trim()) {
@@ -684,6 +769,12 @@ export default {
 
         // Start building the query
         let query = supabase.from(tableName).select(queryString, { count: 'exact' });
+
+        // Apply manual filters first (these are always applied)
+        const manualFilters = props.content?.supabaseFilters;
+        if (manualFilters && Array.isArray(manualFilters) && manualFilters.length > 0) {
+          query = applyManualFilters(query, manualFilters);
+        }
 
         // Apply search filter (before other filters)
         if (props.content?.enableSearch && searchValue && searchValue.trim()) {
@@ -3381,6 +3472,105 @@ export default {
           isDirectUpdate: columnConfig?.isDirectUpdate || false,
         },
       });
+    },
+    /**
+     * Component action: Refresh a specific row from Supabase
+     * @param {string|number} rowId - The ID of the row to refresh
+     * @returns {Promise<boolean>} - Returns true if successful, false otherwise
+     */
+    async refreshRow(rowId) {
+      if (!this.gridApi) {
+        console.warn("[Datagrid] Grid API is not initialized yet");
+        return false;
+      }
+      
+      if (this.content?.dataSource !== 'supabase') {
+        console.warn("[Datagrid] refreshRow only works with Supabase data source");
+        return false;
+      }
+      
+      if (rowId === null || rowId === undefined) {
+        console.warn("[Datagrid] refreshRow requires a rowId parameter");
+        return false;
+      }
+
+      // Extract primary key field from idFormula
+      // Formula format: "context.mapping?.['id']" or "context.mapping?.id"
+      const idFormula = this.content?.idFormula;
+      let primaryKeyField = 'id'; // default
+      
+      if (idFormula?.code) {
+        // Match patterns like: mapping?.['fieldName'] or mapping?.fieldName or mapping.fieldName
+        const match = idFormula.code.match(/mapping\??\.\[?['"]?(\w+)['"]?\]?/);
+        if (match && match[1]) {
+          primaryKeyField = match[1];
+        }
+      }
+
+      try {
+        const supabase = wwLib.wwPlugins.supabase.instance;
+        const tableName = this.content?.supabaseTable;
+        const queryString = this.content?.supabaseQuery || '*';
+
+        if (!supabase) {
+          console.warn("[Datagrid] Supabase instance not available");
+          return false;
+        }
+
+        if (!tableName) {
+          console.warn("[Datagrid] Supabase table name is required");
+          return false;
+        }
+
+        // Fetch the single row
+        const { data, error } = await supabase
+          .from(tableName)
+          .select(queryString)
+          .eq(primaryKeyField, rowId)
+          .single();
+
+        if (error) throw error;
+        if (!data) {
+          console.warn(`[Datagrid] Row with ${primaryKeyField}="${rowId}" not found`);
+          return false;
+        }
+
+        // Find and update the row in the grid
+        let rowNode = null;
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            if (baseId === null || baseId === undefined || baseId === '') {
+              baseId = node.data[primaryKeyField];
+            }
+            if (String(baseId) === rowIdStr) {
+              rowNode = node;
+            }
+          }
+        });
+
+        if (rowNode) {
+          // Update the row data
+          rowNode.setData(data);
+          
+          // Refresh the row to reflect changes
+          this.gridApi.refreshCells({
+            rowNodes: [rowNode],
+            force: true,
+          });
+          
+          this.debugLog(`[Datagrid] Row ${rowId} refreshed successfully`);
+          return true;
+        } else {
+          console.warn(`[Datagrid] Row with id "${rowId}" not found in grid`);
+          return false;
+        }
+      } catch (error) {
+        console.error('[Datagrid] Error refreshing row:', error);
+        return false;
+      }
     },
     stopCellEditing(cancel = false) {
       if (!this.gridApi) return;
