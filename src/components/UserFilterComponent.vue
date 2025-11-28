@@ -1,17 +1,7 @@
 <template>
     <div class="user-filter">
-        <div v-if="isLoadingUsers || isLoadingUsersState" class="user-filter-empty">
-            <div class="loading-with-refresh">
-                <span>Loading users...</span>
-                <button 
-                    type="button" 
-                    class="refresh-btn" 
-                    @click="refreshUsers"
-                    title="Refresh users list"
-                >
-                    <span class="refresh-icon">↻</span>
-                </button>
-            </div>
+        <div v-if="isLoadingUsers" class="user-filter-empty">
+            Loading users...
         </div>
         <div v-else class="user-filter-content">
             <!-- Search Input -->
@@ -110,31 +100,6 @@ export default {
     },
     // Expose methods for AG Grid filter interface
     expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
-    created() {
-        // Try to load users immediately when component is created
-        // This helps in production where reactive properties might not be immediately available
-        if (this.params) {
-            const colDef = this.params.colDef || {};
-            const filterParams = colDef.filterParams || this.params.filterParams || {};
-            const rendererParams = colDef.cellRendererParams || {};
-            const editorParams = colDef.cellEditorParams || {};
-            
-            // Try filterParams first
-            if (filterParams && Object.keys(filterParams).length > 0) {
-                this.setUserParams(filterParams);
-            }
-            
-            // If still no users, try editor params
-            if (this.availableUsers.length === 0 && editorParams && Object.keys(editorParams).length > 0) {
-                this.setUserParams(editorParams);
-            }
-            
-            // If still no users, try renderer params
-            if (this.availableUsers.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
-                this.setUserParams(rendererParams);
-            }
-        }
-    },
     data() {
         return {
             userParams: {},
@@ -144,7 +109,6 @@ export default {
             pendingSelection: new Set(), // Store user names
             appliedSelection: new Set(), // Store user names
             refreshTimer: null,
-            loadingStartTime: null, // Track when loading started
         };
     },
     computed: {
@@ -165,36 +129,11 @@ export default {
             return Array.from(this.pendingSelection);
         },
         isLoadingUsers() {
-            // Priority: Show data if available, regardless of isLoading flag
-            const hasUsers = Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
+            // Show loading only if isLoading is true AND users array is empty or not available
+            // If users are available, don't show loading even if isLoading flag is true
             const isLoading = !!this.userParams?.isLoading;
-            
-            // If we have users, never show loading
-            if (hasUsers) {
-                this.loadingStartTime = null; // Reset loading timer
-                return false;
-            }
-            
-            // Only show loading if flag is true AND we don't have users
-            // Add timeout: if loading > 3s, show refresh button instead
-            if (isLoading && !hasUsers) {
-                // Track when loading started
-                if (!this.loadingStartTime) {
-                    this.loadingStartTime = Date.now();
-                }
-                
-                // Check if we've been loading too long (> 3 seconds)
-                const loadingDuration = Date.now() - this.loadingStartTime;
-                if (loadingDuration > 3000) {
-                    // Stop showing loading, show refresh button instead
-                    return false;
-                }
-                return true;
-            }
-            
-            // Reset loading timer if not loading
-            this.loadingStartTime = null;
-            return false;
+            const hasUsers = Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
+            return isLoading && !hasUsers;
         },
         translations() {
             const filterParams = this.params?.colDef?.filterParams || this.params?.filterParams || {};
@@ -233,21 +172,6 @@ export default {
             };
             
             return translations[lang] || translations['en'];
-        },
-        isLoadingUsersState() {
-            // Check if we should show refresh button (loading > 3s with no users)
-            const hasUsers = Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
-            const isLoading = !!this.userParams?.isLoading;
-            
-            if (hasUsers) return false;
-            if (!isLoading) return false;
-            
-            if (this.loadingStartTime) {
-                const loadingDuration = Date.now() - this.loadingStartTime;
-                return loadingDuration > 3000;
-            }
-            
-            return false;
         },
     },
     mounted() {
@@ -316,7 +240,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // Run immediately for production
+            immediate: false,
         },
         // Watch for changes in users array
         'params.colDef.filterParams.users': {
@@ -327,7 +251,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // Run immediately for production
+            immediate: false,
         },
         // Watch for changes in cellRendererParams and cellEditorParams users
         'params.colDef.cellRendererParams.users': {
@@ -338,7 +262,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // Run immediately for production
+            immediate: false,
         },
         'params.colDef.cellEditorParams.users': {
             handler(newUsers, oldUsers) {
@@ -348,7 +272,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // Run immediately for production
+            immediate: false,
         },
     },
     methods: {
@@ -658,36 +582,6 @@ export default {
             }
             return true;
         },
-        refreshUsers() {
-            // Force refresh by re-checking all sources
-            this.loadingStartTime = Date.now(); // Reset loading timer
-            
-            // Try multiple sources
-            const colDef = this.params?.colDef || {};
-            const filterParams = colDef.filterParams || this.params?.filterParams || {};
-            const rendererParams = colDef.cellRendererParams || {};
-            const editorParams = colDef.cellEditorParams || {};
-            
-            // Try filterParams first
-            if (filterParams && Object.keys(filterParams).length > 0) {
-                this.setUserParams(filterParams);
-            }
-            
-            // If still no users, try editor params
-            if (this.availableUsers.length === 0 && editorParams && Object.keys(editorParams).length > 0) {
-                this.setUserParams(editorParams);
-            }
-            
-            // If still no users, try renderer params
-            if (this.availableUsers.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
-                this.setUserParams(rendererParams);
-            }
-            
-            // Also trigger refresh on parent if available
-            if (this.params?.api) {
-                this.params.api.refreshCells();
-            }
-        },
     },
 };
 </script>
@@ -895,46 +789,6 @@ export default {
     padding: 16px;
     font-size: 13px;
     color: rgba(0, 0, 0, 0.6);
-}
-
-.loading-with-refresh {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-}
-
-.refresh-btn {
-    background: none;
-    border: 1px solid rgba(0, 0, 0, 0.2);
-    border-radius: 4px;
-    cursor: pointer;
-    padding: 4px 8px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s ease;
-    flex-shrink: 0;
-    
-    &:hover {
-        background-color: rgba(0, 0, 0, 0.05);
-        border-color: rgba(0, 0, 0, 0.3);
-    }
-    
-    &:active {
-        transform: scale(0.95);
-    }
-}
-
-.refresh-icon {
-    font-size: 16px;
-    line-height: 1;
-    display: inline-block;
-    transition: transform 0.3s ease;
-}
-
-.refresh-btn:hover .refresh-icon {
-    transform: rotate(180deg);
 }
 </style>
 
