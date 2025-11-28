@@ -230,57 +230,9 @@ export default {
         let filterDesc = `${columnId}: `;
         
         if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Convert user names to IDs for logging (same as in convertFilterToSupabase)
-          // Use improved column lookup for many-to-many relationships
-          const column = findUserColumn(columnId);
-          
-          if (column && Array.isArray(column.users) && column.users.length > 0) {
-            // Helper function to get user name (same logic as in renderer and convertFilterToSupabase)
-            const getUserName = (user) => {
-              if (user.name) return user.name;
-              if (user.firstname || user.lastname) {
-                return [user.firstname, user.lastname].filter(Boolean).join(' ');
-              }
-              return user.email || user.id || '';
-            };
-            
-            // Map selected user names to user IDs (same logic as convertFilterToSupabase)
-            const selectedUserIds = filter.values
-              .map(selectedName => {
-                // Normalize for comparison (trim whitespace)
-                const normalizedSelectedName = String(selectedName || '').trim();
-                
-                const user = column.users.find(u => {
-                  const userName = getUserName(u);
-                  const normalizedUserName = String(userName || '').trim();
-                  // Match by name, ID, or email (case-insensitive for email)
-                  return normalizedUserName === normalizedSelectedName || 
-                         u.id === selectedName || 
-                         u.id === normalizedSelectedName ||
-                         (u.email && String(u.email).toLowerCase() === normalizedSelectedName.toLowerCase());
-                });
-                return user?.id;
-              })
-              .filter(id => id != null); // Remove any null/undefined IDs
-            
-            if (selectedUserIds.length > 0) {
-              filterDesc += `in [${selectedUserIds.join(', ')}]`;
-            } else {
-              // Conversion failed - filter will be SKIPPED
-              debugLog('[Filter Log] Warning: Could not convert user filter names to IDs for column:', columnId, '- filter will be SKIPPED');
-              debugLog('[Filter Log] Filter values:', filter.values);
-              debugLog('[Filter Log] Available users:', column.users.map(u => getUserName(u)));
-              filterDesc += `SKIPPED (conversion failed) [${filter.values.join(', ')}]`;
-            }
-          } else {
-            // Column not found or no users available - filter will be SKIPPED
-            if (!column) {
-              debugLog('[Filter Log] Warning: User column not found for filter:', columnId, '- filter will be SKIPPED');
-            } else if (!Array.isArray(column.users) || column.users.length === 0) {
-              debugLog('[Filter Log] Warning: No users available for user filter column:', columnId, '- filter will be SKIPPED');
-            }
-            filterDesc += `SKIPPED (users not loaded) [${filter.values.join(', ')}]`;
-          }
+          // User filters now store user IDs directly in filter.values, not names
+          // Use the IDs directly for logging
+          filterDesc += `in [${filter.values.join(', ')}]`;
         } else if (filter.filterType === 'text') {
           filterDesc += `${filter.type} "${filter.filter}"`;
         } else if (filter.filterType === 'number') {
@@ -296,52 +248,9 @@ export default {
             filterDesc += `${filter.type} ${filter.dateFrom || filter.filter}`;
           }
         } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Select filters store labels, need to convert to option values for logging
-          // Use the same conversion logic as convertFilterToSupabase for consistency
-          const column = props.content?.columns?.find(col => {
-            const colId = col?.actionName || col?.field;
-            return colId === columnId || col?.field === columnId;
-          });
-          
-          if (column && column.cellDataType === 'select' && Array.isArray(column.options) && column.options.length > 0) {
-            // Convert labels to option values (same logic as convertFilterToSupabase)
-            const optionValues = filter.values
-              .map(selectedLabel => {
-                // Find the option that matches this label
-                const option = column.options.find(opt => {
-                  const optionLabel = resolveMappingFormula(column.optionsLabelFormula, opt) ?? opt.label;
-                  // Use trim() and case-insensitive comparison for more robust matching
-                  const normalizedOptionLabel = String(optionLabel || '').trim();
-                  const normalizedSelectedLabel = String(selectedLabel || '').trim();
-                  return normalizedOptionLabel === normalizedSelectedLabel || 
-                         opt.label === selectedLabel || 
-                         String(opt.label || '').trim() === normalizedSelectedLabel;
-                });
-                if (option) {
-                  // Get the option value using the formula if available
-                  const optionValue = resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
-                  return optionValue != null ? String(optionValue) : null;
-                }
-                return null;
-              })
-              .filter(val => val != null);
-            
-            if (optionValues.length > 0) {
-              filterDesc += `in [${optionValues.join(', ')}]`;
-            } else {
-              // Conversion failed - filter will be SKIPPED
-              debugLog('[Filter Log] Warning: Could not convert select filter labels to values for column:', columnId, '- filter will be SKIPPED');
-              filterDesc += `SKIPPED (conversion failed) [${filter.values.join(', ')}]`;
-            }
-          } else {
-            // Column not found or no options available - filter will be SKIPPED
-            if (!column) {
-              debugLog('[Filter Log] Warning: Column not found for select filter:', columnId, '- filter will be SKIPPED');
-            } else if (!Array.isArray(column.options) || column.options.length === 0) {
-              debugLog('[Filter Log] Warning: No options available for select filter column:', columnId, '- filter will be SKIPPED');
-            }
-            filterDesc += `SKIPPED (options not loaded) [${filter.values.join(', ')}]`;
-          }
+          // Select filters now store values (IDs) directly, not labels
+          // Use the values directly for logging
+          filterDesc += `in [${filter.values.join(', ')}]`;
         } else if (filter.filterType === 'set' && filter.values) {
           filterDesc += `in [${filter.values.join(', ')}]`;
         } else {
@@ -373,32 +282,14 @@ export default {
 
         // Handle user filters (custom filter type)
         if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // User filter stores user names in filter.values
-          // We need to convert names to IDs for Supabase filtering
-          // Find the column definition to get the users array
+          // User filter now stores user IDs directly in filter.values, not names
+          // Use the IDs directly for Supabase filtering
           // CRITICAL FIX: Use improved column lookup for many-to-many relationships
           const column = findUserColumn(columnId);
           
           if (column) {
-            // Helper function to get user name (same logic as in renderer)
-            const getUserName = (user) => {
-              if (user.name) return user.name;
-              if (user.firstname || user.lastname) {
-                return [user.firstname, user.lastname].filter(Boolean).join(' ');
-              }
-              return user.email || user.id || '';
-            };
-            
-            // Map selected user names to user IDs
-            const selectedUserIds = filter.values
-              .map(selectedName => {
-                const user = column.users.find(u => {
-                  const userName = getUserName(u);
-                  return userName === selectedName || u.id === selectedName || u.email === selectedName;
-                });
-                return user?.id;
-              })
-              .filter(id => id != null); // Remove any null/undefined IDs
+            // Filter values are already user IDs, use them directly
+            const selectedUserIds = filter.values.filter(id => id != null); // Remove any null/undefined IDs
             
               if (selectedUserIds.length > 0) {
               // Check if this is a junction table (many-to-many) using isManyToMany property
@@ -538,48 +429,16 @@ export default {
               .lte(supabaseField, new Date(filterToDate).toISOString());
           }
         } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Select filters store labels in filter.values, need to convert to option values
-          const column = props.content?.columns?.find(col => {
-            const colId = col?.actionName || col?.field;
-            return colId === columnId || col?.field === columnId;
-          });
+          // Select filters now store values (IDs) directly in filter.values, not labels
+          // Use the values directly for Supabase filtering
+          const optionValues = filter.values.filter(val => val != null); // Remove any null/undefined values
           
-          if (column && column.cellDataType === 'select' && Array.isArray(column.options) && column.options.length > 0) {
-            // Convert labels to option values
-            const optionValues = filter.values
-              .map(selectedLabel => {
-                // Find the option that matches this label
-                const option = column.options.find(opt => {
-                  const optionLabel = resolveMappingFormula(column.optionsLabelFormula, opt) ?? opt.label;
-                  return optionLabel === selectedLabel || opt.label === selectedLabel;
-                });
-                if (option) {
-                  // Get the option value using the formula if available
-                  return resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
-                }
-                return null;
-              })
-              .filter(val => val != null);
-            
-            if (optionValues.length > 0) {
-              if (optionValues.length === 1) {
-                currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
-              } else {
-                currentQuery = currentQuery.in(supabaseField, optionValues);
-              }
+          if (optionValues.length > 0) {
+            if (optionValues.length === 1) {
+              currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
             } else {
-              // Conversion failed - skip this filter (don't use labels as values)
-              debugLog('[Supabase Filter] Warning: Could not convert select filter labels to values for column:', columnId, '- skipping filter');
+              currentQuery = currentQuery.in(supabaseField, optionValues);
             }
-          } else {
-            // Column not found or options not loaded - SKIP this filter (don't use labels as values)
-            // This is critical: using labels as Supabase filter values causes 400 errors
-            if (!column) {
-              debugLog('[Supabase Filter] Warning: Column not found for select filter:', columnId, '- skipping filter');
-            } else if (!Array.isArray(column.options) || column.options.length === 0) {
-              debugLog('[Supabase Filter] Warning: Options not loaded for select filter column:', columnId, '- skipping filter (will retry when options load)');
-            }
-            // DO NOT apply the filter with labels - this would cause Supabase errors
           }
         } else if (filter.filterType === 'set') {
           // Set filters (for other column types)
