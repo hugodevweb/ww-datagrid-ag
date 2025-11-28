@@ -266,20 +266,20 @@ export default {
             if (selectedUserIds.length > 0) {
               filterDesc += `in [${selectedUserIds.join(', ')}]`;
             } else {
-              // If conversion failed, log a warning and use names as fallback
-              debugLog('[Filter Log] Warning: Could not convert user filter names to IDs for column:', columnId);
+              // Conversion failed - filter will be SKIPPED
+              debugLog('[Filter Log] Warning: Could not convert user filter names to IDs for column:', columnId, '- filter will be SKIPPED');
               debugLog('[Filter Log] Filter values:', filter.values);
               debugLog('[Filter Log] Available users:', column.users.map(u => getUserName(u)));
-              filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to names if IDs not found
+              filterDesc += `SKIPPED (conversion failed) [${filter.values.join(', ')}]`;
             }
           } else {
-            // Column not found or no users available
+            // Column not found or no users available - filter will be SKIPPED
             if (!column) {
-              debugLog('[Filter Log] Warning: User column not found for filter:', columnId);
+              debugLog('[Filter Log] Warning: User column not found for filter:', columnId, '- filter will be SKIPPED');
             } else if (!Array.isArray(column.users) || column.users.length === 0) {
-              debugLog('[Filter Log] Warning: No users available for user filter column:', columnId);
+              debugLog('[Filter Log] Warning: No users available for user filter column:', columnId, '- filter will be SKIPPED');
             }
-            filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
+            filterDesc += `SKIPPED (users not loaded) [${filter.values.join(', ')}]`;
           }
         } else if (filter.filterType === 'text') {
           filterDesc += `${filter.type} "${filter.filter}"`;
@@ -329,18 +329,18 @@ export default {
             if (optionValues.length > 0) {
               filterDesc += `in [${optionValues.join(', ')}]`;
             } else {
-              // If conversion failed, log a warning and use labels as fallback
-              debugLog('[Filter Log] Warning: Could not convert select filter labels to values for column:', columnId);
-              filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to labels
+              // Conversion failed - filter will be SKIPPED
+              debugLog('[Filter Log] Warning: Could not convert select filter labels to values for column:', columnId, '- filter will be SKIPPED');
+              filterDesc += `SKIPPED (conversion failed) [${filter.values.join(', ')}]`;
             }
           } else {
-            // Column not found or no options available
+            // Column not found or no options available - filter will be SKIPPED
             if (!column) {
-              debugLog('[Filter Log] Warning: Column not found for select filter:', columnId);
+              debugLog('[Filter Log] Warning: Column not found for select filter:', columnId, '- filter will be SKIPPED');
             } else if (!Array.isArray(column.options) || column.options.length === 0) {
-              debugLog('[Filter Log] Warning: No options available for select filter column:', columnId);
+              debugLog('[Filter Log] Warning: No options available for select filter column:', columnId, '- filter will be SKIPPED');
             }
-            filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
+            filterDesc += `SKIPPED (options not loaded) [${filter.values.join(', ')}]`;
           }
         } else if (filter.filterType === 'set' && filter.values) {
           filterDesc += `in [${filter.values.join(', ')}]`;
@@ -544,7 +544,7 @@ export default {
             return colId === columnId || col?.field === columnId;
           });
           
-          if (column && column.cellDataType === 'select' && Array.isArray(column.options)) {
+          if (column && column.cellDataType === 'select' && Array.isArray(column.options) && column.options.length > 0) {
             // Convert labels to option values
             const optionValues = filter.values
               .map(selectedLabel => {
@@ -567,14 +567,19 @@ export default {
               } else {
                 currentQuery = currentQuery.in(supabaseField, optionValues);
               }
+            } else {
+              // Conversion failed - skip this filter (don't use labels as values)
+              debugLog('[Supabase Filter] Warning: Could not convert select filter labels to values for column:', columnId, '- skipping filter');
             }
           } else {
-            // Fallback: use values as-is (assuming they're already values, not labels)
-            if (filter.values.length === 1) {
-              currentQuery = currentQuery.eq(supabaseField, filter.values[0]);
-            } else {
-              currentQuery = currentQuery.in(supabaseField, filter.values);
+            // Column not found or options not loaded - SKIP this filter (don't use labels as values)
+            // This is critical: using labels as Supabase filter values causes 400 errors
+            if (!column) {
+              debugLog('[Supabase Filter] Warning: Column not found for select filter:', columnId, '- skipping filter');
+            } else if (!Array.isArray(column.options) || column.options.length === 0) {
+              debugLog('[Supabase Filter] Warning: Options not loaded for select filter column:', columnId, '- skipping filter (will retry when options load)');
             }
+            // DO NOT apply the filter with labels - this would cause Supabase errors
           }
         } else if (filter.filterType === 'set') {
           // Set filters (for other column types)
