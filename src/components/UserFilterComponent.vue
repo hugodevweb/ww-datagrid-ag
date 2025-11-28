@@ -21,16 +21,21 @@
             </div>
             
             <!-- Selected Users Pills -->
-            <div v-if="selectedUserNames.length > 0" class="selected-users-pills">
+            <div v-if="selectedUsers.length > 0" class="selected-users-pills">
                 <div 
-                    v-for="userName in selectedUserNames" 
-                    :key="userName"
+                    v-for="user in selectedUsers" 
+                    :key="user.id"
                     class="user-pill"
                 >
-                    <span class="pill-name">{{ userName }}</span>
+                    <img 
+                        :src="user.avatar_url || getDefaultAvatar(user)" 
+                        :alt="getUserName(user)"
+                        class="pill-avatar"
+                    />
+                    <span class="pill-name">{{ getUserName(user) }}</span>
                     <button 
                         class="pill-remove"
-                        @click.stop="removeUserName(userName)"
+                        @click.stop="removeUserId(user.id)"
                         type="button"
                     >×</button>
                 </div>
@@ -43,7 +48,7 @@
                     :key="user.id"
                     class="user-option"
                     :class="{ 
-                        'selected': isUserNameSelected(user),
+                        'selected': isUserIdSelected(user.id),
                         'highlighted': index === highlightedIndex
                     }"
                     :style="getUserOptionStyle(user)"
@@ -59,7 +64,7 @@
                         <div class="option-name">{{ getUserName(user) }}</div>
                         <div v-if="user.bio" class="option-bio">{{ user.bio }}</div>
                     </div>
-                    <div v-if="isUserNameSelected(user)" class="option-check">✓</div>
+                    <div v-if="isUserIdSelected(user.id)" class="option-check">✓</div>
                 </div>
                 <div v-if="filteredUsers.length === 0" class="no-users">
                     No users found
@@ -97,25 +102,18 @@ export default {
             type: Object,
             required: true,
         },
-        // Callback from wrapper to notify when users are ready
-        onUsersReady: {
-            type: Function,
-            default: null,
-        },
     },
     // Expose methods for AG Grid filter interface
-    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh', 'hasUsersLoaded'],
+    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
     data() {
         return {
             userParams: {},
             availableUsers: [],
             searchQuery: "",
             highlightedIndex: -1,
-            pendingSelection: new Set(), // Store user names
-            appliedSelection: new Set(), // Store user names
+            pendingSelection: new Set(), // Store user IDs
+            appliedSelection: new Set(), // Store user IDs
             refreshTimer: null,
-            // Track if we've notified the wrapper that users are ready
-            hasNotifiedUsersReady: false,
         };
     },
     computed: {
@@ -132,8 +130,14 @@ export default {
                 return name.includes(query) || email.includes(query) || bio.includes(query);
             });
         },
-        selectedUserNames() {
+        selectedUserIds() {
             return Array.from(this.pendingSelection);
+        },
+        // Get user objects for selected IDs (for display)
+        selectedUsers() {
+            return this.selectedUserIds
+                .map(id => this.availableUsers.find(u => u.id === id))
+                .filter(Boolean);
         },
         isLoadingUsers() {
             // Show loading only if isLoading is true AND users array is empty or not available
@@ -210,16 +214,10 @@ export default {
             if (this.availableUsers.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
                 this.setUserParams(rendererParams);
             }
-            
-            // Check if we should notify wrapper about users being ready
-            this.checkAndNotifyUsersReady();
         };
         
         // Try immediately
         tryInitializeUsers();
-        
-        // Notify if users are already available
-        this.checkAndNotifyUsersReady();
         
         // Try again after a short delay (for async loading)
         setTimeout(tryInitializeUsers, 100);
@@ -292,26 +290,6 @@ export default {
         // AG Grid filter interface methods
         getGui() {
             return this.$el;
-        },
-        /**
-         * Check if users are loaded and available
-         * Used by wrapper to determine if setModel can be applied immediately
-         */
-        hasUsersLoaded() {
-            return Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
-        },
-        /**
-         * Check if users are ready and notify the wrapper
-         * This allows the wrapper to apply any pending model
-         */
-        checkAndNotifyUsersReady() {
-            if (this.hasUsersLoaded() && !this.hasNotifiedUsersReady) {
-                this.hasNotifiedUsersReady = true;
-                // Notify the wrapper that users are ready
-                if (typeof this.onUsersReady === 'function') {
-                    this.onUsersReady();
-                }
-            }
         },
         getCurrentUsers() {
             if (!this.params) return null;
@@ -436,27 +414,26 @@ export default {
             const colorIndex = name.charCodeAt(0) % colors.length;
             return `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='${encodeURIComponent(colors[colorIndex])}'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-weight='bold'>${encodeURIComponent(name.charAt(0).toUpperCase())}</text></svg>`;
         },
-        isUserNameSelected(user) {
-            const userName = this.getUserName(user);
-            return this.pendingSelection.has(userName);
+        isUserIdSelected(userId) {
+            return this.pendingSelection.has(userId);
         },
         toggleUser(user) {
-            const userName = this.getUserName(user);
+            const userId = user.id;
             const nextSelection = new Set(this.pendingSelection);
-            if (nextSelection.has(userName)) {
-                nextSelection.delete(userName);
+            if (nextSelection.has(userId)) {
+                nextSelection.delete(userId);
             } else {
-                nextSelection.add(userName);
+                nextSelection.add(userId);
             }
             this.pendingSelection = nextSelection;
         },
-        removeUserName(userName) {
+        removeUserId(userId) {
             const nextSelection = new Set(this.pendingSelection);
-            nextSelection.delete(userName);
+            nextSelection.delete(userId);
             this.pendingSelection = nextSelection;
         },
         getUserOptionStyle(user) {
-            if (this.isUserNameSelected(user) && this.userFocusColor) {
+            if (this.isUserIdSelected(user.id) && this.userFocusColor) {
                 return {
                     'background-color': `${this.userFocusColor} !important`,
                 };
@@ -500,10 +477,10 @@ export default {
             if (!this.isFilterActive()) {
                 return null;
             }
-            // Store user names in the model (matching what filterValueGetter returns)
+            // Store user IDs in the model for proper filtering by ID
             return {
                 type: "userFilter",
-                values: Array.from(this.appliedSelection), // These are user names
+                values: Array.from(this.appliedSelection), // These are user IDs
             };
         },
         setModel(model) {
@@ -522,64 +499,46 @@ export default {
             const rowValue = this.getRowValue(params);
             
             // If row has no users, it doesn't match any filter
-            if (!rowValue || rowValue === '') {
+            if (!rowValue || (Array.isArray(rowValue) && rowValue.length === 0)) {
                 return false;
             }
             
-            // For multiple users, filterValueGetter returns comma-separated names
-            // We need to check if any of the selected user names match any name in the row value
-            if (typeof rowValue === 'string' && rowValue.includes(',')) {
-                // Multiple users: split by comma and check each name
-                const rowUserNames = rowValue.split(',').map(name => name.trim()).filter(Boolean);
-                return rowUserNames.some(name => this.appliedSelection.has(name));
+            // rowValue is now an array of user IDs or a single user ID
+            if (Array.isArray(rowValue)) {
+                // Multiple users: check if any of the row's user IDs match selected IDs
+                return rowValue.some(id => this.appliedSelection.has(id));
             } else {
-                // Single user: direct match
+                // Single user: direct match by ID
                 return this.appliedSelection.has(rowValue);
             }
         },
         getRowValue(filterParams) {
             // AG Grid passes the result of filterValueGetter as params.value
-            // For user columns, this should be the user name(s), not the raw ID(s)
+            // For user columns, this should be user ID(s), not names
             if (filterParams && "value" in filterParams) {
                 const value = filterParams.value;
-                // If value is already a string (user names from filterValueGetter), return it directly
-                if (typeof value === 'string') {
-                    return value;
-                }
-                // If value is not a string, it might be raw data that needs formula extraction
-                // This can happen if filterValueGetter didn't process it correctly
-                return this.getUserNamesFromValue(value);
+                // Value should be user ID(s) - return as is
+                return value;
             }
             // Fallback: try to get from data field directly
             const field = this.params?.colDef?.field;
             if (field && filterParams?.data && Object.prototype.hasOwnProperty.call(filterParams.data, field)) {
-                // If filterValueGetter is defined, we shouldn't reach here
-                // But if we do, we need to convert ID(s) to name(s) using formula if available
                 const rawValue = filterParams.data[field];
-                return this.getUserNamesFromValue(rawValue);
+                return this.extractUserIds(rawValue);
             }
             return undefined;
         },
-        getUserNamesFromValue(value) {
-            // Convert user ID(s) to user name(s)
-            if (!value) return '';
+        extractUserIds(value) {
+            // Extract user ID(s) from raw value using formula if available
+            if (!value) return null;
             
             // Apply userIdFormula if available to extract user ID(s) from nested structures
-            let extractedValue = value;
             if (this.userParams?.userIdFormula && this.userParams?.resolveMappingFormula) {
                 const resolved = this.userParams.resolveMappingFormula(this.userParams.userIdFormula, value);
-                extractedValue = resolved ?? value; // Fallback to raw value if formula returns null/undefined
+                return resolved ?? value; // Fallback to raw value if formula returns null/undefined
             }
             
-            const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
-            const userNames = userIds
-                .map(id => {
-                    const user = this.availableUsers.find(u => u.id === id);
-                    return user ? this.getUserName(user) : null;
-                })
-                .filter(Boolean);
-            
-            return userNames.join(', ');
+            return value;
         },
         onApply() {
             this.appliedSelection = new Set(this.pendingSelection);
@@ -602,27 +561,7 @@ export default {
                 this.pendingSelection = updateApplied ? new Set(this.appliedSelection) : new Set();
                 return;
             }
-            
-            // Resolve model values to user names
-            // Support both name-based and ID-based initial filters
-            const resolvedNames = model.values.map(val => {
-                // First, check if this value is already a valid user name
-                const isName = this.availableUsers.some(user => this.getUserName(user) === val);
-                if (isName) {
-                    return val;
-                }
-                
-                // If not a name, try to find the user by ID and get their name
-                const userById = this.availableUsers.find(user => user.id === val);
-                if (userById) {
-                    return this.getUserName(userById);
-                }
-                
-                // If we still can't find it, return as-is (it might match later when users load)
-                return val;
-            });
-            
-            const next = new Set(resolvedNames);
+            const next = new Set(model.values);
             if (updateApplied) {
                 this.appliedSelection = new Set(next);
             }
@@ -694,6 +633,13 @@ export default {
     border-radius: 16px;
     padding: 4px 8px;
     font-size: 12px;
+}
+
+.pill-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
 }
 
 .pill-name {

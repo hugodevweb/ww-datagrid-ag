@@ -9,12 +9,12 @@
                 :key="option.value ?? option.label ?? index"
                 type="button"
                 class="select-filter-option"
-                :class="{ selected: pendingSelection.has(option.label) }"
+                :class="{ selected: pendingSelection.has(option.value) }"
                 :style="getOptionStyle(option)"
                 @click="toggleOption(option.value)"
             >
                     <span class="option-content">
-                        <span class="checkbox" :class="{ checked: pendingSelection.has(option.label) }">
+                        <span class="checkbox" :class="{ checked: pendingSelection.has(option.value) }">
                             <span class="checkbox-icon">&#10003;</span>
                         </span>
                         <span class="label">{{ option.label }}</span>
@@ -53,42 +53,44 @@ export default {
             type: Object,
             required: true,
         },
-        // Callback from wrapper to notify when options are ready
-        onOptionsReady: {
-            type: Function,
-            default: null,
-        },
     },
     // Expose methods for AG Grid filter interface
-    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh', 'hasOptionsLoaded'],
+    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
     data() {
         return {
             selectParams: {},
             rawOptions: [],
-            pendingSelection: new Set(),
-            appliedSelection: new Set(),
+            pendingSelection: new Set(), // Store values (IDs), not labels
+            appliedSelection: new Set(), // Store values (IDs), not labels
             refreshTimer: null,
-            // Track if we've notified the wrapper that options are ready
-            hasNotifiedOptionsReady: false,
         };
     },
     created() {
-        // Initialize options in created (before mount) for faster availability
-        if (this.params) {
-            const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
-            this.setSelectParams(filterParams);
+        console.log('[SelectFilterComponent] created() called with params:', this.params);
+        if (!this.params) {
+            console.error('[SelectFilterComponent] ERROR: params is null/undefined in created()!');
+        } else {
+            console.log('[SelectFilterComponent] params.filterParams:', this.params.filterParams);
+            console.log('[SelectFilterComponent] params.colDef:', this.params.colDef);
         }
     },
     mounted() {
-        // Ensure options are initialized after mounting
+        console.log('[SelectFilterComponent] mounted() called');
+        console.log('[SelectFilterComponent] mounted - params:', this.params);
+
+        // Initialize options after mounting
         if (this.params) {
             // Filter params are in colDef.filterParams, not directly on params
             const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+            console.log('[SelectFilterComponent] Using filterParams:', filterParams);
+
             this.setSelectParams(filterParams);
             this.syncSelectionsFromModel(null, { updateApplied: true });
-            
-            // Notify wrapper if options are already loaded
-            this.checkAndNotifyOptionsReady();
+
+            console.log('[SelectFilterComponent] After setSelectParams - rawOptions:', this.rawOptions);
+            console.log('[SelectFilterComponent] After setSelectParams - processedOptions:', this.processedOptions);
+        } else {
+            console.error('[SelectFilterComponent] ERROR: Cannot initialize - params is null/undefined!');
         }
 
         // Set up a periodic check for options (in case they load asynchronously)
@@ -105,10 +107,7 @@ export default {
 
             if (currentOptionsStr !== rawOptionsStr) {
                 // Options have changed, refresh
-                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
-                this.setSelectParams(filterParams);
-                // Check if we should notify wrapper about options being ready
-                this.checkAndNotifyOptionsReady();
+                this.setSelectParams(this.params.filterParams);
             }
         }, 500); // Check every 500ms for option changes
     },
@@ -130,8 +129,8 @@ export default {
             const selected = [];
             const unselected = [];
             for (const option of this.processedOptions) {
-                // Compare by label since we store labels in the selection
-                if (this.pendingSelection.has(option.label)) {
+                // Compare by value (ID) since we store values in the selection
+                if (this.pendingSelection.has(option.value)) {
                     selected.push(option);
                 } else {
                     unselected.push(option);
@@ -206,26 +205,6 @@ export default {
         // AG Grid filter interface methods
         getGui() {
             return this.$el;
-        },
-        /**
-         * Check if options are loaded and available
-         * Used by wrapper to determine if setModel can be applied immediately
-         */
-        hasOptionsLoaded() {
-            return Array.isArray(this.rawOptions) && this.rawOptions.length > 0;
-        },
-        /**
-         * Check if options are ready and notify the wrapper
-         * This allows the wrapper to apply any pending model
-         */
-        checkAndNotifyOptionsReady() {
-            if (this.hasOptionsLoaded() && !this.hasNotifiedOptionsReady) {
-                this.hasNotifiedOptionsReady = true;
-                // Notify the wrapper that options are ready
-                if (typeof this.onOptionsReady === 'function') {
-                    this.onOptionsReady();
-                }
-            }
         },
         getCurrentOptions() {
             // Helper method to get current options from params
@@ -364,10 +343,10 @@ export default {
             if (!this.isFilterActive()) {
                 return null;
             }
-            // Store labels in the model (matching what filterValueGetter returns)
+            // Store values (IDs) in the model for proper filtering by ID
             return {
                 type: "selectFilter",
-                values: Array.from(this.appliedSelection), // These are labels, not values
+                values: Array.from(this.appliedSelection), // These are values (IDs)
             };
         },
         setModel(model) {
@@ -383,20 +362,20 @@ export default {
             if (!this.isFilterActive()) {
                 return true;
             }
+            // Get the row value (ID) and check if it's in the applied selection (which contains IDs)
             const rowValue = this.getRowValue(params);
+            if (rowValue == null || rowValue === undefined) {
+                return false; // Null/undefined values don't match any filter
+            }
             return this.appliedSelection.has(rowValue);
         },
         toggleOption(value) {
-            // Store labels in the selection, not values
-            // This matches what filterValueGetter returns
-            const option = this.processedOptions.find(opt => opt.value === value);
-            const label = option ? option.label : value;
-            
+            // Store values (IDs) in the selection
             const nextSelection = new Set(this.pendingSelection);
-            if (nextSelection.has(label)) {
-                nextSelection.delete(label);
+            if (nextSelection.has(value)) {
+                nextSelection.delete(value);
             } else {
-                nextSelection.add(label);
+                nextSelection.add(value);
             }
             this.pendingSelection = nextSelection;
         },
@@ -414,6 +393,7 @@ export default {
             this.params?.filterChangedCallback();
         },
         syncSelectionsFromModel(model, { updateApplied } = { updateApplied: true }) {
+            // Model values are expected to be IDs (values), not labels
             if (!model || !Array.isArray(model.values) || model.values.length === 0) {
                 if (updateApplied) {
                     this.appliedSelection = new Set();
@@ -421,27 +401,8 @@ export default {
                 this.pendingSelection = updateApplied ? new Set(this.appliedSelection) : new Set();
                 return;
             }
-            
-            // Resolve model values to labels
-            // Support both label-based and value-based initial filters
-            const resolvedLabels = model.values.map(val => {
-                // First, check if this value is already a valid label
-                const isLabel = this.processedOptions.some(opt => opt.label === val);
-                if (isLabel) {
-                    return val;
-                }
-                
-                // If not a label, try to find the option by value and get its label
-                const optionByValue = this.processedOptions.find(opt => opt.value === val);
-                if (optionByValue) {
-                    return optionByValue.label;
-                }
-                
-                // If we still can't find it, return as-is (it might match later when options load)
-                return val;
-            });
-            
-            const next = new Set(resolvedLabels);
+            // Create Set from model values (which should be IDs)
+            const next = new Set(model.values);
             if (updateApplied) {
                 this.appliedSelection = new Set(next);
             }
@@ -449,24 +410,17 @@ export default {
         },
         getRowValue(filterParams) {
             // AG Grid passes the result of filterValueGetter as params.value
-            // For select columns, this is the label, not the raw value
+            // For select columns, this is the raw value (ID), not the label
             if (filterParams && "value" in filterParams) {
                 return filterParams.value;
             }
             // Fallback: try to get from data field directly
             const field = this.params?.colDef?.field;
             if (field && filterParams?.data && Object.prototype.hasOwnProperty.call(filterParams.data, field)) {
-                // If filterValueGetter is defined, we shouldn't reach here
-                // But if we do, we need to convert value to label
-                const rawValue = filterParams.data[field];
-                return this.getValueLabel(rawValue);
+                // Return the raw value (ID) directly
+                return filterParams.data[field];
             }
             return undefined;
-        },
-        getValueLabel(value) {
-            // Convert a value to its label using the processed options
-            const option = this.processedOptions.find(opt => opt.value === value);
-            return option ? option.label : value;
         },
         normalizeOptions(rawOptions, selectParams) {
             const options = Array.isArray(rawOptions) ? rawOptions : [];

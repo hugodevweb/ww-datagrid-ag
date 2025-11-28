@@ -2544,8 +2544,9 @@ export default {
                 }
                 return false;
               }),
+              // Return raw value (ID) for filtering - filter model stores IDs
               filterValueGetter: (params) => {
-                return getLabelFromValue(params.data?.[col?.field]);
+                return params.data?.[col?.field];
               },
             };
           }
@@ -2656,17 +2657,14 @@ export default {
                 }
                 return false;
               }),
+              // Return user ID(s) for filtering - filter model stores IDs
               filterValueGetter: (params) => {
                 const rawValue = params.data?.[col?.field];
                 const extractedValue = extractUserIds(rawValue, params.data);
-                if (!extractedValue) return '';
+                if (!extractedValue) return null;
                 
-                if (isMultiple) {
-                  const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
-                  return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
-                } else {
-                  return getUserNameFromId(extractedValue);
-                }
+                // Return the extracted user ID(s) directly
+                return extractedValue;
               },
             };
           }
