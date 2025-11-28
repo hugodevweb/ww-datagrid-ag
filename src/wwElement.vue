@@ -234,8 +234,8 @@ export default {
           // Use improved column lookup for many-to-many relationships
           const column = findUserColumn(columnId);
           
-          if (column) {
-            // Helper function to get user name (same logic as in renderer)
+          if (column && Array.isArray(column.users) && column.users.length > 0) {
+            // Helper function to get user name (same logic as in renderer and convertFilterToSupabase)
             const getUserName = (user) => {
               if (user.name) return user.name;
               if (user.firstname || user.lastname) {
@@ -244,12 +244,20 @@ export default {
               return user.email || user.id || '';
             };
             
-            // Map selected user names to user IDs
+            // Map selected user names to user IDs (same logic as convertFilterToSupabase)
             const selectedUserIds = filter.values
               .map(selectedName => {
+                // Normalize for comparison (trim whitespace)
+                const normalizedSelectedName = String(selectedName || '').trim();
+                
                 const user = column.users.find(u => {
                   const userName = getUserName(u);
-                  return userName === selectedName || u.id === selectedName || u.email === selectedName;
+                  const normalizedUserName = String(userName || '').trim();
+                  // Match by name, ID, or email (case-insensitive for email)
+                  return normalizedUserName === normalizedSelectedName || 
+                         u.id === selectedName || 
+                         u.id === normalizedSelectedName ||
+                         (u.email && String(u.email).toLowerCase() === normalizedSelectedName.toLowerCase());
                 });
                 return user?.id;
               })
@@ -258,9 +266,19 @@ export default {
             if (selectedUserIds.length > 0) {
               filterDesc += `in [${selectedUserIds.join(', ')}]`;
             } else {
+              // If conversion failed, log a warning and use names as fallback
+              debugLog('[Filter Log] Warning: Could not convert user filter names to IDs for column:', columnId);
+              debugLog('[Filter Log] Filter values:', filter.values);
+              debugLog('[Filter Log] Available users:', column.users.map(u => getUserName(u)));
               filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to names if IDs not found
             }
           } else {
+            // Column not found or no users available
+            if (!column) {
+              debugLog('[Filter Log] Warning: User column not found for filter:', columnId);
+            } else if (!Array.isArray(column.users) || column.users.length === 0) {
+              debugLog('[Filter Log] Warning: No users available for user filter column:', columnId);
+            }
             filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
           }
         } else if (filter.filterType === 'text') {
@@ -279,21 +297,30 @@ export default {
           }
         } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
           // Select filters store labels, need to convert to option values for logging
+          // Use the same conversion logic as convertFilterToSupabase for consistency
           const column = props.content?.columns?.find(col => {
             const colId = col?.actionName || col?.field;
             return colId === columnId || col?.field === columnId;
           });
           
-          if (column && column.cellDataType === 'select' && Array.isArray(column.options)) {
-            // Convert labels to option values
+          if (column && column.cellDataType === 'select' && Array.isArray(column.options) && column.options.length > 0) {
+            // Convert labels to option values (same logic as convertFilterToSupabase)
             const optionValues = filter.values
               .map(selectedLabel => {
+                // Find the option that matches this label
                 const option = column.options.find(opt => {
                   const optionLabel = resolveMappingFormula(column.optionsLabelFormula, opt) ?? opt.label;
-                  return optionLabel === selectedLabel || opt.label === selectedLabel;
+                  // Use trim() and case-insensitive comparison for more robust matching
+                  const normalizedOptionLabel = String(optionLabel || '').trim();
+                  const normalizedSelectedLabel = String(selectedLabel || '').trim();
+                  return normalizedOptionLabel === normalizedSelectedLabel || 
+                         opt.label === selectedLabel || 
+                         String(opt.label || '').trim() === normalizedSelectedLabel;
                 });
                 if (option) {
-                  return resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
+                  // Get the option value using the formula if available
+                  const optionValue = resolveMappingFormula(column.optionsValueFormula, option) ?? option.value;
+                  return optionValue != null ? String(optionValue) : null;
                 }
                 return null;
               })
@@ -302,9 +329,17 @@ export default {
             if (optionValues.length > 0) {
               filterDesc += `in [${optionValues.join(', ')}]`;
             } else {
+              // If conversion failed, log a warning and use labels as fallback
+              debugLog('[Filter Log] Warning: Could not convert select filter labels to values for column:', columnId);
               filterDesc += `in [${filter.values.join(', ')}]`; // Fallback to labels
             }
           } else {
+            // Column not found or no options available
+            if (!column) {
+              debugLog('[Filter Log] Warning: Column not found for select filter:', columnId);
+            } else if (!Array.isArray(column.options) || column.options.length === 0) {
+              debugLog('[Filter Log] Warning: No options available for select filter column:', columnId);
+            }
             filterDesc += `in [${filter.values.join(', ')}]`; // Fallback if column not found
           }
         } else if (filter.filterType === 'set' && filter.values) {
