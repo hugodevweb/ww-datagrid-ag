@@ -387,6 +387,7 @@ export default {
             // If we have users, set isLoading to false (users are available)
             if (users.length > 0) {
                 isLoading = false;
+                console.log('[UserFilterComponent] Users loaded:', users.length, 'users', users);
             }
             
             this.userParams = {
@@ -399,6 +400,11 @@ export default {
             };
             
             this.availableUsers = [...users];
+            
+            // Log when users are set (including empty arrays)
+            if (users.length === 0) {
+                console.log('[UserFilterComponent] No users available yet, isLoading:', isLoading);
+            }
         },
         getUserName(user) {
             if (user.name) return user.name;

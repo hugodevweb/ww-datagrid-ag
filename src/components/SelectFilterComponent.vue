@@ -139,7 +139,11 @@ export default {
             return [...selected, ...unselected];
         },
         isLoadingOptions() {
-            return !!this.selectParams?.isLoading;
+            // Show loading only if isLoading is true AND options array is empty or not available
+            // If options are available, don't show loading even if isLoading flag is true
+            const isLoading = !!this.selectParams?.isLoading;
+            const hasOptions = Array.isArray(this.rawOptions) && this.rawOptions.length > 0;
+            return isLoading && !hasOptions;
         },
         translations() {
             const filterParams = this.params?.colDef?.filterParams || this.params?.filterParams || {};
@@ -326,6 +330,12 @@ export default {
                 options = [];
             }
             
+            // If we have options, set isLoading to false (options are available)
+            if (options.length > 0) {
+                isLoading = false;
+                console.log('[SelectFilterComponent] Options loaded:', options.length, 'options', options);
+            }
+            
             // Build merged params - ensure we always have an array, even if empty
             const mergedParams = {
                 options: options,
@@ -338,6 +348,11 @@ export default {
             
             this.selectParams = mergedParams;
             this.rawOptions = [...options]; // Always use a copy to ensure reactivity
+            
+            // Log when options are set (including empty arrays)
+            if (options.length === 0) {
+                console.log('[SelectFilterComponent] No options available yet, isLoading:', isLoading);
+            }
         },
         getModel() {
             if (!this.isFilterActive()) {
