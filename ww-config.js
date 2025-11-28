@@ -441,6 +441,22 @@ export default {
         },
       ],
     },
+    {
+      label: "Remove row",
+      action: "removeRow",
+      args: [
+        {
+          name: "Row id",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The ID of the row to remove (must match the idFormula output)",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
   ],
   properties: {
     layout: {

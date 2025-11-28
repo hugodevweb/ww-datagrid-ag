@@ -885,6 +885,9 @@ export default {
     // Flag to prevent data fetching when we're updating data locally (e.g., fake junction records)
     const isUpdatingDataLocally = ref(false);
     
+    // Track removed row IDs for infinite scroll mode (so datasource can filter them out)
+    const removedRowIds = ref(new Set());
+    
     // Helper functions to set/get the flag from methods
     const setUpdatingDataLocally = (value) => {
       isUpdatingDataLocally.value = value;
@@ -1338,6 +1341,33 @@ export default {
         rowCount: undefined, // Will be determined dynamically
         getRows: async (params) => {
           const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
+          
+          // Skip fetching if we're updating data locally (e.g., removing a row)
+          // This prevents unnecessary re-fetches when we're making local modifications
+          // For infinite scroll, AG Grid will automatically try to refetch when rows are removed
+          // We prevent this by checking the flag and using the current supabaseData cache
+          if (isUpdatingDataLocally.value) {
+            // Use the current cached data from supabaseData (last fetched block)
+            // This prevents a new fetch while still providing data to AG Grid
+            let cachedData = Array.isArray(supabaseData.value) ? [...supabaseData.value] : [];
+            const cachedTotal = supabaseTotalCount.value || 0;
+            
+            // Filter out any removed rows (tracked in removedRowIds ref)
+            // This ensures removed rows don't appear when datasource is refreshed
+            if (removedRowIds.value && removedRowIds.value.size > 0) {
+              cachedData = cachedData.filter(row => {
+                // Get row ID using idFormula
+                const rowId = resolveMappingFormula(props.content?.idFormula, row);
+                const rowIdStr = rowId != null ? String(rowId) : '';
+                // Keep row if it's not in the removed set
+                return !removedRowIds.value.has(rowIdStr);
+              });
+            }
+            
+            // Return filtered cached data - AG Grid will use this instead of making a new fetch
+            successCallback(cachedData, cachedTotal > 0 ? cachedTotal : undefined);
+            return;
+          }
           const requestedBlockSize = endRow - startRow;
 
           try {
@@ -1775,6 +1805,7 @@ export default {
       onSortChanged,
       setUpdatingDataLocally, // Expose setter so methods can update the flag
       getUpdatingDataLocally, // Expose getter so methods can check the flag
+      removedRowIds, // Expose removedRowIds so methods and datasource can access it
       localeText: computed(() => {
         switch (props.content.lang) {
           case "fr":
@@ -1812,6 +1843,9 @@ export default {
       isLoading,
       isInfiniteScrollEnabled,
       gridComponents,
+      // Expose supabaseData and supabaseTotalCount for methods to access
+      supabaseDataRef: supabaseData,
+      supabaseTotalCountRef: supabaseTotalCount,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -3612,6 +3646,175 @@ export default {
       
       if (rowNode) {
         rowNode.setSelected(false);
+      }
+    },
+    removeRow(rowId) {
+      if (!this.gridApi) {
+        console.warn("[Datagrid] Grid API is not initialized yet");
+        return false;
+      }
+      
+      if (rowId === null || rowId === undefined) {
+        console.warn("[Datagrid] removeRow requires a rowId parameter");
+        return false;
+      }
+      
+      // Try to get the row node directly first
+      let rowNode = this.gridApi.getRowNode(rowId);
+      
+      // If not found, search by base ID (getRowId appends a hash)
+      if (!rowNode) {
+        const rowIdStr = String(rowId);
+        
+        this.gridApi.forEachNode((node) => {
+          if (!rowNode && node.data) {
+            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
+            
+            // If formula returns the field name instead of value, try direct access
+            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+            }
+            
+            const baseIdStr = baseId != null ? String(baseId) : '';
+            
+            if (baseIdStr === rowIdStr || 
+                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+                (node.id && String(node.id) === rowIdStr) ||
+                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
+              rowNode = node;
+            }
+          }
+        });
+      }
+      
+      if (!rowNode) {
+        console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid`);
+        return false;
+      }
+      
+      // Set flag to prevent re-fetching during local update
+      // This prevents watchers from triggering data fetches when we remove a row
+      // CRITICAL: Set flag BEFORE any operations to prevent any watchers from firing
+      this.setUpdatingDataLocally(true);
+      this.debugLog('[Remove Row] Setting isUpdatingDataLocally flag to TRUE');
+      
+      // Remove the row from the grid
+      try {
+        const isInfiniteScroll = this.content?.dataSource === 'supabase' && this.content?.enableInfiniteScroll === true;
+        
+        if (isInfiniteScroll) {
+          // For infinite scroll mode, applyTransaction doesn't work properly
+          // We need to:
+          // 1. Store the rowId to filter out when datasource returns cached data
+          // 2. Remove from cached supabaseData
+          // 3. Decrement total count
+          // 4. Purge cache and refresh datasource
+          // 5. The datasource's getRows will filter out the removed row when returning cached data
+          
+          // Store the removed row ID so datasource can filter it out
+          // Access the removedRowIds ref from setup
+          if (this.removedRowIds) {
+            this.removedRowIds.add(String(rowId));
+            this.debugLog(`[Remove Row] Added row ${rowId} to removedRowIds set (size: ${this.removedRowIds.size})`);
+          } else {
+            this.debugLog(`[Remove Row] Warning: removedRowIds not available`);
+          }
+          
+          // Remove from cached data
+          if (this.supabaseDataRef && Array.isArray(this.supabaseDataRef.value)) {
+            const currentData = [...this.supabaseDataRef.value];
+            const filteredData = currentData.filter(row => {
+              const rowIdFromData = this.resolveMappingFormula(this.content.idFormula, row);
+              return String(rowIdFromData) !== String(rowId);
+            });
+            
+            // Update cached data
+            this.supabaseDataRef.value = filteredData;
+            this.debugLog(`[Remove Row] Removed from cached data, ${filteredData.length} rows remaining`);
+          }
+          
+          // Decrement total count
+          if (this.supabaseTotalCountRef && this.supabaseTotalCountRef.value > 0) {
+            this.supabaseTotalCountRef.value = this.supabaseTotalCountRef.value - 1;
+            this.debugLog(`[Remove Row] Decremented total count to ${this.supabaseTotalCountRef.value}`);
+          }
+          
+          // For infinite scroll, we can't use applyTransaction - it doesn't work with infinite row model
+          // Instead, we need to:
+          // 1. Remove from cache (already done above)
+          // 2. Purge the infinite cache to force AG Grid to refetch
+          // 3. When it refetches, our flag will prevent actual fetch and return filtered cached data
+          this.gridApi.purgeInfiniteCache();
+          this.debugLog('[Remove Row] Purged infinite cache');
+          
+          // Try to remove the node directly if it exists in the current view
+          // This is a workaround since applyTransaction doesn't work in infinite mode
+          try {
+            const nodeToRemove = this.gridApi.getRowNode(rowNode.id);
+            if (nodeToRemove) {
+              // Try to remove it from the view directly
+              this.gridApi.applyTransaction({ remove: [nodeToRemove.data] });
+              this.debugLog('[Remove Row] Attempted to remove node from view (may not work in infinite mode)');
+            }
+          } catch (e) {
+            // Ignore errors - applyTransaction may not work in infinite mode
+            this.debugLog('[Remove Row] Could not remove node directly (expected in infinite mode)');
+          }
+          
+          // Refresh the datasource - this will call getRows which will return filtered cached data
+          // The flag prevents actual fetching, and our filter removes the deleted row
+          const currentDatasource = this.datasource;
+          if (currentDatasource) {
+            this.gridApi.setGridOption('datasource', currentDatasource);
+            this.debugLog('[Remove Row] Refreshed datasource (will return filtered cached data without removed row)');
+            
+            // Force AG Grid to refresh the view after a short delay
+            // This ensures the filtered data is actually rendered
+            setTimeout(() => {
+              try {
+                // Refresh all visible cells to ensure the view updates
+                this.gridApi.refreshCells({ force: true });
+                this.debugLog('[Remove Row] Refreshed cells to update view');
+              } catch (e) {
+                this.debugLog('[Remove Row] Could not refresh cells:', e);
+              }
+            }, 100);
+          } else {
+            this.debugLog('[Remove Row] Datasource not available, skipping refresh');
+          }
+          
+          this.debugLog(`[Datagrid] Row ${rowId} removed successfully from infinite scroll grid`);
+        } else {
+          // For regular mode, use standard applyTransaction
+          this.gridApi.applyTransaction({ remove: [rowNode.data] });
+          this.debugLog(`[Datagrid] Row ${rowId} removed successfully`);
+        }
+        
+        // Clear the flag after a delay to allow transaction to complete
+        // and prevent any watchers from triggering re-fetches
+        // Use a longer delay for infinite scroll mode to ensure datasource doesn't refresh
+        const delay = isInfiniteScroll ? 500 : 200;
+        setTimeout(() => {
+          this.setUpdatingDataLocally(false);
+          // For infinite scroll, keep removedRowIds for a bit longer to ensure all datasource calls are filtered
+          // Then clear it after an additional delay
+          if (isInfiniteScroll && this.removedRowIds) {
+            setTimeout(() => {
+              // Don't clear removedRowIds - we want to keep filtering this row out permanently
+              // until the next real data fetch (which will naturally exclude it if it's deleted from DB)
+              this.debugLog(`[Remove Row] Keeping removedRowIds (size: ${this.removedRowIds.size}) for future filtering`);
+            }, 100);
+          }
+          this.debugLog('[Remove Row] Clearing isUpdatingDataLocally flag');
+        }, delay);
+        
+        return true;
+      } catch (error) {
+        console.error('[Datagrid] Error removing row:', error);
+        // Clear flag on error immediately
+        this.setUpdatingDataLocally(false);
+        this.debugLog('[Remove Row] Error occurred, clearing isUpdatingDataLocally flag');
+        return false;
       }
     },
     setInFocus(rowId, columnId) {
