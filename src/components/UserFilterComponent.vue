@@ -97,9 +97,14 @@ export default {
             type: Object,
             required: true,
         },
+        // Callback from wrapper to notify when users are ready
+        onUsersReady: {
+            type: Function,
+            default: null,
+        },
     },
     // Expose methods for AG Grid filter interface
-    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh'],
+    expose: ['getGui', 'isFilterActive', 'doesFilterPass', 'getModel', 'setModel', 'onParentModelChanged', 'refresh', 'hasUsersLoaded'],
     data() {
         return {
             userParams: {},
@@ -109,6 +114,8 @@ export default {
             pendingSelection: new Set(), // Store user names
             appliedSelection: new Set(), // Store user names
             refreshTimer: null,
+            // Track if we've notified the wrapper that users are ready
+            hasNotifiedUsersReady: false,
         };
     },
     computed: {
@@ -203,10 +210,16 @@ export default {
             if (this.availableUsers.length === 0 && rendererParams && Object.keys(rendererParams).length > 0) {
                 this.setUserParams(rendererParams);
             }
+            
+            // Check if we should notify wrapper about users being ready
+            this.checkAndNotifyUsersReady();
         };
         
         // Try immediately
         tryInitializeUsers();
+        
+        // Notify if users are already available
+        this.checkAndNotifyUsersReady();
         
         // Try again after a short delay (for async loading)
         setTimeout(tryInitializeUsers, 100);
@@ -279,6 +292,26 @@ export default {
         // AG Grid filter interface methods
         getGui() {
             return this.$el;
+        },
+        /**
+         * Check if users are loaded and available
+         * Used by wrapper to determine if setModel can be applied immediately
+         */
+        hasUsersLoaded() {
+            return Array.isArray(this.availableUsers) && this.availableUsers.length > 0;
+        },
+        /**
+         * Check if users are ready and notify the wrapper
+         * This allows the wrapper to apply any pending model
+         */
+        checkAndNotifyUsersReady() {
+            if (this.hasUsersLoaded() && !this.hasNotifiedUsersReady) {
+                this.hasNotifiedUsersReady = true;
+                // Notify the wrapper that users are ready
+                if (typeof this.onUsersReady === 'function') {
+                    this.onUsersReady();
+                }
+            }
         },
         getCurrentUsers() {
             if (!this.params) return null;
@@ -569,7 +602,27 @@ export default {
                 this.pendingSelection = updateApplied ? new Set(this.appliedSelection) : new Set();
                 return;
             }
-            const next = new Set(model.values);
+            
+            // Resolve model values to user names
+            // Support both name-based and ID-based initial filters
+            const resolvedNames = model.values.map(val => {
+                // First, check if this value is already a valid user name
+                const isName = this.availableUsers.some(user => this.getUserName(user) === val);
+                if (isName) {
+                    return val;
+                }
+                
+                // If not a name, try to find the user by ID and get their name
+                const userById = this.availableUsers.find(user => user.id === val);
+                if (userById) {
+                    return this.getUserName(userById);
+                }
+                
+                // If we still can't find it, return as-is (it might match later when users load)
+                return val;
+            });
+            
+            const next = new Set(resolvedNames);
             if (updateApplied) {
                 this.appliedSelection = new Set(next);
             }
