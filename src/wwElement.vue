@@ -1347,25 +1347,37 @@ export default {
           // For infinite scroll, AG Grid will automatically try to refetch when rows are removed
           // We prevent this by checking the flag and using the current supabaseData cache
           if (isUpdatingDataLocally.value) {
-            // Use the current cached data from supabaseData (last fetched block)
-            // This prevents a new fetch while still providing data to AG Grid
-            let cachedData = Array.isArray(supabaseData.value) ? [...supabaseData.value] : [];
-            const cachedTotal = supabaseTotalCount.value || 0;
+            // IMPORTANT: We need to check if the requested block matches our cached block
+            // If it doesn't, we should return empty data to force AG Grid to hide those rows
+            // Otherwise, return filtered cached data
             
-            // Filter out any removed rows (tracked in removedRowIds ref)
+            let cachedData = Array.isArray(supabaseData.value) ? [...supabaseData.value] : [];
+            let cachedTotal = supabaseTotalCount.value || 0;
+            
+            // CRITICAL: Filter out any removed rows (tracked in removedRowIds ref)
             // This ensures removed rows don't appear when datasource is refreshed
             if (removedRowIds.value && removedRowIds.value.size > 0) {
+              const beforeFilter = cachedData.length;
               cachedData = cachedData.filter(row => {
+                if (!row) return false; // Skip null/undefined rows
                 // Get row ID using idFormula
                 const rowId = resolveMappingFormula(props.content?.idFormula, row);
                 const rowIdStr = rowId != null ? String(rowId) : '';
                 // Keep row if it's not in the removed set
                 return !removedRowIds.value.has(rowIdStr);
               });
+              const afterFilter = cachedData.length;
+              // Adjust total count if we filtered out rows
+              if (beforeFilter > afterFilter && cachedTotal > 0) {
+                cachedTotal = Math.max(0, cachedTotal - (beforeFilter - afterFilter));
+              }
             }
             
-            // Return filtered cached data - AG Grid will use this instead of making a new fetch
-            successCallback(cachedData, cachedTotal > 0 ? cachedTotal : undefined);
+            // Return filtered cached data
+            // If cached data is empty or we filtered everything out, return empty with adjusted total
+            // This tells AG Grid there's no data for this block, which will hide empty rows
+            const finalTotal = cachedData.length > 0 ? cachedTotal : (cachedTotal > 0 ? cachedTotal : 0);
+            successCallback(cachedData, finalTotal > 0 ? finalTotal : (cachedData.length > 0 ? undefined : 0));
             return;
           }
           const requestedBlockSize = endRow - startRow;
@@ -3739,46 +3751,66 @@ export default {
             this.debugLog(`[Remove Row] Decremented total count to ${this.supabaseTotalCountRef.value}`);
           }
           
-          // For infinite scroll, we can't use applyTransaction - it doesn't work with infinite row model
-          // Instead, we need to:
-          // 1. Remove from cache (already done above)
-          // 2. Purge the infinite cache to force AG Grid to refetch
-          // 3. When it refetches, our flag will prevent actual fetch and return filtered cached data
+          // For infinite scroll mode, we need to remove the row from the view
+          // Since applyTransaction doesn't work reliably, we'll:
+          // 1. Try to hide/remove the node directly from the DOM
+          // 2. Purge and refresh the cache to rebuild without the row
+          
+          // First, try to remove the row node from the DOM directly
+          try {
+            // Get the row element from the DOM
+            const rowElement = this.gridContainerRef?.querySelector(`[row-id="${rowNode.id}"]`);
+            if (rowElement) {
+              // Hide the row by setting display to none
+              rowElement.style.display = 'none';
+              this.debugLog('[Remove Row] Hid row element from DOM');
+            } else {
+              // Try alternative selector patterns
+              const allRows = this.gridContainerRef?.querySelectorAll('.ag-row');
+              if (allRows) {
+                allRows.forEach((rowEl, index) => {
+                  const rowNodeFromGrid = this.gridApi.getDisplayedRowAtIndex(index);
+                  if (rowNodeFromGrid && rowNodeFromGrid.id === rowNode.id) {
+                    rowEl.style.display = 'none';
+                    this.debugLog('[Remove Row] Hid row element using index lookup');
+                  }
+                });
+              }
+            }
+          } catch (e) {
+            this.debugLog('[Remove Row] Could not hide row from DOM:', e.message);
+          }
+          
+          // Purge the entire infinite cache - this clears all cached blocks
           this.gridApi.purgeInfiniteCache();
           this.debugLog('[Remove Row] Purged infinite cache');
           
-          // Try to remove the node directly if it exists in the current view
-          // This is a workaround since applyTransaction doesn't work in infinite mode
-          try {
-            const nodeToRemove = this.gridApi.getRowNode(rowNode.id);
-            if (nodeToRemove) {
-              // Try to remove it from the view directly
-              this.gridApi.applyTransaction({ remove: [nodeToRemove.data] });
-              this.debugLog('[Remove Row] Attempted to remove node from view (may not work in infinite mode)');
-            }
-          } catch (e) {
-            // Ignore errors - applyTransaction may not work in infinite mode
-            this.debugLog('[Remove Row] Could not remove node directly (expected in infinite mode)');
-          }
-          
-          // Refresh the datasource - this will call getRows which will return filtered cached data
-          // The flag prevents actual fetching, and our filter removes the deleted row
+          // Refresh the datasource - this will trigger getRows calls for visible blocks
+          // Our flag prevents actual fetching, and getRows will return filtered cached data
           const currentDatasource = this.datasource;
           if (currentDatasource) {
+            // Reset the datasource to force AG Grid to re-fetch visible blocks
             this.gridApi.setGridOption('datasource', currentDatasource);
-            this.debugLog('[Remove Row] Refreshed datasource (will return filtered cached data without removed row)');
+            this.debugLog('[Remove Row] Refreshed datasource (getRows will return filtered data)');
             
-            // Force AG Grid to refresh the view after a short delay
-            // This ensures the filtered data is actually rendered
+            // After a short delay, refresh the infinite cache to rebuild the view
             setTimeout(() => {
               try {
-                // Refresh all visible cells to ensure the view updates
-                this.gridApi.refreshCells({ force: true });
-                this.debugLog('[Remove Row] Refreshed cells to update view');
+                // refreshInfiniteCache will rebuild the view from the datasource
+                // Since our flag is set, getRows will return filtered cached data
+                this.gridApi.refreshInfiniteCache();
+                this.debugLog('[Remove Row] Refreshed infinite cache - view should update with filtered data');
               } catch (e) {
-                this.debugLog('[Remove Row] Could not refresh cells:', e);
+                this.debugLog('[Remove Row] refreshInfiniteCache not available, trying alternative:', e.message);
+                // Fallback: try to refresh cells
+                try {
+                  this.gridApi.refreshCells({ force: true });
+                  this.debugLog('[Remove Row] Fallback: refreshed cells');
+                } catch (e2) {
+                  this.debugLog('[Remove Row] Could not refresh cells either');
+                }
               }
-            }, 100);
+            }, 200);
           } else {
             this.debugLog('[Remove Row] Datasource not available, skipping refresh');
           }
