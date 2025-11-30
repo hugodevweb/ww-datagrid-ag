@@ -291,54 +291,87 @@ export default {
             // Filter values are already user IDs, use them directly
             const selectedUserIds = filter.values.filter(id => id != null); // Remove any null/undefined IDs
             
-              if (selectedUserIds.length > 0) {
-              // Check if this is a junction table (many-to-many) using isManyToMany property
-              // This is the ONLY condition that determines if a column is managed as many-to-many
-              const isManyToMany = column?.isManyToMany === true;
+            if (selectedUserIds.length > 0) {
+              // Determine user column type: check userColumnType first, fall back to isManyToMany for backward compatibility
+              const userColumnType = column?.userColumnType || (column?.isManyToMany === true ? 'manyToMany' : 'directFK');
               
-              // For junction tables (many-to-many), use .in() for filtering
-              // For direct foreign keys (not many-to-many), use .in() or .eq() based on selection count
-              if (selectedUserIds.length === 1) {
-                currentQuery = currentQuery.eq(supabaseField, selectedUserIds[0]);
-              } else {
-                currentQuery = currentQuery.in(supabaseField, selectedUserIds);
-              }
+              // Get the appropriate filter field
+              // For many-to-many, use supabaseFilterField if provided, otherwise use supabaseField
+              // For direct FK and JSONB, use supabaseField (which is the column field)
+              const filterField = (userColumnType === 'manyToMany' && column?.supabaseFilterField?.trim()) 
+                ? column.supabaseFilterField.trim() 
+                : supabaseField;
               
-              // CRITICAL FIX: For user columns (especially junction tables), explicitly exclude null values
-              // This prevents returning rows where the relationship doesn't exist
-              // Supabase syntax: .not(field, 'is', null) to exclude null values
-              // Apply to all user columns when filtering, as junction tables always need this
-              
-              // Check if this is a nested path (e.g., "case_owners.profile.id")
-              const isNestedPath = supabaseField.includes('.');
-              
-              if (isNestedPath) {
-                // For nested paths in junction tables, we need to check each level of the path
-                // to ensure the entire relationship chain exists
-                // Example: for "case_owners.profile.id", check:
-                // - case_owners is not null (junction table exists)
-                // - case_owners.profile is not null (nested relationship exists)
-                // - case_owners.profile.id is not null (field exists)
-                const pathParts = supabaseField.split('.');
+              // Apply filter based on user column type
+              if (userColumnType === 'jsonbArray') {
+                // JSONB Array: Use contains operator for Supabase JSONB arrays
+                // Supabase .contains() checks if the JSONB array contains the specified value(s)
+                // Note: .contains() requires ALL values to be present, so for "any of" we use OR
+                if (selectedUserIds.length === 1) {
+                  // Single user: check if array contains this user ID
+                  // For JSONB arrays, we pass an array with the single ID
+                  currentQuery = currentQuery.contains(filterField, [selectedUserIds[0]]);
+                } else {
+                  // Multiple users: check if array contains ANY of the selected user IDs
+                  // Use OR condition with individual contains checks for each ID
+                  // PostgREST syntax for JSONB containment uses curly braces for array values
+                  // Format: field.cs.{value} for checking if JSONB array contains the value
+                  const orConditions = selectedUserIds.map(id => {
+                    // Use curly braces for PostgREST array containment syntax
+                    // This checks if the JSONB column contains the specified value
+                    return `${filterField}.cs.{${id}}`;
+                  }).join(',');
+                  currentQuery = currentQuery.or(orConditions);
+                }
+              } else if (userColumnType === 'manyToMany') {
+                // Many-to-Many: Use eq/in with supabaseFilterField (e.g., "case_owners.profile.id")
+                if (selectedUserIds.length === 1) {
+                  currentQuery = currentQuery.eq(filterField, selectedUserIds[0]);
+                } else {
+                  currentQuery = currentQuery.in(filterField, selectedUserIds);
+                }
                 
-                // Build and check each intermediate path level
-                // This ensures that if any part of the relationship chain is null, the row is excluded
-                let currentPath = '';
-                for (let i = 0; i < pathParts.length; i++) {
-                  if (i === 0) {
-                    currentPath = pathParts[i];
-                  } else {
-                    currentPath += '.' + pathParts[i];
+                // For many-to-many with nested paths, exclude null values at each level
+                const isNestedPath = filterField.includes('.');
+                
+                if (isNestedPath) {
+                  // For nested paths in junction tables, we need to check each level of the path
+                  // to ensure the entire relationship chain exists
+                  // Example: for "case_owners.profile.id", check:
+                  // - case_owners is not null (junction table exists)
+                  // - case_owners.profile is not null (nested relationship exists)
+                  // - case_owners.profile.id is not null (field exists)
+                  const pathParts = filterField.split('.');
+                  
+                  // Build and check each intermediate path level
+                  // This ensures that if any part of the relationship chain is null, the row is excluded
+                  let currentPath = '';
+                  for (let i = 0; i < pathParts.length; i++) {
+                    if (i === 0) {
+                      currentPath = pathParts[i];
+                    } else {
+                      currentPath += '.' + pathParts[i];
+                    }
+                    // Exclude rows where this path level is null
+                    // Note: If this doesn't work for junction tables, we may need to use
+                    // an inner join in the select statement (e.g., 'case_owners!inner(*)')
+                    currentQuery = currentQuery.not(currentPath, 'is', null);
                   }
-                  // Exclude rows where this path level is null
-                  // Note: If this doesn't work for junction tables, we may need to use
-                  // an inner join in the select statement (e.g., 'case_owners!inner(*)')
-                  currentQuery = currentQuery.not(currentPath, 'is', null);
+                } else {
+                  // For direct fields, just exclude null values
+                  // Supabase syntax: .not(field, 'is', null)
+                  currentQuery = currentQuery.not(filterField, 'is', null);
                 }
               } else {
-                // For direct fields, just exclude null values
-                // Supabase syntax: .not(field, 'is', null)
-                currentQuery = currentQuery.not(supabaseField, 'is', null);
+                // Direct Foreign Key (default): Use eq/in operators
+                if (selectedUserIds.length === 1) {
+                  currentQuery = currentQuery.eq(filterField, selectedUserIds[0]);
+                } else {
+                  currentQuery = currentQuery.in(filterField, selectedUserIds);
+                }
+                
+                // For direct FK, exclude null values
+                currentQuery = currentQuery.not(filterField, 'is', null);
               }
               
             } else {
@@ -351,6 +384,8 @@ export default {
               field: col?.field,
               actionName: col?.actionName,
               cellDataType: col?.cellDataType,
+              userColumnType: col?.userColumnType,
+              isManyToMany: col?.isManyToMany,
               supabaseFilterField: col?.supabaseFilterField,
               hasUsers: Array.isArray(col?.users),
               usersCount: Array.isArray(col?.users) ? col.users.length : 0

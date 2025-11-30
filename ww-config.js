@@ -1475,7 +1475,7 @@ export default {
                   return content?.dataSource !== 'supabase' || array?.item?.cellDataType === "action";
                 },
                 propertyHelp: {
-                  en: "Optional: Supabase field path for filtering (e.g., 'case_owners.profile.id'). Use dot notation for nested relationships. If empty, uses the Key field above."
+                  en: "Optional: Supabase field path for filtering (e.g., 'case_owners.profile.id'). Use dot notation for nested relationships. If empty, uses the Key field above. This is primarily used for many-to-many relationships when 'User Column Type' is set to 'manyToMany'."
                 },
                 /* wwEditor:start */
                 bindingValidation: {
@@ -2137,19 +2137,27 @@ export default {
                 },
                 /* wwEditor:end */
               },
-              isManyToMany: {
-                label: "Is Many to Many",
-                type: "OnOff",
+              userColumnType: {
+                label: "User Column Type",
+                type: "TextSelect",
                 hidden: array?.item?.cellDataType !== "user",
                 bindable: true,
-                defaultValue: false,
+                options: {
+                  options: [
+                    { value: "directFK", label: "Direct Foreign Key", default: true },
+                    { value: "jsonbArray", label: "JSONB Array" },
+                    { value: "manyToMany", label: "Many-to-Many" },
+                  ],
+                },
+                defaultValue: "directFK",
                 /* wwEditor:start */
                 bindingValidation: {
-                  type: "boolean",
-                  tooltip: "Set to true if this column represents a many-to-many relationship (junction table). When true, the User ID Formula field will be shown to extract user IDs from nested structures.",
+                  type: "string",
+                  enum: ["directFK", "jsonbArray", "manyToMany"],
+                  tooltip: "Type of user column: 'directFK' for direct foreign key (uses eq/in), 'jsonbArray' for Supabase JSONB arrays (uses contains), 'manyToMany' for junction table relationships (uses eq/in with supabaseFilterField).",
                 },
                 propertyHelp: {
-                  tooltip: "Enable this for junction table relationships where user IDs are nested in objects (e.g., case_owners.profile.id). When enabled, you can use the User ID Formula to extract the user ID from the nested structure.",
+                  tooltip: "Select the type of user column:\n- Direct Foreign Key: Simple foreign key relationship, uses eq/in operators\n- JSONB Array: Supabase JSONB array column, uses contains operator\n- Many-to-Many: Junction table relationship, uses eq/in with custom filter field (e.g., case_owners.profile.id)",
                 },
                 /* wwEditor:end */
               },
@@ -2157,7 +2165,7 @@ export default {
                 label: "User ID Formula",
                 type: "Formula",
                 hidden: (content, sidePanelContent, boundProperties, wwProps, array) => 
-                  array?.item?.cellDataType !== "user" || !array?.item?.isManyToMany,
+                  array?.item?.cellDataType !== "user" || array?.item?.userColumnType !== "manyToMany",
                 options: (content) => {
                   // Get a sample row from rowData for template
                   const rowData = content?.rowData;
@@ -2205,7 +2213,7 @@ export default {
               "optionsColorFormula",
               "users",
               "maxNumberOfUsers",
-              "isManyToMany",
+              "userColumnType",
               "userIdFormula",
               "useCustomLabel",
               "displayLabelFormula",
