@@ -435,7 +435,7 @@ export default {
           /* wwEditor:start */
           bindingValidation: {
             type: "string",
-            tooltip: "The ID of the row to refresh from Supabase (must match the idFormula output / primary key)",
+            tooltip: "The ID of the row to refresh from Supabase (must match the idFormula output / primary key). If the row doesn't exist in the grid but is found in the database, it will be added to the grid.",
           },
           /* wwEditor:end */
         },

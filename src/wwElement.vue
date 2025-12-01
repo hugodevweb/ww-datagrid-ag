@@ -60,6 +60,7 @@ import {
   nextTick,
   ref,
   onBeforeUnmount,
+  isRef,
 } from "vue";
 import { AgGridVue } from "ag-grid-vue3";
 import {
@@ -3576,8 +3577,100 @@ export default {
           this.debugLog(`[Datagrid] Row ${rowId} refreshed successfully`);
           return true;
         } else {
-          console.warn(`[Datagrid] Row with id "${rowId}" not found in grid`);
-          return false;
+          // Row not found in grid but was fetched from DB - add it to the grid
+          this.debugLog(`[Datagrid] Row with id "${rowId}" not found in grid, adding it from database`);
+          
+          const isInfiniteScroll = this.content?.enableInfiniteScroll === true;
+          
+          // Helper to safely check if something is a ref object (has .value property as object)
+          const isRefObject = (val) => {
+            return val !== null && typeof val === 'object' && 'value' in val;
+          };
+          
+          // Helper to safely get ref values (handles both ref objects and unwrapped values)
+          const getRefValue = (refOrValue) => {
+            if (isRef(refOrValue)) return refOrValue.value;
+            if (isRefObject(refOrValue)) return refOrValue.value;
+            return refOrValue;
+          };
+          
+          // Helper to safely set ref values
+          const setRefValue = (refOrValue, newValue) => {
+            if (isRef(refOrValue)) {
+              refOrValue.value = newValue;
+              return true;
+            }
+            if (isRefObject(refOrValue)) {
+              refOrValue.value = newValue;
+              return true;
+            }
+            // If it's already unwrapped (primitive), we can't set it directly
+            return false;
+          };
+          
+          if (isInfiniteScroll) {
+            // For infinite scroll mode, we need to:
+            // 1. Add to cached supabaseData
+            // 2. Increment total count
+            // 3. Purge cache and refresh datasource
+            
+            // Add to cached data - check if it's a ref or already an array
+            const supabaseDataRefValue = this.supabaseDataRef;
+            if (supabaseDataRefValue) {
+              const currentDataValue = getRefValue(supabaseDataRefValue);
+              if (Array.isArray(currentDataValue)) {
+                const newData = [...currentDataValue];
+                newData.unshift(data); // Add at the beginning
+                if (!setRefValue(supabaseDataRefValue, newData)) {
+                  // If we couldn't set through ref, try to modify array in place
+                  if (Array.isArray(supabaseDataRefValue)) {
+                    supabaseDataRefValue.unshift(data);
+                  }
+                }
+                this.debugLog(`[Datagrid] Added row to cached data, now ${newData.length} rows`);
+              }
+            }
+            
+            // Note: We skip incrementing total count as it may be unwrapped and not settable
+            // The grid will get the correct count from the datasource on refresh
+            
+            // Purge and refresh the infinite cache
+            this.gridApi.purgeInfiniteCache();
+            this.debugLog('[Datagrid] Purged infinite cache to reload data with new row');
+            
+            // Refresh the datasource
+            const currentDatasource = this.datasource;
+            if (currentDatasource) {
+              this.gridApi.setGridOption('datasource', currentDatasource);
+              this.debugLog('[Datagrid] Refreshed datasource');
+            }
+          } else {
+            // For regular mode, use standard applyTransaction to add the row
+            this.gridApi.applyTransaction({ add: [data], addIndex: 0 });
+            this.debugLog(`[Datagrid] Row ${rowId} added to grid using applyTransaction`);
+            
+            // Also update the cached data if using Supabase
+            const supabaseDataRefValue = this.supabaseDataRef;
+            if (supabaseDataRefValue) {
+              const currentDataValue = getRefValue(supabaseDataRefValue);
+              if (Array.isArray(currentDataValue)) {
+                const newData = [...currentDataValue];
+                newData.unshift(data);
+                if (!setRefValue(supabaseDataRefValue, newData)) {
+                  // If we couldn't set through ref, try to modify array in place
+                  if (Array.isArray(supabaseDataRefValue)) {
+                    supabaseDataRefValue.unshift(data);
+                  }
+                }
+              }
+            }
+            
+            // Note: We skip incrementing total count as it may be unwrapped and not settable
+            // The grid handles counts internally for client-side mode
+          }
+          
+          this.debugLog(`[Datagrid] Row ${rowId} added successfully from database`);
+          return true;
         }
       } catch (error) {
         console.error('[Datagrid] Error refreshing row:', error);

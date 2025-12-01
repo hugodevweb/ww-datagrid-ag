@@ -172,9 +172,10 @@ A highly customizable data grid/table component that supports features like sort
 - deselectRow(rowId): Deselects a specific row by its ID.
 - stopCellEditing(cancel): Stops cell editing. `cancel` (boolean, default: false) - if true, cancels the edit and reverts the value.
 - refreshData(): Refreshes all cells in the grid to reflect data changes.
-- refreshRow(rowId): Fetches a specific row from Supabase by ID and updates it in the grid. Only works when dataSource is 'supabase'. Returns `true` if successful, `false` otherwise.
+- refreshRow(rowId): Fetches a specific row from Supabase by ID and updates it in the grid. If the row doesn't exist in the grid but is found in the database, it will be added to the grid. Only works when dataSource is 'supabase'. Returns `true` if successful, `false` otherwise.
   - `rowId` (string|number): The ID of the row (must match the idFormula output / primary key)
   - Example: `datagrid.refreshRow('user-123')`
+  - Note: If the row is already in the grid, it updates the existing row. If not found in the grid but exists in DB, it adds the row to the beginning of the grid.
 
 ***Events:***
 - action: Triggered when clicking on a action cell. Payload: { actionName: 'name of the column', row: { /* row data */}, id: 0, index: 0, displayIndex: 0 }
