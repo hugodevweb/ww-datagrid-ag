@@ -3594,6 +3594,13 @@ export default {
           
           const isInfiniteScroll = this.content?.enableInfiniteScroll === true;
           
+          // CRITICAL: Set flag to prevent watchers from triggering a full grid re-render
+          // When we update supabaseDataRef, the rowData computed will change, which would
+          // normally cause AG Grid to see a new array reference and re-render everything.
+          // By setting this flag, the watch on rowData.value will skip processing.
+          this.setUpdatingDataLocally(true);
+          this.debugLog('[Datagrid refreshRow] Setting isUpdatingDataLocally flag to TRUE');
+          
           // Helper to safely check if something is a ref object (has .value property as object)
           const isRefObject = (val) => {
             return val !== null && typeof val === 'object' && 'value' in val;
@@ -3620,69 +3627,93 @@ export default {
             return false;
           };
           
-          if (isInfiniteScroll) {
-            // For infinite scroll mode, we need to:
-            // 1. Add to cached supabaseData
-            // 2. Increment total count
-            // 3. Purge cache and refresh datasource
-            
-            // Add to cached data - check if it's a ref or already an array
-            const supabaseDataRefValue = this.supabaseDataRef;
-            if (supabaseDataRefValue) {
-              const currentDataValue = getRefValue(supabaseDataRefValue);
-              if (Array.isArray(currentDataValue)) {
-                const newData = [...currentDataValue];
-                newData.unshift(data); // Add at the beginning
-                if (!setRefValue(supabaseDataRefValue, newData)) {
-                  // If we couldn't set through ref, try to modify array in place
-                  if (Array.isArray(supabaseDataRefValue)) {
-                    supabaseDataRefValue.unshift(data);
+          try {
+            if (isInfiniteScroll) {
+              // For infinite scroll mode, we need to:
+              // 1. Add to cached supabaseData
+              // 2. Increment total count
+              // 3. Purge cache and refresh datasource (will use cached data due to flag)
+              
+              // Add to cached data - check if it's a ref or already an array
+              const supabaseDataRefValue = this.supabaseDataRef;
+              if (supabaseDataRefValue) {
+                const currentDataValue = getRefValue(supabaseDataRefValue);
+                if (Array.isArray(currentDataValue)) {
+                  const newData = [...currentDataValue];
+                  newData.unshift(data); // Add at the beginning
+                  if (!setRefValue(supabaseDataRefValue, newData)) {
+                    // If we couldn't set through ref, try to modify array in place
+                    if (Array.isArray(supabaseDataRefValue)) {
+                      supabaseDataRefValue.unshift(data);
+                    }
                   }
+                  this.debugLog(`[Datagrid] Added row to cached data, now ${newData.length} rows`);
                 }
-                this.debugLog(`[Datagrid] Added row to cached data, now ${newData.length} rows`);
+              }
+              
+              // Increment total count for proper pagination
+              if (this.supabaseTotalCountRef) {
+                const currentCount = getRefValue(this.supabaseTotalCountRef) || 0;
+                setRefValue(this.supabaseTotalCountRef, currentCount + 1);
+                this.debugLog(`[Datagrid] Incremented total count to ${currentCount + 1}`);
+              }
+              
+              // Purge and refresh the infinite cache
+              // Because isUpdatingDataLocally is true, the datasource will return cached data
+              // instead of fetching from Supabase, so this just refreshes the view with cached data
+              this.gridApi.purgeInfiniteCache();
+              this.debugLog('[Datagrid] Purged infinite cache to reload data with new row');
+              
+              // Refresh the datasource
+              const currentDatasource = this.datasource;
+              if (currentDatasource) {
+                this.gridApi.setGridOption('datasource', currentDatasource);
+                this.debugLog('[Datagrid] Refreshed datasource');
+              }
+            } else {
+              // For regular mode (non-infinite scroll), use applyTransaction to add the row
+              // This is the most efficient way as it only updates the affected rows in the grid
+              this.gridApi.applyTransaction({ add: [data], addIndex: 0 });
+              this.debugLog(`[Datagrid] Row ${rowId} added to grid using applyTransaction`);
+              
+              // Update the cached data to keep it in sync
+              // The isUpdatingDataLocally flag prevents the rowData watch from causing a re-render
+              const supabaseDataRefValue = this.supabaseDataRef;
+              if (supabaseDataRefValue) {
+                const currentDataValue = getRefValue(supabaseDataRefValue);
+                if (Array.isArray(currentDataValue)) {
+                  const newData = [...currentDataValue];
+                  newData.unshift(data);
+                  if (!setRefValue(supabaseDataRefValue, newData)) {
+                    // If we couldn't set through ref, try to modify array in place
+                    if (Array.isArray(supabaseDataRefValue)) {
+                      supabaseDataRefValue.unshift(data);
+                    }
+                  }
+                  this.debugLog(`[Datagrid] Updated cached data, now ${newData.length} rows`);
+                }
+              }
+              
+              // Increment total count if available
+              if (this.supabaseTotalCountRef) {
+                const currentCount = getRefValue(this.supabaseTotalCountRef) || 0;
+                setRefValue(this.supabaseTotalCountRef, currentCount + 1);
+                this.debugLog(`[Datagrid] Incremented total count to ${currentCount + 1}`);
               }
             }
             
-            // Note: We skip incrementing total count as it may be unwrapped and not settable
-            // The grid will get the correct count from the datasource on refresh
-            
-            // Purge and refresh the infinite cache
-            this.gridApi.purgeInfiniteCache();
-            this.debugLog('[Datagrid] Purged infinite cache to reload data with new row');
-            
-            // Refresh the datasource
-            const currentDatasource = this.datasource;
-            if (currentDatasource) {
-              this.gridApi.setGridOption('datasource', currentDatasource);
-              this.debugLog('[Datagrid] Refreshed datasource');
-            }
-          } else {
-            // For regular mode, use standard applyTransaction to add the row
-            this.gridApi.applyTransaction({ add: [data], addIndex: 0 });
-            this.debugLog(`[Datagrid] Row ${rowId} added to grid using applyTransaction`);
-            
-            // Also update the cached data if using Supabase
-            const supabaseDataRefValue = this.supabaseDataRef;
-            if (supabaseDataRefValue) {
-              const currentDataValue = getRefValue(supabaseDataRefValue);
-              if (Array.isArray(currentDataValue)) {
-                const newData = [...currentDataValue];
-                newData.unshift(data);
-                if (!setRefValue(supabaseDataRefValue, newData)) {
-                  // If we couldn't set through ref, try to modify array in place
-                  if (Array.isArray(supabaseDataRefValue)) {
-                    supabaseDataRefValue.unshift(data);
-                  }
-                }
-              }
-            }
-            
-            // Note: We skip incrementing total count as it may be unwrapped and not settable
-            // The grid handles counts internally for client-side mode
+            this.debugLog(`[Datagrid] Row ${rowId} added successfully from database`);
+            return true;
+          } finally {
+            // Clear the flag after a delay to allow any pending watchers to be skipped
+            // Use nextTick + setTimeout to ensure all Vue reactivity has settled
+            this.$nextTick(() => {
+              setTimeout(() => {
+                this.setUpdatingDataLocally(false);
+                this.debugLog('[Datagrid refreshRow] Clearing isUpdatingDataLocally flag');
+              }, 200);
+            });
           }
-          
-          this.debugLog(`[Datagrid] Row ${rowId} added successfully from database`);
-          return true;
         }
       } catch (error) {
         console.error('[Datagrid] Error refreshing row:', error);
