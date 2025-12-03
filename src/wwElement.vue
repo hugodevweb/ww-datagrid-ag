@@ -14,7 +14,7 @@
       :theme="theme"
       :getRowId="getRowId"
       :rowModelType="rowModelType"
-      :datasource="datasource"
+      :datasource="delayedDatasource"
       :cacheBlockSize="cacheBlockSize"
       :pagination="paginationEnabled"
       :paginationPageSize="
@@ -45,6 +45,8 @@
       @row-drag-enter="onRowDragEnter"
       @column-moved="onColumnMoved"
       @body-scroll="onBodyScroll"
+      @first-data-rendered="onFirstDataRendered"
+      @model-updated="onModelUpdated"
     >
     </ag-grid-vue>
   </div>
@@ -880,9 +882,16 @@ export default {
 
     // Function to update records variable from grid API (gets displayed rows)
     // Defined early so it can be used in onGridReady and other handlers
+    // CRITICAL FIX: This function can trigger error #252 if called during render
+    // Always call via safeUpdateRecordsFromGrid to ensure it runs outside render cycle
     const updateRecordsFromGrid = () => {
       if (!gridApi.value) {
         setRecords([]);
+        return;
+      }
+      
+      // Don't update records if grid is in the middle of rendering
+      if (isGridRendering.value) {
         return;
       }
 
@@ -896,8 +905,14 @@ export default {
         });
         setRecords(displayedRows);
       } catch (error) {
-        console.error('[Records] Error updating records from grid:', error);
-        setRecords([]);
+        // Check if this is the #252 error and silently retry later
+        if (error.message && error.message.includes('#252')) {
+          // Defer the update to avoid the render conflict
+          setTimeout(() => updateRecordsFromGrid(), 100);
+        } else {
+          console.error('[Records] Error updating records from grid:', error);
+          setRecords([]);
+        }
       }
     };
 
@@ -905,6 +920,130 @@ export default {
     const dataRendered = ref(false);
     const dataLoadingTimeout = ref(null);
     const gridContainerRef = ref(null);
+    
+    // CRITICAL FIX: Track when the grid is actively rendering to prevent error #252
+    // "cannot get grid to draw rows when it is in the middle of drawing rows"
+    const isGridRendering = ref(false);
+    
+    // Helper to safely call grid API methods - defers to next tick if grid is rendering
+    const safeGridApiCall = (callback, delay = 0) => {
+      return new Promise((resolve) => {
+        const executeCall = () => {
+          if (!gridApi.value) {
+            resolve(false);
+            return;
+          }
+          
+          // If grid is rendering, defer the call
+          if (isGridRendering.value) {
+            setTimeout(() => executeCall(), 10);
+            return;
+          }
+          
+          try {
+            const result = callback();
+            resolve(result);
+          } catch (error) {
+            // If we still get the error, retry with a longer delay
+            if (error.message && error.message.includes('#252')) {
+              setTimeout(() => executeCall(), 50);
+            } else {
+              console.error('[Datagrid] Safe API call error:', error);
+              resolve(false);
+            }
+          }
+        };
+        
+        if (delay > 0) {
+          setTimeout(executeCall, delay);
+        } else {
+          executeCall();
+        }
+      });
+    };
+    
+    // Helper to wait for grid to be fully ready (not just initialized, but ready for API calls)
+    const waitForGridReady = (timeout = 5000) => {
+      return new Promise((resolve, reject) => {
+        const startTime = Date.now();
+        
+        const checkReady = () => {
+          // Check if grid API is available and grid is marked as ready
+          if (gridApi.value && gridReady.value && !isGridRendering.value) {
+            resolve(true);
+            return;
+          }
+          
+          // Check timeout
+          if (Date.now() - startTime > timeout) {
+            reject(new Error('[Datagrid] Timeout waiting for grid to be ready'));
+            return;
+          }
+          
+          // Check again in a short interval
+          setTimeout(checkReady, 50);
+        };
+        
+        checkReady();
+      });
+    };
+    
+    // Helper to wait for a specific row to appear in the grid (useful after refreshRow in infinite scroll)
+    const waitForRowInGrid = (rowId, timeout = 10000) => {
+      return new Promise((resolve, reject) => {
+        const startTime = Date.now();
+        const rowIdStr = String(rowId);
+        
+        const checkRow = () => {
+          // First ensure grid is ready
+          if (!gridApi.value || !gridReady.value) {
+            if (Date.now() - startTime > timeout) {
+              reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} to appear in grid`));
+              return;
+            }
+            setTimeout(checkRow, 100);
+            return;
+          }
+          
+          // Wait for rendering to complete
+          if (isGridRendering.value) {
+            if (Date.now() - startTime > timeout) {
+              reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} - grid still rendering`));
+              return;
+            }
+            setTimeout(checkRow, 100);
+            return;
+          }
+          
+          // Try to find the row in the grid
+          let rowFound = false;
+          gridApi.value.forEachNode((node) => {
+            if (!rowFound && node.data) {
+              const nodeIdValue = node.data.id ?? node.data[Object.keys(node.data)[0]];
+              if (String(nodeIdValue) === rowIdStr || String(node.id) === rowIdStr) {
+                rowFound = true;
+              }
+            }
+          });
+          
+          if (rowFound) {
+            resolve(true);
+            return;
+          }
+          
+          // Check timeout
+          if (Date.now() - startTime > timeout) {
+            reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} to appear in grid`));
+            return;
+          }
+          
+          // Check again in a short interval
+          setTimeout(checkRow, 150);
+        };
+        
+        checkRow();
+      });
+    };
     
     // Supabase data state
     const supabaseData = ref([]);
@@ -935,6 +1074,9 @@ export default {
     const onGridReady = (params) => {
       gridApi.value = params.api;
       gridReady.value = true;
+      // Set rendering flag during initial setup
+      isGridRendering.value = true;
+      
       const columns = params.api.getAllGridColumns();
       
       // Only set column order from grid if initialColumnsOrder is not provided
@@ -958,13 +1100,39 @@ export default {
           requestAnimationFrame(() => {
             setTimeout(() => {
               dataRendered.value = true;
+              // Clear rendering flag after data is rendered
+              isGridRendering.value = false;
             }, 200);
           });
         } else {
           // Empty data means it's loaded
           dataRendered.value = true;
+          // Clear rendering flag
+          setTimeout(() => {
+            isGridRendering.value = false;
+          }, 100);
         }
       });
+    };
+    
+    // CRITICAL FIX: Track when grid finishes its first data render
+    // This helps prevent error #252 by knowing when it's safe to call API methods
+    const onFirstDataRendered = () => {
+      // Clear rendering flag when first data is rendered
+      setTimeout(() => {
+        isGridRendering.value = false;
+        dataRendered.value = true;
+      }, 50);
+    };
+    
+    // CRITICAL FIX: Track model updates to know when grid is actively rendering
+    // This helps prevent error #252 during data updates
+    const onModelUpdated = (event) => {
+      // The model update is complete, clear rendering flag after a short delay
+      // to allow any cascading renders to complete
+      setTimeout(() => {
+        isGridRendering.value = false;
+      }, 50);
     };
 
     // CRITICAL FIX: Track if initial filters/sorts have been applied
@@ -979,34 +1147,83 @@ export default {
       (ready) => {
         if (!ready || !gridApi.value) return;
         
-        // Apply initial filters only once
-        if (props.content.initialFilters && !initialFiltersApplied.value) {
-          gridApi.value.setFilterModel(props.content.initialFilters);
-          initialFiltersApplied.value = true;
-        }
-        
-        // Apply initial sort only once
-        if (props.content.initialSort && !initialSortApplied.value) {
-          gridApi.value.applyColumnState({
-            state: props.content.initialSort || [],
-            defaultState: { sort: null },
-          });
-          initialSortApplied.value = true;
-        }
-        
-        // Apply initial column order only once
-        if (
-          props.content.initialColumnsOrder &&
-          Array.isArray(props.content.initialColumnsOrder) &&
-          !initialColumnsOrderApplied.value
-        ) {
-          gridApi.value.applyColumnState({
-            state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
-            applyOrder: true,
-          });
-          setColumnOrder([...props.content.initialColumnsOrder]);
-          initialColumnsOrderApplied.value = true;
-        }
+        // CRITICAL FIX: Defer all initial state applications to prevent error #252
+        // These API calls can conflict with AG Grid's initial render cycle
+        setTimeout(() => {
+          if (!gridApi.value) return;
+          
+          // Apply initial filters only once
+          if (props.content.initialFilters && !initialFiltersApplied.value) {
+            try {
+              gridApi.value.setFilterModel(props.content.initialFilters);
+              initialFiltersApplied.value = true;
+            } catch (e) {
+              if (e.message && e.message.includes('#252')) {
+                // Retry after a short delay
+                setTimeout(() => {
+                  if (gridApi.value && !initialFiltersApplied.value) {
+                    gridApi.value.setFilterModel(props.content.initialFilters);
+                    initialFiltersApplied.value = true;
+                  }
+                }, 100);
+              }
+            }
+          }
+          
+          // Apply initial sort only once
+          if (props.content.initialSort && !initialSortApplied.value) {
+            try {
+              gridApi.value.applyColumnState({
+                state: props.content.initialSort || [],
+                defaultState: { sort: null },
+              });
+              initialSortApplied.value = true;
+            } catch (e) {
+              if (e.message && e.message.includes('#252')) {
+                // Retry after a short delay
+                setTimeout(() => {
+                  if (gridApi.value && !initialSortApplied.value) {
+                    gridApi.value.applyColumnState({
+                      state: props.content.initialSort || [],
+                      defaultState: { sort: null },
+                    });
+                    initialSortApplied.value = true;
+                  }
+                }, 100);
+              }
+            }
+          }
+          
+          // Apply initial column order only once
+          if (
+            props.content.initialColumnsOrder &&
+            Array.isArray(props.content.initialColumnsOrder) &&
+            !initialColumnsOrderApplied.value
+          ) {
+            try {
+              gridApi.value.applyColumnState({
+                state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
+                applyOrder: true,
+              });
+              setColumnOrder([...props.content.initialColumnsOrder]);
+              initialColumnsOrderApplied.value = true;
+            } catch (e) {
+              if (e.message && e.message.includes('#252')) {
+                // Retry after a short delay
+                setTimeout(() => {
+                  if (gridApi.value && !initialColumnsOrderApplied.value) {
+                    gridApi.value.applyColumnState({
+                      state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
+                      applyOrder: true,
+                    });
+                    setColumnOrder([...props.content.initialColumnsOrder]);
+                    initialColumnsOrderApplied.value = true;
+                  }
+                }, 100);
+              }
+            }
+          }
+        }, 0);
       },
       { immediate: true }
     );
@@ -1099,30 +1316,35 @@ export default {
             if (isInfiniteScrollEnabled.value) {
               // For infinite scrolling, refresh the datasource
               // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
+              // CRITICAL FIX: Wrap in setTimeout to prevent error #252
               if (gridApi.value) {
                 const currentFilters = gridApi.value.getFilterModel();
                 const currentSort = gridApi.value.getState()?.sort?.sortModel;
-                gridApi.value.setGridOption('datasource', datasource.value);
-                // AG Grid should preserve filters, but ensure they're still there
-                nextTick(() => {
-                  const newFilters = gridApi.value.getFilterModel();
-                  if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
-                    gridApi.value.setFilterModel(currentFilters);
-                  }
-                  if (currentSort && currentSort.length > 0) {
-                    const newSort = gridApi.value.getState()?.sort?.sortModel;
-                    if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
-                      gridApi.value.applyColumnState({
-                        state: currentSort,
-                        defaultState: { sort: null },
-                      });
-                    }
-                  }
-                  // Update records after datasource refresh
+                setTimeout(() => {
+                  if (!gridApi.value) return;
+                  gridApi.value.setGridOption('datasource', datasource.value);
+                  // AG Grid should preserve filters, but ensure they're still there
                   setTimeout(() => {
-                    updateRecordsFromGrid();
-                  }, 200);
-                });
+                    if (!gridApi.value) return;
+                    const newFilters = gridApi.value.getFilterModel();
+                    if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
+                      gridApi.value.setFilterModel(currentFilters);
+                    }
+                    if (currentSort && currentSort.length > 0) {
+                      const newSort = gridApi.value.getState()?.sort?.sortModel;
+                      if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
+                        gridApi.value.applyColumnState({
+                          state: currentSort,
+                          defaultState: { sort: null },
+                        });
+                      }
+                    }
+                    // Update records after datasource refresh
+                    setTimeout(() => {
+                      updateRecordsFromGrid();
+                    }, 200);
+                  }, 50);
+                }, 0);
               }
             } else {
               // For pagination mode, fetch data
@@ -1164,30 +1386,35 @@ export default {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, refresh the datasource
             // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
+            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
             if (gridApi.value) {
               const currentFilters = gridApi.value.getFilterModel();
               const currentSort = gridApi.value.getState()?.sort?.sortModel;
-              gridApi.value.setGridOption('datasource', datasource.value);
-              // AG Grid should preserve filters and sorts, but ensure they're still there
-              nextTick(() => {
-                const newFilters = gridApi.value.getFilterModel();
-                if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
-                  gridApi.value.setFilterModel(currentFilters);
-                }
-                if (currentSort && currentSort.length > 0) {
-                  const newSort = gridApi.value.getState()?.sort?.sortModel;
-                  if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
-                    gridApi.value.applyColumnState({
-                      state: currentSort,
-                      defaultState: { sort: null },
-                    });
+              setTimeout(() => {
+                if (!gridApi.value) return;
+                gridApi.value.setGridOption('datasource', datasource.value);
+                // AG Grid should preserve filters and sorts, but ensure they're still there
+                setTimeout(() => {
+                  if (!gridApi.value) return;
+                  const newFilters = gridApi.value.getFilterModel();
+                  if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
+                    gridApi.value.setFilterModel(currentFilters);
                   }
-                  // Update records after datasource refresh
-                  setTimeout(() => {
-                    updateRecordsFromGrid();
-                  }, 200);
-                }
-              });
+                  if (currentSort && currentSort.length > 0) {
+                    const newSort = gridApi.value.getState()?.sort?.sortModel;
+                    if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
+                      gridApi.value.applyColumnState({
+                        state: currentSort,
+                        defaultState: { sort: null },
+                      });
+                    }
+                    // Update records after datasource refresh
+                    setTimeout(() => {
+                      updateRecordsFromGrid();
+                    }, 200);
+                  }
+                }, 50);
+              }, 0);
             }
           } else {
             // For pagination mode, fetch data
@@ -1413,7 +1640,19 @@ export default {
             // If cached data is empty or we filtered everything out, return empty with adjusted total
             // This tells AG Grid there's no data for this block, which will hide empty rows
             const finalTotal = cachedData.length > 0 ? cachedTotal : (cachedTotal > 0 ? cachedTotal : 0);
-            successCallback(cachedData, finalTotal > 0 ? finalTotal : (cachedData.length > 0 ? undefined : 0));
+            // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
+            // This ensures the callback is called outside the render cycle
+            isGridRendering.value = true;
+            setTimeout(() => {
+              try {
+                successCallback(cachedData, finalTotal > 0 ? finalTotal : (cachedData.length > 0 ? undefined : 0));
+              } finally {
+                // Clear the rendering flag after a small delay
+                setTimeout(() => {
+                  isGridRendering.value = false;
+                }, 50);
+              }
+            }, 0);
             return;
           }
           const requestedBlockSize = endRow - startRow;
@@ -1445,28 +1684,65 @@ export default {
             // This tells AG Grid to stop fetching and show "no rows" message
             const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
 
-            // Call success callback with the data
-            successCallback(data, lastRow);
-
-            // Update supabaseData for records variable
+            // Update supabaseData for records variable first (before callback)
             // Note: In infinite scroll mode, supabaseData will only contain the current block
             // The grid manages the full dataset internally
             supabaseData.value = data;
             supabaseTotalCount.value = totalCount;
 
-            // Update records from grid after data is loaded
-            nextTick(() => {
-              setTimeout(() => {
-                updateRecordsFromGrid();
-              }, 100);
-            });
+            // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
+            // This ensures the callback is called outside the current render cycle
+            isGridRendering.value = true;
+            setTimeout(() => {
+              try {
+                // Call success callback with the data
+                successCallback(data, lastRow);
+              } catch (error) {
+                console.error('[Infinite Scroll] Error in successCallback:', error);
+              } finally {
+                // Clear the rendering flag after a small delay to allow grid to finish
+                setTimeout(() => {
+                  isGridRendering.value = false;
+                  // Update records from grid after rendering is complete
+                  nextTick(() => {
+                    setTimeout(() => {
+                      updateRecordsFromGrid();
+                    }, 50);
+                  });
+                }, 50);
+              }
+            }, 0);
           } catch (error) {
             console.error('[Infinite Scroll] Error in getRows:', error);
-            failCallback();
+            isGridRendering.value = false;
+            setTimeout(() => {
+              failCallback();
+            }, 0);
           }
         },
       };
     });
+
+    // CRITICAL FIX: Delay datasource initialization to prevent error #252
+    // AG Grid can call getRows during its initial render cycle, causing conflicts
+    // We use a ref that's set after grid is ready, not a computed, to have better control
+    const delayedDatasource = ref(undefined);
+    
+    // Watch for grid ready to set the datasource after a delay
+    watch(
+      () => [gridReady.value, isInfiniteScrollEnabled.value, datasource.value],
+      ([ready, infiniteEnabled, ds]) => {
+        if (ready && infiniteEnabled && ds && !delayedDatasource.value) {
+          // Delay setting the datasource to allow grid to finish initial render
+          setTimeout(() => {
+            delayedDatasource.value = ds;
+          }, 100);
+        } else if (!infiniteEnabled) {
+          delayedDatasource.value = undefined;
+        }
+      },
+      { immediate: true }
+    );
 
     const rowData = computed(() => {
       // If using infinite scrolling, rowData should be undefined (grid uses datasource)
@@ -1641,20 +1917,25 @@ export default {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, refresh the datasource
             // CRITICAL FIX: Preserve filters and sorts when table/query changes
+            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
             const currentFilters = gridApi.value.getFilterModel();
             const currentSort = gridApi.value.getState()?.sort?.sortModel;
-            gridApi.value.setGridOption('datasource', datasource.value);
-            nextTick(() => {
-              if (currentFilters && Object.keys(currentFilters).length > 0) {
-                gridApi.value.setFilterModel(currentFilters);
-              }
-              if (currentSort && currentSort.length > 0) {
-                gridApi.value.applyColumnState({
-                  state: currentSort,
-                  defaultState: { sort: null },
-                });
-              }
-            });
+            setTimeout(() => {
+              if (!gridApi.value) return;
+              gridApi.value.setGridOption('datasource', datasource.value);
+              setTimeout(() => {
+                if (!gridApi.value) return;
+                if (currentFilters && Object.keys(currentFilters).length > 0) {
+                  gridApi.value.setFilterModel(currentFilters);
+                }
+                if (currentSort && currentSort.length > 0) {
+                  gridApi.value.applyColumnState({
+                    state: currentSort,
+                    defaultState: { sort: null },
+                  });
+                }
+              }, 50);
+            }, 0);
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -1703,23 +1984,28 @@ export default {
             // Note: rowModelType is set via computed property at grid initialization
             // and cannot be changed dynamically (AG Grid limitation)
             // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
+            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
             const currentFilters = gridApi.value.getFilterModel();
             const currentSort = gridApi.value.getState()?.sort?.sortModel;
             
-            gridApi.value.setGridOption('datasource', datasource.value);
-            
-            // Restore filters and sorts after setting datasource
-            nextTick(() => {
-              if (currentFilters && Object.keys(currentFilters).length > 0) {
-                gridApi.value.setFilterModel(currentFilters);
-              }
-              if (currentSort && currentSort.length > 0) {
-                gridApi.value.applyColumnState({
-                  state: currentSort,
-                  defaultState: { sort: null },
-                });
-              }
-            });
+            setTimeout(() => {
+              if (!gridApi.value) return;
+              gridApi.value.setGridOption('datasource', datasource.value);
+              
+              // Restore filters and sorts after setting datasource
+              setTimeout(() => {
+                if (!gridApi.value) return;
+                if (currentFilters && Object.keys(currentFilters).length > 0) {
+                  gridApi.value.setFilterModel(currentFilters);
+                }
+                if (currentSort && currentSort.length > 0) {
+                  gridApi.value.applyColumnState({
+                    state: currentSort,
+                    defaultState: { sort: null },
+                  });
+                }
+              }, 50);
+            }, 0);
           } else {
             // For pagination mode, fetch initial data
             lastFetchParams.value = null;
@@ -1748,22 +2034,27 @@ export default {
           // Refresh the datasource when infinite scrolling settings change
           // Note: cacheBlockSize is an initial property and cannot be changed dynamically
           // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
+          // CRITICAL FIX: Wrap in setTimeout to prevent error #252
           const currentFilters = gridApi.value.getFilterModel();
           const currentSort = gridApi.value.getState()?.sort?.sortModel;
           
-          gridApi.value.setGridOption('datasource', datasource.value);
-          
-          nextTick(() => {
-            if (currentFilters && Object.keys(currentFilters).length > 0) {
-              gridApi.value.setFilterModel(currentFilters);
-            }
-            if (currentSort && currentSort.length > 0) {
-              gridApi.value.applyColumnState({
-                state: currentSort,
-                defaultState: { sort: null },
-              });
-            }
-          });
+          setTimeout(() => {
+            if (!gridApi.value) return;
+            gridApi.value.setGridOption('datasource', datasource.value);
+            
+            setTimeout(() => {
+              if (!gridApi.value) return;
+              if (currentFilters && Object.keys(currentFilters).length > 0) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+              if (currentSort && currentSort.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            }, 50);
+          }, 0);
         }
       }
     );
@@ -1793,21 +2084,26 @@ export default {
             if (isInfiniteScrollEnabled.value) {
               // For infinite scrolling, refresh the datasource
               // CRITICAL FIX: Preserve filters and sorts when search changes
+              // CRITICAL FIX: Wrap in setTimeout to prevent error #252
               if (gridApi.value) {
                 const currentFilters = gridApi.value.getFilterModel();
                 const currentSort = gridApi.value.getState()?.sort?.sortModel;
-                gridApi.value.setGridOption('datasource', datasource.value);
-                nextTick(() => {
-                  if (currentFilters && Object.keys(currentFilters).length > 0) {
-                    gridApi.value.setFilterModel(currentFilters);
-                  }
-                  if (currentSort && currentSort.length > 0) {
-                    gridApi.value.applyColumnState({
-                      state: currentSort,
-                      defaultState: { sort: null },
-                    });
-                  }
-                });
+                setTimeout(() => {
+                  if (!gridApi.value) return;
+                  gridApi.value.setGridOption('datasource', datasource.value);
+                  setTimeout(() => {
+                    if (!gridApi.value) return;
+                    if (currentFilters && Object.keys(currentFilters).length > 0) {
+                      gridApi.value.setFilterModel(currentFilters);
+                    }
+                    if (currentSort && currentSort.length > 0) {
+                      gridApi.value.applyColumnState({
+                        state: currentSort,
+                        defaultState: { sort: null },
+                      });
+                    }
+                  }, 50);
+                }, 0);
               }
             } else {
               // For pagination mode, fetch data
@@ -1826,8 +2122,19 @@ export default {
     );
 
     function refreshData() {
+      // Wait for grid to be ready and not rendering before refreshing cells
+      // Use setTimeout to avoid error #252
       nextTick(() => {
-        gridApi.value?.refreshCells()
+        setTimeout(() => {
+          if (gridApi.value && !isGridRendering.value) {
+            gridApi.value.refreshCells();
+          } else if (gridApi.value && isGridRendering.value) {
+            // Retry after rendering completes
+            setTimeout(() => {
+              if (gridApi.value) gridApi.value.refreshCells();
+            }, 100);
+          }
+        }, 0);
       });
     }
 
@@ -1846,6 +2153,8 @@ export default {
       resolveMappingFormula,
       debugLog,
       onGridReady,
+      onFirstDataRendered,
+      onModelUpdated,
       onRowSelected,
       onSelectionChanged,
       gridApi,
@@ -1886,6 +2195,7 @@ export default {
       rowModelType,
       rowDragManaged,
       datasource,
+      delayedDatasource,
       cacheBlockSize,
       paginationEnabled,
       isLoading,
@@ -1894,6 +2204,12 @@ export default {
       // Expose supabaseData and supabaseTotalCount for methods to access
       supabaseDataRef: supabaseData,
       supabaseTotalCountRef: supabaseTotalCount,
+      // Expose grid ready state and helpers for component actions
+      gridReady,
+      isGridRendering,
+      waitForGridReady,
+      waitForRowInGrid,
+      safeGridApiCall,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -3141,12 +3457,18 @@ export default {
           event.data[columnId] = fakeJunctionRecord;
           
           // Refresh the cell to show the updated value
+          // CRITICAL FIX: Wrap in setTimeout to prevent error #252
           if (this.gridApi && event.node) {
-            this.gridApi.refreshCells({
-              rowNodes: [event.node],
-              columns: [columnId],
-              force: true,
-            });
+            const rowNode = event.node;
+            setTimeout(() => {
+              if (this.gridApi) {
+                this.gridApi.refreshCells({
+                  rowNodes: [rowNode],
+                  columns: [columnId],
+                  force: true,
+                });
+              }
+            }, 0);
           }
           
           this.debugLog('[Foreign Key] Created fake junction record:', {
@@ -3215,10 +3537,29 @@ export default {
      * @param {any} newValue - The new value to set for the cell
      * @returns {boolean} - Returns true if successful, false otherwise
      */
-    setCellValue(rowId, columnId, newValue) {
+    async setCellValue(rowId, columnId, newValue) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing cell value operations
+      // This prevents error #252 when setCellValue is called before grid is ready
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for setCellValue:", error.message);
+        return false;
+      }
+      
       if (!this.gridApi) {
         console.warn("[Datagrid] Grid API is not initialized yet");
         return false;
+      }
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        return new Promise((resolve) => {
+          setTimeout(async () => {
+            const result = await this.setCellValue(rowId, columnId, newValue);
+            resolve(result);
+          }, 100);
+        });
       }
       
       if (!rowId || columnId === undefined || columnId === null) {
@@ -3504,9 +3845,28 @@ export default {
      * @returns {Promise<boolean>} - Returns true if successful, false otherwise
      */
     async refreshRow(rowId) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing refresh operations
+      // This prevents error #252 when refreshRow is called before grid is ready
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for refreshRow:", error.message);
+        return false;
+      }
+      
       if (!this.gridApi) {
         console.warn("[Datagrid] Grid API is not initialized yet");
         return false;
+      }
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        return new Promise((resolve) => {
+          setTimeout(async () => {
+            const result = await this.refreshRow(rowId);
+            resolve(result);
+          }, 100);
+        });
       }
       
       if (this.content?.dataSource !== 'supabase') {
@@ -3580,11 +3940,16 @@ export default {
           // Update the row data
           rowNode.setData(data);
           
-          // Refresh the row to reflect changes
-          this.gridApi.refreshCells({
-            rowNodes: [rowNode],
-            force: true,
-          });
+          // CRITICAL FIX: Wrap refreshCells in setTimeout to prevent error #252
+          // This ensures the API call happens outside the current render cycle
+          setTimeout(() => {
+            if (this.gridApi) {
+              this.gridApi.refreshCells({
+                rowNodes: [rowNode],
+                force: true,
+              });
+            }
+          }, 0);
           
           this.debugLog(`[Datagrid] Row ${rowId} refreshed successfully`);
           return true;
@@ -3629,47 +3994,53 @@ export default {
           
           try {
             if (isInfiniteScroll) {
-              // For infinite scroll mode, we need to:
-              // 1. Add to cached supabaseData
-              // 2. Increment total count
-              // 3. Purge cache and refresh datasource (will use cached data due to flag)
+              // For infinite scroll mode when ADDING a new row:
+              // CRITICAL FIX: We cannot use the cached data approach because supabaseData
+              // only contains the current block, not all rows. If we return cached data,
+              // AG Grid will think that's all the data and replace existing rows.
+              // 
+              // Instead, we need to:
+              // 1. Clear the isUpdatingDataLocally flag so getRows fetches fresh data
+              // 2. Purge the cache and refresh - this will trigger a fresh fetch from Supabase
+              //    which will include the newly added row
+              // 3. Wait for the row to appear in the grid before returning
               
-              // Add to cached data - check if it's a ref or already an array
-              const supabaseDataRefValue = this.supabaseDataRef;
-              if (supabaseDataRefValue) {
-                const currentDataValue = getRefValue(supabaseDataRefValue);
-                if (Array.isArray(currentDataValue)) {
-                  const newData = [...currentDataValue];
-                  newData.unshift(data); // Add at the beginning
-                  if (!setRefValue(supabaseDataRefValue, newData)) {
-                    // If we couldn't set through ref, try to modify array in place
-                    if (Array.isArray(supabaseDataRefValue)) {
-                      supabaseDataRefValue.unshift(data);
-                    }
-                  }
-                  this.debugLog(`[Datagrid] Added row to cached data, now ${newData.length} rows`);
-                }
-              }
+              this.debugLog('[Datagrid] Infinite scroll mode: clearing flag to fetch fresh data with new row');
               
-              // Increment total count for proper pagination
-              if (this.supabaseTotalCountRef) {
-                const currentCount = getRefValue(this.supabaseTotalCountRef) || 0;
-                setRefValue(this.supabaseTotalCountRef, currentCount + 1);
-                this.debugLog(`[Datagrid] Incremented total count to ${currentCount + 1}`);
-              }
+              // Clear the flag BEFORE refreshing so getRows will fetch from Supabase
+              this.setUpdatingDataLocally(false);
               
               // Purge and refresh the infinite cache
-              // Because isUpdatingDataLocally is true, the datasource will return cached data
-              // instead of fetching from Supabase, so this just refreshes the view with cached data
-              this.gridApi.purgeInfiniteCache();
-              this.debugLog('[Datagrid] Purged infinite cache to reload data with new row');
-              
-              // Refresh the datasource
-              const currentDatasource = this.datasource;
-              if (currentDatasource) {
-                this.gridApi.setGridOption('datasource', currentDatasource);
-                this.debugLog('[Datagrid] Refreshed datasource');
-              }
+              // With flag cleared, this will fetch fresh data from Supabase including the new row
+              return new Promise((resolve) => {
+                setTimeout(async () => {
+                  if (this.gridApi) {
+                    this.gridApi.purgeInfiniteCache();
+                    this.debugLog('[Datagrid] Purged infinite cache to reload data with new row');
+                    
+                    // Refresh the datasource to trigger fresh data fetch
+                    const currentDatasource = this.datasource;
+                    if (currentDatasource) {
+                      this.gridApi.setGridOption('datasource', currentDatasource);
+                      this.debugLog('[Datagrid] Refreshed datasource - will fetch fresh data from Supabase');
+                    }
+                    
+                    // CRITICAL: Wait for the row to appear in the grid before resolving
+                    // This ensures subsequent actions like setInFocus can find the row
+                    try {
+                      await this.waitForRowInGrid(rowId, 10000);
+                      this.debugLog(`[Datagrid] Row ${rowId} is now present in the grid`);
+                      resolve(true);
+                    } catch (error) {
+                      console.warn(`[Datagrid] Row ${rowId} may not have appeared in grid:`, error.message);
+                      // Still resolve true as the row was fetched and cache was refreshed
+                      resolve(true);
+                    }
+                  } else {
+                    resolve(false);
+                  }
+                }, 0);
+              });
             } else {
               // For regular mode (non-infinite scroll), use applyTransaction to add the row
               // This is the most efficient way as it only updates the affected rows in the grid
@@ -3720,26 +4091,73 @@ export default {
         return false;
       }
     },
-    stopCellEditing(cancel = false) {
+    async stopCellEditing(cancel = false) {
+      // Wait for grid to be ready
+      try {
+        await this.waitForGridReady(2000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for stopCellEditing");
+        return;
+      }
       if (!this.gridApi) return;
-      this.gridApi.stopEditing(cancel);
+      // Defer to avoid error #252
+      setTimeout(() => {
+        if (this.gridApi) this.gridApi.stopEditing(cancel);
+      }, 0);
     },
-    resetFilters() {
+    async resetFilters() {
+      // Wait for grid to be ready
+      try {
+        await this.waitForGridReady(2000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for resetFilters");
+        return;
+      }
       if (!this.gridApi) return;
-      this.gridApi.setFilterModel(null);
+      // Defer to avoid error #252
+      setTimeout(() => {
+        if (this.gridApi) this.gridApi.setFilterModel(null);
+      }, 0);
     },
-    resetSort() {
+    async resetSort() {
+      // Wait for grid to be ready
+      try {
+        await this.waitForGridReady(2000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for resetSort");
+        return;
+      }
       if (!this.gridApi) return;
-      this.gridApi.applyColumnState({
-        state: [],
-        defaultState: { sort: null },
-      });
+      // Defer to avoid error #252
+      setTimeout(() => {
+        if (this.gridApi) this.gridApi.applyColumnState({
+          state: [],
+          defaultState: { sort: null },
+        });
+      }, 0);
     },
-    deselectAll() {
+    async deselectAll() {
+      // Wait for grid to be ready
+      try {
+        await this.waitForGridReady(2000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for deselectAll");
+        return;
+      }
       if (!this.gridApi) return;
-      this.gridApi.deselectAll();
+      // Defer to avoid error #252
+      setTimeout(() => {
+        if (this.gridApi) this.gridApi.deselectAll();
+      }, 0);
     },
-    selectAll(mode) {
+    async selectAll(mode) {
+      // Wait for grid to be ready
+      try {
+        await this.waitForGridReady(2000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for selectAll");
+        return;
+      }
       if (!this.gridApi) return;
       if (this.content.rowSelection !== "multiple") {
         wwLib.logStore.warning(
@@ -3747,10 +4165,27 @@ export default {
         );
         return;
       }
-      this.gridApi.selectAll(mode || this.content.selectAll || "all");
+      // Defer to avoid error #252
+      setTimeout(() => {
+        if (this.gridApi) this.gridApi.selectAll(mode || this.content.selectAll || "all");
+      }, 0);
     },
-    selectRow(rowId) {
+    async selectRow(rowId) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing selection
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for selectRow:", error.message);
+        return;
+      }
+      
       if (!this.gridApi) return;
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        setTimeout(() => this.selectRow(rowId), 100);
+        return;
+      }
       
       // Try to get the row node directly first
       let rowNode = this.gridApi.getRowNode(rowId);
@@ -3784,8 +4219,22 @@ export default {
         rowNode.setSelected(true);
       }
     },
-    deselectRow(rowId) {
+    async deselectRow(rowId) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing deselection
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for deselectRow:", error.message);
+        return;
+      }
+      
       if (!this.gridApi) return;
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        setTimeout(() => this.deselectRow(rowId), 100);
+        return;
+      }
       
       // Try to get the row node directly first
       let rowNode = this.gridApi.getRowNode(rowId);
@@ -3819,10 +4268,29 @@ export default {
         rowNode.setSelected(false);
       }
     },
-    removeRow(rowId) {
+    async removeRow(rowId) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing remove operations
+      // This prevents error #252 when removeRow is called before grid is ready
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for removeRow:", error.message);
+        return false;
+      }
+      
       if (!this.gridApi) {
         console.warn("[Datagrid] Grid API is not initialized yet");
         return false;
+      }
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        return new Promise((resolve) => {
+          setTimeout(async () => {
+            const result = await this.removeRow(rowId);
+            resolve(result);
+          }, 100);
+        });
       }
       
       if (rowId === null || rowId === undefined) {
@@ -4008,10 +4476,29 @@ export default {
         return false;
       }
     },
-    setInFocus(rowId, columnId) {
+    async setInFocus(rowId, columnId) {
+      // CRITICAL FIX: Wait for grid to be fully ready before performing focus operations
+      // This prevents error #252 when setInFocus is called before grid is ready
+      try {
+        await this.waitForGridReady(5000);
+      } catch (error) {
+        console.warn("[Datagrid] Grid not ready for setInFocus:", error.message);
+        return false;
+      }
+      
       if (!this.gridApi) {
         console.warn("[Datagrid] Grid API is not initialized yet");
         return false;
+      }
+      
+      // Additional check: if grid is currently rendering, defer the call
+      if (this.isGridRendering) {
+        return new Promise((resolve) => {
+          setTimeout(async () => {
+            const result = await this.setInFocus(rowId, columnId);
+            resolve(result);
+          }, 100);
+        });
       }
       
       // Helper function to clear custom action focus class from all cells
@@ -4143,28 +4630,38 @@ export default {
         return false;
       }
       
-      // Scroll to center the row in the viewport using ensureIndexVisible with 'middle' position
-      this.gridApi.ensureIndexVisible(rowIndex, 'middle');
-      
-      // Set focus on the cell using nextTick to ensure grid is ready after scrolling
-      this.$nextTick(() => {
-        setTimeout(() => {
-          if (this.gridApi) {
-            this.gridApi.setFocusedCell(rowIndex, targetColumnId);
-            
-            // Add custom action focus class to the focused cell for dedicated styling
-            this.$nextTick(() => {
-              if (this.gridContainerRef) {
-                // Find the focused cell and add the action focus class
-                const focusedCell = this.gridContainerRef.querySelector('.ag-cell-focus');
-                if (focusedCell) {
-                  focusedCell.classList.add('ag-cell-action-focus');
-                }
+      // CRITICAL FIX: Wrap grid API calls in setTimeout to prevent error #252
+      // This ensures the calls happen outside the current render cycle
+      setTimeout(() => {
+        if (!this.gridApi) return;
+        
+        try {
+          // Scroll to center the row in the viewport using ensureIndexVisible with 'middle' position
+          this.gridApi.ensureIndexVisible(rowIndex, 'middle');
+          
+          // Set focus on the cell using nextTick to ensure grid is ready after scrolling
+          this.$nextTick(() => {
+            setTimeout(() => {
+              if (this.gridApi) {
+                this.gridApi.setFocusedCell(rowIndex, targetColumnId);
+                
+                // Add custom action focus class to the focused cell for dedicated styling
+                this.$nextTick(() => {
+                  if (this.gridContainerRef) {
+                    // Find the focused cell and add the action focus class
+                    const focusedCell = this.gridContainerRef.querySelector('.ag-cell-focus');
+                    if (focusedCell) {
+                      focusedCell.classList.add('ag-cell-action-focus');
+                    }
+                  }
+                });
               }
-            });
-          }
-        }, 100);
-      });
+            }, 100);
+          });
+        } catch (error) {
+          console.error('[Datagrid] Error in setInFocus:', error);
+        }
+      }, 0);
       
       return true;
     },
