@@ -4910,7 +4910,7 @@ export default {
   // AG Grid sets a 150px minimum height by default for auto height to avoid empty grids
   // This removes that minimum height as per AG Grid documentation
   :deep(.ag-center-cols-viewport) {
-    min-height: unset !important;
+    min-height: 75px !important;
   }
   
   // Ensure header and body rows stay aligned during horizontal scroll
