@@ -2207,7 +2207,7 @@ export default {
               ...(props.content.localeText || {}),
             };
           default:
-            AG_GRID_LOCALE_EN;
+            return AG_GRID_LOCALE_EN;
         }
       }),
       forcedPaginationPageSize,
