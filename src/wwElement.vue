@@ -617,6 +617,32 @@ export default {
       return currentQuery;
     };
 
+    // Helper function to wait for Supabase instance to become available
+    // Retries with exponential backoff up to a maximum wait time
+    // This function is defined in setup scope but can be used in methods via closure
+    const waitForSupabaseInstance = async (maxWaitTime = 10000, initialDelay = 100) => {
+      const startTime = Date.now();
+      let delay = initialDelay;
+      const maxDelay = 2000; // Maximum delay between retries (2 seconds)
+      
+      while (Date.now() - startTime < maxWaitTime) {
+        const supabase = wwLib.wwPlugins.supabase.instance;
+        if (supabase) {
+          return supabase;
+        }
+        
+        // Wait before retrying with exponential backoff
+        await new Promise(resolve => setTimeout(resolve, delay));
+        delay = Math.min(delay * 1.5, maxDelay); // Exponential backoff, capped at maxDelay
+      }
+      
+      // If we've waited the maximum time, return null
+      return null;
+    };
+
+    // waitForSupabaseInstance is already defined as a const function, 
+    // it will be exposed from setup for methods to access
+
     // Fetch data from Supabase for infinite scrolling (returns data directly)
     const fetchSupabaseDataForInfinite = async (startRow, endRow, filterModel = null, sortModel = null, searchValue = null) => {
       if (props.content?.dataSource !== 'supabase') {
@@ -635,9 +661,10 @@ export default {
         supabaseLoading.value = true;
         supabaseError.value = null;
 
-        const supabase = wwLib.wwPlugins.supabase.instance;
+        // Wait for Supabase instance to become available (with retry logic)
+        const supabase = await waitForSupabaseInstance(10000, 100);
         if (!supabase) {
-          throw new Error('Supabase instance not available');
+          throw new Error('Supabase instance not available after waiting');
         }
 
         // Start building the query
@@ -748,9 +775,10 @@ export default {
         supabaseLoading.value = true;
         supabaseError.value = null;
 
-        const supabase = wwLib.wwPlugins.supabase.instance;
+        // Wait for Supabase instance to become available (with retry logic)
+        const supabase = await waitForSupabaseInstance(10000, 100);
         if (!supabase) {
-          throw new Error('Supabase instance not available');
+          throw new Error('Supabase instance not available after waiting');
         }
 
         // Start building the query
@@ -2209,6 +2237,8 @@ export default {
       isGridRendering,
       waitForGridReady,
       waitForRowInGrid,
+      // Expose waitForSupabaseInstance for methods to use
+      waitForSupabaseInstance,
       safeGridApiCall,
       /* wwEditor:start */
       createElement,
@@ -3893,12 +3923,13 @@ export default {
       }
 
       try {
-        const supabase = wwLib.wwPlugins.supabase.instance;
+        // Wait for Supabase instance to become available (with retry logic)
+        const supabase = await this.waitForSupabaseInstance(10000, 100);
         const tableName = this.content?.supabaseTable;
         const queryString = this.content?.supabaseQuery || '*';
 
         if (!supabase) {
-          console.warn("[Datagrid] Supabase instance not available");
+          console.warn("[Datagrid] Supabase instance not available after waiting");
           return false;
         }
 
