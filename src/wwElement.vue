@@ -177,6 +177,19 @@ export default {
       return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
     };
 
+    // Helper function to find a column by columnId (general purpose, not limited to user columns)
+    const findColumnByField = (columnId) => {
+      if (!columnId || !props.content?.columns) return null;
+      
+      // First, try standard lookup
+      let column = props.content.columns.find(col => {
+        const colId = col?.actionName || col?.field;
+        return colId === columnId || col?.field === columnId;
+      });
+      
+      return column || null;
+    };
+
     // Helper function to find a user column by columnId (improved lookup for many-to-many relationships)
     const findUserColumn = (columnId) => {
       if (!columnId || !props.content?.columns) return null;
@@ -479,12 +492,28 @@ export default {
             }
           }
         } else if (filter.filterType === 'set') {
-          // Set filters (for other column types)
+          // Set filters (for boolean and other column types)
           if (filter.values && filter.values.length > 0) {
-            if (filter.values.length === 1) {
-              currentQuery = currentQuery.eq(supabaseField, filter.values[0]);
+            // Check if this is a boolean column
+            const column = findColumnByField(columnId);
+            const isBoolean = column?.cellDataType === 'boolean';
+            
+            // Convert values to proper types
+            let convertedValues = filter.values;
+            if (isBoolean) {
+              // Convert string booleans to actual booleans for Supabase
+              convertedValues = filter.values.map(val => {
+                // Handle various boolean representations
+                if (val === 'true' || val === true || val === 1 || val === '1') return true;
+                if (val === 'false' || val === false || val === 0 || val === '0') return false;
+                return val;
+              });
+            }
+            
+            if (convertedValues.length === 1) {
+              currentQuery = currentQuery.eq(supabaseField, convertedValues[0]);
             } else {
-              currentQuery = currentQuery.in(supabaseField, filter.values);
+              currentQuery = currentQuery.in(supabaseField, convertedValues);
             }
           }
         }
@@ -2978,8 +3007,56 @@ export default {
               editable: col?.editable,
             };
 
-            // Add cellEditor and cellEditorParams for editable columns to ensure validation works
-            if (col?.editable) {
+            // Add boolean-specific handling
+            if (col?.cellDataType === 'boolean') {
+              // Use checkbox cell renderer for boolean display
+              result.cellRenderer = 'agCheckboxCellRenderer';
+              
+              // Normalize boolean values for the checkbox renderer
+              result.valueGetter = (params) => {
+                const value = params.data?.[col?.field];
+                // Handle various boolean representations and convert to actual boolean
+                if (value === true || value === 'true' || value === 1 || value === '1') {
+                  return true;
+                } else if (value === false || value === 'false' || value === 0 || value === '0') {
+                  return false;
+                }
+                return value;
+              };
+              
+              // Ensure the checkbox updates the data correctly
+              result.valueSetter = (params) => {
+                const newValue = params.newValue === true || params.newValue === 'true' || params.newValue === 1 || params.newValue === '1';
+                params.data[col?.field] = newValue;
+                return true;
+              };
+              
+              // For editable boolean columns, use checkbox as both renderer and editor
+              if (col?.editable) {
+                result.cellEditor = 'agCheckboxCellEditor';
+                // Create the validation function
+                const validationFn = (params) => {
+                  return getValidationErrors(col, params?.value, params?.data);
+                };
+                result.cellEditorParams = {
+                  getValidationErrors: validationFn,
+                };
+              }
+              
+              // Ensure filter values are properly typed for boolean set filter
+              if (col?.filter && filterType === 'agSetColumnFilter') {
+                result.filterParams = {
+                  values: (params) => {
+                    // Return boolean values for the set filter
+                    return [true, false];
+                  },
+                  valueFormatter: (params) => {
+                    return params.value === true ? 'Yes' : 'No';
+                  }
+                };
+              }
+            } else if (col?.editable) {
+              // Add cellEditor and cellEditorParams for editable non-boolean columns to ensure validation works
               // Create the validation function
               const validationFn = (params) => {
                 return getValidationErrors(col, params?.value, params?.data);
