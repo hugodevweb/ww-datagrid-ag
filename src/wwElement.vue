@@ -413,19 +413,74 @@ export default {
 
         // Handle different filter types
         if (filter.filterType === 'text') {
-          // Text filters
-          if (filter.type === 'equals') {
-            currentQuery = currentQuery.eq(supabaseField, filter.filter);
-          } else if (filter.type === 'notEqual') {
-            currentQuery = currentQuery.neq(supabaseField, filter.filter);
-          } else if (filter.type === 'contains') {
-            currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}%`);
-          } else if (filter.type === 'notContains') {
-            currentQuery = currentQuery.not('ilike', supabaseField, `%${filter.filter}%`);
-          } else if (filter.type === 'startsWith') {
-            currentQuery = currentQuery.ilike(supabaseField, `${filter.filter}%`);
-          } else if (filter.type === 'endsWith') {
-            currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}`);
+          // Check if this is a boolean column (AG Grid uses Text Filter for boolean with True/False dropdown)
+          const column = findColumnByField(columnId);
+          const isBoolean = column?.cellDataType === 'boolean';
+          
+          // For boolean columns, handle True/False string values
+          if (isBoolean) {
+            // AG Grid's Text Filter for boolean uses type: "true" or type: "false" as strings
+            // Also check filter.filter for the value
+            let booleanValue = null;
+            let isNotEqual = false;
+            
+            // Check if it's a notEqual operation first
+            if (filter.type === 'notEqual' || filter.type === 'notEquals') {
+              isNotEqual = true;
+              // Get the value from filter.filter for notEqual
+              const filterValue = filter.filter;
+              if (filterValue === 'true' || filterValue === true || filterValue === 'True' || filterValue === '1' || filterValue === 1) {
+                booleanValue = true;
+              } else if (filterValue === 'false' || filterValue === false || filterValue === 'False' || filterValue === '0' || filterValue === 0) {
+                booleanValue = false;
+              }
+            }
+            // Check filter.type for direct true/false (AG Grid boolean text filter uses this)
+            else if (filter.type === 'true' || filter.type === true) {
+              booleanValue = true;
+            } else if (filter.type === 'false' || filter.type === false) {
+              booleanValue = false;
+            } 
+            // Also check filter.filter (fallback)
+            else if (filter.filter === 'true' || filter.filter === true || filter.filter === 'True') {
+              booleanValue = true;
+            } else if (filter.filter === 'false' || filter.filter === false || filter.filter === 'False') {
+              booleanValue = false;
+            }
+            // Handle equals type with string values
+            else if (filter.type === 'equals') {
+              const filterValue = filter.filter;
+              if (filterValue === 'true' || filterValue === true || filterValue === 'True' || filterValue === '1' || filterValue === 1) {
+                booleanValue = true;
+              } else if (filterValue === 'false' || filterValue === false || filterValue === 'False' || filterValue === '0' || filterValue === 0) {
+                booleanValue = false;
+              }
+            }
+            
+            // Apply boolean filter if we have a valid boolean value
+            if (booleanValue !== null) {
+              if (isNotEqual) {
+                currentQuery = currentQuery.neq(supabaseField, booleanValue);
+              } else {
+                // For equals, true, false, or any other type, use eq
+                currentQuery = currentQuery.eq(supabaseField, booleanValue);
+              }
+            }
+          } else {
+            // Regular text filters for non-boolean columns
+            if (filter.type === 'equals') {
+              currentQuery = currentQuery.eq(supabaseField, filter.filter);
+            } else if (filter.type === 'notEqual') {
+              currentQuery = currentQuery.neq(supabaseField, filter.filter);
+            } else if (filter.type === 'contains') {
+              currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}%`);
+            } else if (filter.type === 'notContains') {
+              currentQuery = currentQuery.not('ilike', supabaseField, `%${filter.filter}%`);
+            } else if (filter.type === 'startsWith') {
+              currentQuery = currentQuery.ilike(supabaseField, `${filter.filter}%`);
+            } else if (filter.type === 'endsWith') {
+              currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}`);
+            }
           }
         } else if (filter.filterType === 'number') {
           // Number filters
@@ -2991,6 +3046,7 @@ export default {
               if (col?.cellDataType === 'number') {
                 filterType = 'agNumberColumnFilter';
               } else if (col?.cellDataType === 'boolean') {
+                // Use Set Filter for boolean columns to show True/False options
                 filterType = 'agSetColumnFilter';
               } else {
                 // Default to text filter for text, undefined, or other types
@@ -3009,6 +3065,15 @@ export default {
 
             // Add boolean-specific handling
             if (col?.cellDataType === 'boolean') {
+              // Set cellDataType so AG Grid can automatically configure other features
+              // Note: We explicitly set filter type above to ensure Set Filter is used
+              result.cellDataType = 'boolean';
+              
+              // Explicitly ensure Set Filter is used (override AG Grid's default Text Filter for boolean)
+              if (col?.filter) {
+                result.filter = 'agSetColumnFilter';
+              }
+              
               // Use checkbox cell renderer for boolean display
               result.cellRenderer = 'agCheckboxCellRenderer';
               
@@ -3043,15 +3108,35 @@ export default {
                 };
               }
               
-              // Ensure filter values are properly typed for boolean set filter
+              // Configure filter params for boolean set filter
+              // Explicitly configure to ensure Set Filter shows True/False options
               if (col?.filter && filterType === 'agSetColumnFilter') {
+                // Merge with default filter params (buttons, closeOnApply, etc.)
                 result.filterParams = {
+                  ...(result.filterParams || {}),
                   values: (params) => {
                     // Return boolean values for the set filter
                     return [true, false];
                   },
                   valueFormatter: (params) => {
-                    return params.value === true ? 'Yes' : 'No';
+                    // Format boolean values as True/False (AG Grid will handle localization)
+                    if (params.value === true || params.value === 'true' || params.value === 1 || params.value === '1') {
+                      return 'True';
+                    } else if (params.value === false || params.value === 'false' || params.value === 0 || params.value === '0') {
+                      return 'False';
+                    }
+                    return String(params.value);
+                  },
+                  // Ensure filter uses actual boolean values, not strings
+                  filterValueGetter: (params) => {
+                    const value = params.data?.[col?.field];
+                    // Convert to actual boolean for filtering
+                    if (value === true || value === 'true' || value === 1 || value === '1') {
+                      return true;
+                    } else if (value === false || value === 'false' || value === 0 || value === '0') {
+                      return false;
+                    }
+                    return value;
                   }
                 };
               }
