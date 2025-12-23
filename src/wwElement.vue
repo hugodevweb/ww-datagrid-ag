@@ -483,22 +483,32 @@ export default {
             }
           }
         } else if (filter.filterType === 'number') {
+          // Check if this is a currency column - need to convert display value back to cents
+          const column = findColumnByField(columnId);
+          const isCurrency = column?.cellDataType === 'currency';
+          
+          // Helper to convert filter value - multiply by 100 for currency columns
+          const getFilterValue = (value) => {
+            const numValue = Number(value);
+            return isCurrency ? Math.round(numValue * 100) : numValue;
+          };
+          
           // Number filters
           if (filter.type === 'equals') {
-            currentQuery = currentQuery.eq(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.eq(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'notEqual') {
-            currentQuery = currentQuery.neq(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.neq(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'greaterThan') {
-            currentQuery = currentQuery.gt(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.gt(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'greaterThanOrEqual') {
-            currentQuery = currentQuery.gte(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.gte(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'lessThan') {
-            currentQuery = currentQuery.lt(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.lt(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'lessThanOrEqual') {
-            currentQuery = currentQuery.lte(supabaseField, Number(filter.filter));
+            currentQuery = currentQuery.lte(supabaseField, getFilterValue(filter.filter));
           } else if (filter.type === 'inRange') {
-            currentQuery = currentQuery.gte(supabaseField, Number(filter.filter))
-              .lte(supabaseField, Number(filter.filterTo));
+            currentQuery = currentQuery.gte(supabaseField, getFilterValue(filter.filter))
+              .lte(supabaseField, getFilterValue(filter.filterTo));
           }
         } else if (filter.filterType === 'date') {
           // Date filters
