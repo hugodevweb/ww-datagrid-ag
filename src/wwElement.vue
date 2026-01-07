@@ -1978,18 +1978,45 @@ export default {
       { immediate: true }
     );
 
+    // Track the last serialized conditional row styles to detect actual changes
+    const lastConditionalRowStylesJson = ref(null);
+    
     // Watch for conditional row styles changes and redraw all rows to re-apply styles
+    // Use JSON comparison to avoid unnecessary redraws from reference changes
     watch(
       () => props.content?.conditionalRowStyles,
-      (newStyles, oldStyles) => {
-        // Only redraw if styles actually changed and grid is ready
-        if (gridApi.value && gridReady.value && !isGridRendering.value) {
-          // Use setTimeout to avoid calling grid API during render phase
-          setTimeout(() => {
-            if (gridApi.value) {
-              gridApi.value.redrawRows();
+      (newStyles) => {
+        // Skip if no styles defined
+        if (!newStyles || !Array.isArray(newStyles) || newStyles.length === 0) {
+          if (lastConditionalRowStylesJson.value !== null) {
+            lastConditionalRowStylesJson.value = null;
+            // Styles were removed, redraw to clear any applied styles
+            if (gridApi.value && gridReady.value && !isGridRendering.value) {
+              setTimeout(() => {
+                if (gridApi.value) {
+                  gridApi.value.redrawRows();
+                }
+              }, 100);
             }
-          }, 0);
+          }
+          return;
+        }
+        
+        // Serialize current styles to compare
+        const currentJson = JSON.stringify(newStyles);
+        
+        // Only redraw if styles actually changed (not just reference change)
+        if (currentJson !== lastConditionalRowStylesJson.value) {
+          lastConditionalRowStylesJson.value = currentJson;
+          
+          // Debounce the redraw to avoid multiple rapid redraws
+          if (gridApi.value && gridReady.value && !isGridRendering.value) {
+            setTimeout(() => {
+              if (gridApi.value) {
+                gridApi.value.redrawRows();
+              }
+            }, 100);
+          }
         }
       },
       { deep: true }
@@ -3797,12 +3824,14 @@ export default {
       
       // Redraw the row to re-evaluate conditional row styles
       // This is needed because getRowStyle is only called when rows are rendered
+      // Only do this if conditional styles are defined (avoid unnecessary redraws)
       if (this.gridApi && event.node && this.content?.conditionalRowStyles?.length > 0) {
+        // Use a slightly longer timeout to batch with any other updates
         setTimeout(() => {
-          if (this.gridApi) {
+          if (this.gridApi && !this.isGridRendering) {
             this.gridApi.redrawRows({ rowNodes: [event.node] });
           }
-        }, 0);
+        }, 50);
       }
       
       this.$emit("trigger-event", {
@@ -4032,19 +4061,20 @@ export default {
       // Update the data directly
       rowNode.data[columnId] = valueToSet;
       
-      // Refresh the cells to show the updated value
+      // Refresh the cells OR redraw the row (not both - redrawRows also refreshes cells)
       // Use setTimeout to avoid calling grid API during render phase
       setTimeout(() => {
-        if (this.gridApi) {
-          this.gridApi.refreshCells({
-            rowNodes: [rowNode],
-            columns: [columnId],
-            force: true,
-          });
-          
-          // Redraw the row to re-evaluate conditional row styles
+        if (this.gridApi && !this.isGridRendering) {
           if (this.content?.conditionalRowStyles?.length > 0) {
+            // Redraw the row to re-evaluate conditional row styles (also refreshes cells)
             this.gridApi.redrawRows({ rowNodes: [rowNode] });
+          } else {
+            // Just refresh the specific cell if no conditional styles
+            this.gridApi.refreshCells({
+              rowNodes: [rowNode],
+              columns: [columnId],
+              force: true,
+            });
           }
         }
       }, 0);
@@ -4134,19 +4164,20 @@ export default {
       // Update the data directly
       rowNode.data[columnId] = newValue;
       
-      // Refresh the cells to show the updated value
+      // Refresh the cells OR redraw the row (not both - redrawRows also refreshes cells)
       // Use setTimeout to avoid calling grid API during render phase
       setTimeout(() => {
-        if (this.gridApi) {
-          this.gridApi.refreshCells({
-            rowNodes: [rowNode],
-            columns: [columnId],
-            force: true,
-          });
-          
-          // Redraw the row to re-evaluate conditional row styles
+        if (this.gridApi && !this.isGridRendering) {
           if (this.content?.conditionalRowStyles?.length > 0) {
+            // Redraw the row to re-evaluate conditional row styles (also refreshes cells)
             this.gridApi.redrawRows({ rowNodes: [rowNode] });
+          } else {
+            // Just refresh the specific cell if no conditional styles
+            this.gridApi.refreshCells({
+              rowNodes: [rowNode],
+              columns: [columnId],
+              force: true,
+            });
           }
         }
       }, 0);
@@ -4265,18 +4296,19 @@ export default {
           // Update the row data
           rowNode.setData(data);
           
-          // CRITICAL FIX: Wrap refreshCells in setTimeout to prevent error #252
+          // CRITICAL FIX: Wrap refresh in setTimeout to prevent error #252
           // This ensures the API call happens outside the current render cycle
           setTimeout(() => {
-            if (this.gridApi) {
-              this.gridApi.refreshCells({
-                rowNodes: [rowNode],
-                force: true,
-              });
-              
-              // Redraw the row to re-evaluate conditional row styles
+            if (this.gridApi && !this.isGridRendering) {
               if (this.content?.conditionalRowStyles?.length > 0) {
+                // Redraw the row to re-evaluate conditional row styles (also refreshes cells)
                 this.gridApi.redrawRows({ rowNodes: [rowNode] });
+              } else {
+                // Just refresh cells if no conditional styles
+                this.gridApi.refreshCells({
+                  rowNodes: [rowNode],
+                  force: true,
+                });
               }
             }
           }, 0);
