@@ -109,6 +109,13 @@ export default {
       "generateColumns",
       "columns",
       {
+        label: "Row Styling",
+        isCollapsible: true,
+        properties: [
+          "conditionalRowStyles",
+        ],
+      },
+      {
         label: "Pagination",
         isCollapsible: true,
         properties: [
@@ -1391,7 +1398,23 @@ export default {
       type: "Formula",
       label: "Unique Row Id",
       options: (content) => ({
-        template: wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0],
+        // For Supabase data source, rowData is empty, so create a template from columns
+        template: (() => {
+          const rowDataTemplate = wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0];
+          if (rowDataTemplate) return rowDataTemplate;
+          
+          // If no rowData (e.g., Supabase mode), build template from columns
+          if (Array.isArray(content.columns) && content.columns.length > 0) {
+            const templateFromColumns = {};
+            for (const col of content.columns) {
+              if (col?.field) {
+                templateFromColumns[col.field] = null;
+              }
+            }
+            return Object.keys(templateFromColumns).length > 0 ? templateFromColumns : null;
+          }
+          return null;
+        })(),
       }),
       section: "settings",
       propertyHelp: {
@@ -1585,11 +1608,24 @@ export default {
                 label: "Currency Code Field",
                 type: "Formula",
                 options: (content, sidePanelContent, boundProps, wwProps, array) => ({
-                  template:
-                    Array.isArray(wwLib.wwUtils.getDataFromCollection(content.rowData)) &&
-                      wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
-                      ? wwLib.wwUtils.getDataFromCollection(content.rowData)[0]
-                      : null,
+                  // For Supabase data source, rowData is empty, so create a template from columns
+                  template: (() => {
+                    const rowData = wwLib.wwUtils.getDataFromCollection(content.rowData);
+                    if (Array.isArray(rowData) && rowData.length > 0) {
+                      return rowData[0];
+                    }
+                    // If no rowData (e.g., Supabase mode), build template from columns
+                    if (Array.isArray(content.columns) && content.columns.length > 0) {
+                      const templateFromColumns = {};
+                      for (const col of content.columns) {
+                        if (col?.field) {
+                          templateFromColumns[col.field] = null;
+                        }
+                      }
+                      return Object.keys(templateFromColumns).length > 0 ? templateFromColumns : null;
+                    }
+                    return null;
+                  })(),
                 }),
                 hidden:
                   array?.item?.cellDataType !== "currency" ||
@@ -1644,10 +1680,11 @@ export default {
                 label: "Display value",
                 type: "Formula",
                 options: {
+                  // Template is the field value from the first row, or null if no data
                   template: _.get(
                     wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0],
                     array?.item?.field
-                  ),
+                  ) ?? null,
                 },
                 hidden:
                   array?.item?.cellDataType === "action" ||
@@ -1923,11 +1960,24 @@ export default {
                           type: "Formula",
                           hidden: array?.item?.type !== "custom",
                           options: (content, sidePanelContent, boundProps, wwProps, array) => ({
-                            template:
-                              Array.isArray(wwLib.wwUtils.getDataFromCollection(content.rowData)) &&
-                              wwLib.wwUtils.getDataFromCollection(content.rowData).length > 0
-                                ? wwLib.wwUtils.getDataFromCollection(content.rowData)[0]
-                                : null,
+                            // For Supabase data source, rowData is empty, so create a template from columns
+                            template: (() => {
+                              const rowData = wwLib.wwUtils.getDataFromCollection(content.rowData);
+                              if (Array.isArray(rowData) && rowData.length > 0) {
+                                return rowData[0];
+                              }
+                              // If no rowData (e.g., Supabase mode), build template from columns
+                              if (Array.isArray(content.columns) && content.columns.length > 0) {
+                                const templateFromColumns = {};
+                                for (const col of content.columns) {
+                                  if (col?.field) {
+                                    templateFromColumns[col.field] = null;
+                                  }
+                                }
+                                return Object.keys(templateFromColumns).length > 0 ? templateFromColumns : null;
+                              }
+                              return null;
+                            })(),
                           }),
                           defaultValue: {
                             type: "f",
@@ -2594,6 +2644,216 @@ export default {
       },
       propertyHelp: {
         tooltip: "When enabled, detailed debug information will be logged to the browser console. Useful for troubleshooting validation issues and understanding component behavior.",
+      },
+      /* wwEditor:end */
+    },
+    conditionalRowStyles: {
+      label: { en: "Conditional Row Styles" },
+      type: "Array",
+      section: "settings",
+      bindable: true,
+      defaultValue: [],
+      options: {
+        expandable: true,
+        getItemLabel(item, index) {
+          if (item?.label) {
+            return item.label;
+          }
+          return `Rule ${index + 1}`;
+        },
+        item: {
+          type: "Object",
+          options: (content) => ({
+            item: {
+              label: {
+                label: "Rule Name",
+                type: "Text",
+                bindable: true,
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: "Optional name to identify this styling rule",
+                },
+                /* wwEditor:end */
+              },
+              conditionFormula: {
+                label: "Condition",
+                type: "Formula",
+                options: {
+                  // For Supabase data source, rowData is empty, so create a template from columns
+                  // This provides autocomplete for field names in the formula editor
+                  template: (() => {
+                    const rowDataTemplate = wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0];
+                    if (rowDataTemplate) return rowDataTemplate;
+                    
+                    // If no rowData (e.g., Supabase mode), build template from columns
+                    if (Array.isArray(content.columns) && content.columns.length > 0) {
+                      const templateFromColumns = {};
+                      for (const col of content.columns) {
+                        if (col?.field) {
+                          templateFromColumns[col.field] = null;
+                        }
+                      }
+                      return Object.keys(templateFromColumns).length > 0 ? templateFromColumns : null;
+                    }
+                    return null;
+                  })(),
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "Formula that evaluates to true/false. Use context.mapping to access row data. Example: context.mapping?.status === 'active'",
+                },
+                propertyHelp: {
+                  tooltip: "A formula that evaluates to true or false. When true, the styles defined in this rule will be applied to the row. Access row data via context.mapping (e.g., context.mapping?.status === 'active').",
+                },
+                /* wwEditor:end */
+              },
+              backgroundColor: {
+                label: "Background Color",
+                type: "Color",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Background color for the row (e.g., #d4edda or rgba(0,0,0,0.5))",
+                },
+                /* wwEditor:end */
+              },
+              textColor: {
+                label: "Text Color",
+                type: "Color",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Text color for the row (e.g., #155724)",
+                },
+                /* wwEditor:end */
+              },
+              fontWeight: {
+                label: "Font Weight",
+                type: "TextSelect",
+                bindable: true,
+                options: {
+                  options: [
+                    { value: null, label: "Default", default: true },
+                    { value: "normal", label: "Normal" },
+                    { value: "bold", label: "Bold" },
+                    { value: "100", label: "100 (Thin)" },
+                    { value: "200", label: "200 (Extra Light)" },
+                    { value: "300", label: "300 (Light)" },
+                    { value: "400", label: "400 (Normal)" },
+                    { value: "500", label: "500 (Medium)" },
+                    { value: "600", label: "600 (Semi Bold)" },
+                    { value: "700", label: "700 (Bold)" },
+                    { value: "800", label: "800 (Extra Bold)" },
+                    { value: "900", label: "900 (Black)" },
+                  ],
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Font weight: normal, bold, or numeric value (100-900)",
+                },
+                /* wwEditor:end */
+              },
+              fontStyle: {
+                label: "Font Style",
+                type: "TextSelect",
+                bindable: true,
+                options: {
+                  options: [
+                    { value: null, label: "Default", default: true },
+                    { value: "normal", label: "Normal" },
+                    { value: "italic", label: "Italic" },
+                  ],
+                },
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Font style: normal or italic",
+                },
+                /* wwEditor:end */
+              },
+              borderLeft: {
+                label: "Border Left",
+                type: "Text",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Left border CSS (e.g., '4px solid #ff0000')",
+                },
+                propertyHelp: {
+                  tooltip: "CSS border shorthand for left border (e.g., '4px solid #ff0000' or '2px dashed blue')",
+                },
+                /* wwEditor:end */
+              },
+              borderRight: {
+                label: "Border Right",
+                type: "Text",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Right border CSS (e.g., '4px solid #ff0000')",
+                },
+                propertyHelp: {
+                  tooltip: "CSS border shorthand for right border (e.g., '4px solid #ff0000' or '2px dashed blue')",
+                },
+                /* wwEditor:end */
+              },
+              borderTop: {
+                label: "Border Top",
+                type: "Text",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Top border CSS (e.g., '4px solid #ff0000')",
+                },
+                propertyHelp: {
+                  tooltip: "CSS border shorthand for top border (e.g., '4px solid #ff0000' or '2px dashed blue')",
+                },
+                /* wwEditor:end */
+              },
+              borderBottom: {
+                label: "Border Bottom",
+                type: "Text",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Bottom border CSS (e.g., '4px solid #ff0000')",
+                },
+                propertyHelp: {
+                  tooltip: "CSS border shorthand for bottom border (e.g., '4px solid #ff0000' or '2px dashed blue')",
+                },
+                /* wwEditor:end */
+              },
+            },
+            propertiesOrder: [
+              "label",
+              "conditionFormula",
+              "backgroundColor",
+              "textColor",
+              "fontWeight",
+              "fontStyle",
+              "borderLeft",
+              "borderRight",
+              "borderTop",
+              "borderBottom",
+            ],
+          }),
+        },
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "array",
+        tooltip: "Array of conditional styling rules. Each rule has a condition formula and style properties (backgroundColor, textColor, fontWeight, etc.)",
+      },
+      propertyHelp: {
+        tooltip: "Define rules to conditionally style rows based on their data. Each rule contains a condition formula and style properties. When multiple rules match, later rules override earlier ones for conflicting properties.",
       },
       /* wwEditor:end */
     },

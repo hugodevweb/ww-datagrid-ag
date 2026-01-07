@@ -68,7 +68,35 @@ A highly customizable data grid/table component that supports features like sort
 - `initialSort`: `Array<{colId: id, sort: 'asc' |'dsc'}>` (Optional): Description of the initial sort column. Here is an example: `[{colId: "ID", sort: "asc"}]`
 - `initialColumnsOrder`: `Array<ColId>` (Optional): List of the column order, if different from columns definition ones
 - `lang`: `'en' | 'fr' | 'de' | 'pt' | 'custom'` - Locale use for the interface. Default: `"en"`. If `custom` the property localeText should be provided
-- `localeText`: only needed when lang is set to custom. Must be an object provided to aggrid 
+- `localeText`: only needed when lang is set to custom. Must be an object provided to aggrid
+- `conditionalRowStyles`: `Array<{
+    label?: string, // Optional: Name to identify the rule
+    conditionFormula: Formula, // MANDATORY - Formula that evaluates to true/false. Use context.mapping to access row data
+    backgroundColor?: string, // Background color for the row (e.g., "#d4edda")
+    textColor?: string, // Text color for the row (e.g., "#155724")
+    fontWeight?: 'normal' | 'bold' | '100' | '200' | '300' | '400' | '500' | '600' | '700' | '800' | '900', // Font weight
+    fontStyle?: 'normal' | 'italic', // Font style
+    borderLeft?: string, // Left border CSS (e.g., "4px solid #ff0000")
+    borderRight?: string, // Right border CSS
+    borderTop?: string, // Top border CSS
+    borderBottom?: string // Bottom border CSS
+  }>` - Array of conditional styling rules for rows. When multiple rules match, later rules override earlier ones for conflicting properties. This allows for cascading styles. Example:
+  ```javascript
+  conditionalRowStyles: [
+    {
+      label: "Active rows",
+      conditionFormula: { code: "context.mapping?.status === 'active'" },
+      backgroundColor: "#d4edda",
+      textColor: "#155724"
+    },
+    {
+      label: "High priority",
+      conditionFormula: { code: "context.mapping?.priority === 'high'" },
+      fontWeight: "bold",
+      borderLeft: "4px solid #ff0000"
+    }
+  ]
+  ```
 - `columns`: `Array<{
     headerName: string,
     cellDataType: 'text' | 'number' | 'boolean' | 'dateString',

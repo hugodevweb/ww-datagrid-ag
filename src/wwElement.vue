@@ -29,6 +29,7 @@
       :columnHoverHighlight="content.columnHoverHighlight"
       :locale-text="localeText"
       :invalidEditValueMode="invalidEditValueMode"
+      :getRowStyle="rowStyle"
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="rowDragManaged"
@@ -3348,6 +3349,88 @@ export default {
           : undefined,
         wrapperBorderRadius: this.content.wrapperBorderRadius,
       });
+    },
+    rowStyle() {
+      // Return a function that AG Grid will call for each row
+      // This function evaluates conditional styling rules and returns a style object
+      const conditionalRowStyles = this.content?.conditionalRowStyles;
+      
+      // If no conditional styles are defined, return null (no custom row styling)
+      if (!conditionalRowStyles || !Array.isArray(conditionalRowStyles) || conditionalRowStyles.length === 0) {
+        return null;
+      }
+      
+      // Return a function that receives row params and returns style object
+      return (params) => {
+        // params.data contains the row data
+        const rowData = params.data;
+        
+        // If no row data, return null
+        if (!rowData) {
+          return null;
+        }
+        
+        // Accumulate styles from all matching rules
+        // Later rules override earlier ones for conflicting properties
+        let mergedStyle = {};
+        
+        for (const rule of conditionalRowStyles) {
+          // Skip rules without a condition formula
+          if (!rule?.conditionFormula) {
+            continue;
+          }
+          
+          // Evaluate the condition formula with the row data as context
+          let conditionResult = false;
+          try {
+            conditionResult = this.resolveMappingFormula(rule.conditionFormula, rowData);
+          } catch (error) {
+            // Log error in debug mode and skip this rule
+            this.debugLog('[Conditional Row Style] Error evaluating condition:', error);
+            continue;
+          }
+          
+          // If condition is true, apply the styles from this rule
+          if (conditionResult) {
+            // Apply backgroundColor
+            if (rule.backgroundColor) {
+              mergedStyle.backgroundColor = rule.backgroundColor;
+            }
+            
+            // Apply textColor (maps to color CSS property)
+            if (rule.textColor) {
+              mergedStyle.color = rule.textColor;
+            }
+            
+            // Apply fontWeight
+            if (rule.fontWeight) {
+              mergedStyle.fontWeight = rule.fontWeight;
+            }
+            
+            // Apply fontStyle
+            if (rule.fontStyle) {
+              mergedStyle.fontStyle = rule.fontStyle;
+            }
+            
+            // Apply border properties
+            if (rule.borderLeft) {
+              mergedStyle.borderLeft = rule.borderLeft;
+            }
+            if (rule.borderRight) {
+              mergedStyle.borderRight = rule.borderRight;
+            }
+            if (rule.borderTop) {
+              mergedStyle.borderTop = rule.borderTop;
+            }
+            if (rule.borderBottom) {
+              mergedStyle.borderBottom = rule.borderBottom;
+            }
+          }
+        }
+        
+        // Return the merged style object, or null if no styles were applied
+        return Object.keys(mergedStyle).length > 0 ? mergedStyle : null;
+      };
     },
     isEditing() {
       /* wwEditor:start */
