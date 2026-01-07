@@ -1978,6 +1978,23 @@ export default {
       { immediate: true }
     );
 
+    // Watch for conditional row styles changes and redraw all rows to re-apply styles
+    watch(
+      () => props.content?.conditionalRowStyles,
+      (newStyles, oldStyles) => {
+        // Only redraw if styles actually changed and grid is ready
+        if (gridApi.value && gridReady.value && !isGridRendering.value) {
+          // Use setTimeout to avoid calling grid API during render phase
+          setTimeout(() => {
+            if (gridApi.value) {
+              gridApi.value.redrawRows();
+            }
+          }, 0);
+        }
+      },
+      { deep: true }
+    );
+
     // Watch for dataSource changes and fetch initial data
     watch(
       () => props.content?.dataSource,
@@ -3778,6 +3795,16 @@ export default {
         });
       }
       
+      // Redraw the row to re-evaluate conditional row styles
+      // This is needed because getRowStyle is only called when rows are rendered
+      if (this.gridApi && event.node && this.content?.conditionalRowStyles?.length > 0) {
+        setTimeout(() => {
+          if (this.gridApi) {
+            this.gridApi.redrawRows({ rowNodes: [event.node] });
+          }
+        }, 0);
+      }
+      
       this.$emit("trigger-event", {
         name: "cellValueChanged",
         event: {
@@ -4014,6 +4041,11 @@ export default {
             columns: [columnId],
             force: true,
           });
+          
+          // Redraw the row to re-evaluate conditional row styles
+          if (this.content?.conditionalRowStyles?.length > 0) {
+            this.gridApi.redrawRows({ rowNodes: [rowNode] });
+          }
         }
       }, 0);
       
@@ -4105,11 +4137,18 @@ export default {
       // Refresh the cells to show the updated value
       // Use setTimeout to avoid calling grid API during render phase
       setTimeout(() => {
-        this.gridApi.refreshCells({
-          rowNodes: [rowNode],
-          columns: [columnId],
-          force: true,
-        });
+        if (this.gridApi) {
+          this.gridApi.refreshCells({
+            rowNodes: [rowNode],
+            columns: [columnId],
+            force: true,
+          });
+          
+          // Redraw the row to re-evaluate conditional row styles
+          if (this.content?.conditionalRowStyles?.length > 0) {
+            this.gridApi.redrawRows({ rowNodes: [rowNode] });
+          }
+        }
       }, 0);
       
       // Manually trigger the event (bypassing AG Grid's event)
@@ -4234,6 +4273,11 @@ export default {
                 rowNodes: [rowNode],
                 force: true,
               });
+              
+              // Redraw the row to re-evaluate conditional row styles
+              if (this.content?.conditionalRowStyles?.length > 0) {
+                this.gridApi.redrawRows({ rowNodes: [rowNode] });
+              }
             }
           }, 0);
           

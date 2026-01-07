@@ -120,9 +120,10 @@ export default {
             // If no formulas, return options as-is (static options)
             if (!hasFormulas || !resolveMappingFormula) {
                 return options.map(option => ({
-                    value: option?.value || '',
-                    label: option?.label || option?.value || '',
-                    color: option?.color || '#f0f0f0',
+                    // Use nullish coalescing to preserve false, 0, and other falsy values
+                    value: option?.value ?? '',
+                    label: option?.label ?? option?.value ?? '',
+                    color: option?.color ?? '#f0f0f0',
                 }));
             }
 
@@ -137,9 +138,10 @@ export default {
                 const color = resolveMappingFormula(colorFormula, option) ?? option.color;
                 
                 return {
-                    value: value || '',
-                    label: label || value || '',
-                    color: color || '#f0f0f0',
+                    // Use nullish coalescing to preserve false, 0, and other falsy values
+                    value: value ?? '',
+                    label: label ?? value ?? '',
+                    color: color ?? '#f0f0f0',
                 };
             });
         },
