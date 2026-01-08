@@ -45,6 +45,7 @@
       @row-drag-end="onRowDragged"
       @row-drag-enter="onRowDragEnter"
       @column-moved="onColumnMoved"
+      @column-resized="onColumnResized"
       @body-scroll="onBodyScroll"
       @first-data-rendered="onFirstDataRendered"
       @model-updated="onModelUpdated"
@@ -1608,6 +1609,37 @@ export default {
       });
     };
 
+    const onColumnResized = (event) => {
+      // Only emit on user-initiated resize that is finished
+      if (!event.finished || event.source !== "uiColumnResized") return;
+      
+      const columns = event.api.getAllGridColumns();
+      const columnsWidths = {};
+      
+      // Build an object of all column widths
+      columns.forEach((col) => {
+        const colId = col.getColId();
+        const actualWidth = col.getActualWidth();
+        if (colId && actualWidth) {
+          columnsWidths[colId] = actualWidth;
+        }
+      });
+      
+      // Get the resized column info
+      const resizedColumn = event.column;
+      const columnId = resizedColumn?.getColId();
+      const width = resizedColumn?.getActualWidth();
+      
+      ctx.emit("trigger-event", {
+        name: "columnResized",
+        event: {
+          columnId: columnId,
+          width: width,
+          columnsWidths: columnsWidths,
+        },
+      });
+    };
+
     // Track scroll debounce timer
     const scrollDebounceTimer = ref(null);
 
@@ -2353,6 +2385,7 @@ export default {
       onRowDragged,
       onRowDragEnter,
       onColumnMoved,
+      onColumnResized,
       onPaginationChanged,
       onBodyScroll,
       gridContainerRef,
@@ -2532,6 +2565,9 @@ export default {
           return false;
         };
       };
+      // Get initial columns widths from props (for restoring user-resized widths)
+      const initialColumnsWidths = this.content.initialColumnsWidths;
+      
       const allColumnDefs = this.content.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
         .map((col, index) => {
@@ -2544,11 +2580,27 @@ export default {
           !col?.maxWidth || col?.maxWidth === "auto"
             ? null
             : wwLib.wwUtils.getLengthUnit(col?.maxWidth)?.[0];
-        const width =
-          !col?.width || col?.width === "auto" || col?.widthAlgo === "flex"
-            ? null
-            : wwLib.wwUtils.getLengthUnit(col?.width)?.[0];
-        const flex = col?.widthAlgo === "flex" ? col?.flex ?? 1 : null;
+        
+        // Get column identifier (actionName for action columns, field for others)
+        const colId = col?.actionName || col?.field;
+        
+        // Check if initial width is provided for this column (overrides column config width)
+        const initialWidth = initialColumnsWidths && colId && typeof initialColumnsWidths[colId] === 'number'
+          ? initialColumnsWidths[colId]
+          : null;
+        
+        // Use initialColumnsWidths if provided, otherwise use column config width
+        // Note: When initialColumnsWidths is provided for a column, it overrides flex as well
+        const width = initialWidth !== null
+          ? initialWidth
+          : (!col?.width || col?.width === "auto" || col?.widthAlgo === "flex"
+              ? null
+              : wwLib.wwUtils.getLengthUnit(col?.width)?.[0]);
+        
+        // Only use flex if no initialWidth is provided for this column
+        const flex = initialWidth !== null
+          ? null
+          : (col?.widthAlgo === "flex" ? col?.flex ?? 1 : null);
 
         // Build cellClass array for column-specific styling
         const cellClasses = [];
@@ -5107,6 +5159,22 @@ export default {
         toIndex: 1,
         columnId: data[0]?.field,
         columnsOrder: data.map((col) => col?.field).filter(Boolean),
+      };
+    },
+    getColumnResizedTestEvent() {
+      const columns = this.columnDefs;
+      if (!columns || !columns[0]) throw new Error("No columns found");
+      const columnsWidths = {};
+      columns.forEach((col) => {
+        const colId = col?.colId || col?.field;
+        if (colId) {
+          columnsWidths[colId] = col?.width || 150;
+        }
+      });
+      return {
+        columnId: columns[0]?.colId || columns[0]?.field,
+        width: columns[0]?.width || 150,
+        columnsWidths: columnsWidths,
       };
     },
     getCellEditStartTestEvent() {

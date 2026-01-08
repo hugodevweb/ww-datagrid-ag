@@ -241,6 +241,16 @@ export default {
       getTestEvent: "getColumnMovedTestEvent",
     },
     {
+      name: "columnResized",
+      label: { en: "On Column Resized" },
+      event: {
+        columnId: null,
+        width: 0,
+        columnsWidths: {},
+      },
+      getTestEvent: "getColumnResizedTestEvent",
+    },
+    {
       name: "cellEditStart",
       label: { en: "On Cell Edit Start" },
       event: {
@@ -2556,6 +2566,22 @@ export default {
         type: "array",
         tooltip: "An array representing the id of the initial columns order",
       },
+    },
+    initialColumnsWidths: {
+      label: { en: "Initial Columns Widths" },
+      type: "RawObject",
+      section: "settings",
+      bindable: true,
+      defaultValue: null,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "object",
+        tooltip: "An object mapping column field names to widths in pixels. Example: { \"title\": 200, \"action\": 120 }",
+      },
+      propertyHelp: {
+        tooltip: "Set initial column widths by providing an object where keys are column field names (or actionName for action columns) and values are widths in pixels. Example: { \"title\": 200, \"status\": 150, \"action\": 120 }",
+      },
+      /* wwEditor:end */
     },
     lang: {
       label: { en: "Language" },

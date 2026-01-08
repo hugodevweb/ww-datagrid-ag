@@ -67,6 +67,7 @@ A highly customizable data grid/table component that supports features like sort
 - `initialFilters`: `{id: { filterType, type, filter } }` (Optional): An aggrid object describing the initial filtering. Here is an example: `{ id1: { filterType: "number", type: "greaterThan", filter: 50}}`
 - `initialSort`: `Array<{colId: id, sort: 'asc' |'dsc'}>` (Optional): Description of the initial sort column. Here is an example: `[{colId: "ID", sort: "asc"}]`
 - `initialColumnsOrder`: `Array<ColId>` (Optional): List of the column order, if different from columns definition ones
+- `initialColumnsWidths`: `{ [columnId: string]: number }` (Optional): An object mapping column field names (or actionName for action columns) to widths in pixels. Example: `{ "title": 200, "status": 150, "action": 120 }`. When provided, these widths override the column config widths, allowing you to restore user-resized column widths.
 - `lang`: `'en' | 'fr' | 'de' | 'pt' | 'custom'` - Locale use for the interface. Default: `"en"`. If `custom` the property localeText should be provided
 - `localeText`: only needed when lang is set to custom. Must be an object provided to aggrid
 - `conditionalRowStyles`: `Array<{
@@ -214,6 +215,7 @@ A highly customizable data grid/table component that supports features like sort
 - rowDragStart: Triggered when row drag is initiated. Payload: { row: { /* row data */}, id: 0 }
 - rowDragged: Triggered when row drag is ended. Payload: { row: { /* row data */}, id: 0, targetIndex: 0, rows: Array[RowData] }
 - columnMoved: Triggered when a column has been moved. Payload: { toIndex: 0, columnId: 'id', columnsOrder: Array[id] }
+- columnResized: Triggered when a column has been resized by the user. Payload: { columnId: 'id', width: 200, columnsWidths: { 'title': 200, 'status': 150, ... } }. The `columnsWidths` object contains all current column widths and can be stored and passed back to `initialColumnsWidths` to restore user preferences.
 - filterChanged: Triggered when filters are applied or changed. Payload: filter model object
 - sortChanged: Triggered when sorting is applied or changed. Payload: array of sort configurations
 - scroll: Triggered when the grid is scrolled. Useful for implementing infinite scroll or load-more pagination. Payload: { scrollTop: 0, scrollLeft: 0, scrollHeight: 0, clientHeight: 0, distanceFromBottom: 0, isNearBottom: false, isAtBottom: false, totalRows: 0 }
