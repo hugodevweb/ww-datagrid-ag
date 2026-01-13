@@ -251,7 +251,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // CRITICAL FIX: Use immediate to catch initial state
+            immediate: false,
         },
         // Watch for changes in users array
         'params.colDef.filterParams.users': {
@@ -262,7 +262,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // CRITICAL FIX: Use immediate to catch initial state
+            immediate: false,
         },
         // Watch for changes in cellRendererParams and cellEditorParams users
         'params.colDef.cellRendererParams.users': {
@@ -273,7 +273,7 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // CRITICAL FIX: Use immediate to catch initial state
+            immediate: false,
         },
         'params.colDef.cellEditorParams.users': {
             handler(newUsers, oldUsers) {
@@ -283,19 +283,12 @@ export default {
                 }
             },
             deep: true,
-            immediate: true, // CRITICAL FIX: Use immediate to catch initial state
+            immediate: false,
         },
     },
     methods: {
         // AG Grid filter interface methods
         getGui() {
-            // CRITICAL FIX: Refresh users when filter GUI is accessed
-            // This ensures users are loaded when filter opens, even if they weren't available on mount
-            if (this.availableUsers.length === 0 && this.params) {
-                this.$nextTick(() => {
-                    this.initializeUsers();
-                });
-            }
             return this.$el;
         },
         getCurrentUsers() {
@@ -497,19 +490,9 @@ export default {
             };
         },
         setModel(model) {
-            // CRITICAL FIX: Re-initialize users when model is set if users are missing
-            // This handles the case where initial filter is set before users are loaded
-            if (this.availableUsers.length === 0 && this.params) {
-                this.initializeUsers();
-            }
             this.syncSelectionsFromModel(model, { updateApplied: true });
         },
         onParentModelChanged(model) {
-            // CRITICAL FIX: Re-initialize users when model changes if users are missing
-            // This handles the case where initial filter is set before users are loaded
-            if (this.availableUsers.length === 0 && this.params) {
-                this.initializeUsers();
-            }
             this.syncSelectionsFromModel(model, { updateApplied: true });
         },
         isFilterActive() {
