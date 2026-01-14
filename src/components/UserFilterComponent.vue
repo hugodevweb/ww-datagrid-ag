@@ -114,6 +114,7 @@ export default {
             pendingSelection: new Set(), // Store user IDs
             appliedSelection: new Set(), // Store user IDs
             refreshTimer: null,
+            hadUsersOnInit: false, // Track if users were available on first load
         };
     },
     computed: {
@@ -293,12 +294,29 @@ export default {
         },
         getCurrentUsers() {
             if (!this.params) return null;
-            
-            const colDef = this.params.colDef || {};
+
+            // CRITICAL FIX: Use grid API to get the LATEST column definition
+            // The original params.colDef may be stale if column definitions were updated
+            // after the filter was created (e.g., when async data loads)
+            let colDef = this.params.colDef || {};
+
+            // Try to get fresh column definition from grid API
+            if (this.params.api && this.params.column) {
+                try {
+                    const colId = this.params.column.getColId();
+                    const freshColDef = this.params.api.getColumnDef(colId);
+                    if (freshColDef) {
+                        colDef = freshColDef;
+                    }
+                } catch (e) {
+                    // Fallback to original colDef if API call fails
+                }
+            }
+
             const filterParams = colDef.filterParams || this.params.filterParams || {};
             const rendererParams = colDef.cellRendererParams || {};
             const editorParams = colDef.cellEditorParams || {};
-            
+
             // Check in priority order: filterParams > editorParams > rendererParams
             // Also check both colDef.filterParams and params.filterParams for compatibility
             if (Array.isArray(filterParams.users) && filterParams.users.length > 0) {
@@ -310,35 +328,83 @@ export default {
             if (Array.isArray(rendererParams.users) && rendererParams.users.length > 0) {
                 return rendererParams.users;
             }
-            
+
             return null;
         },
         refresh(newParams) {
             // Refresh users when called
             if (this.params) {
-                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+                // Try to get fresh column definition from grid API
+                let filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+
+                if (this.params.api && this.params.column) {
+                    try {
+                        const colId = this.params.column.getColId();
+                        const freshColDef = this.params.api.getColumnDef(colId);
+                        if (freshColDef?.filterParams) {
+                            filterParams = freshColDef.filterParams;
+                        }
+                    } catch (e) {
+                        // Fallback to original filterParams
+                    }
+                }
+
                 this.setUserParams(filterParams);
             }
-            
+
             return true;
         },
         initializeUsers() {
             if (this.params) {
-                const filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+                // Try to get fresh column definition from grid API
+                let filterParams = this.params.colDef?.filterParams || this.params.filterParams || {};
+
+                if (this.params.api && this.params.column) {
+                    try {
+                        const colId = this.params.column.getColId();
+                        const freshColDef = this.params.api.getColumnDef(colId);
+                        if (freshColDef?.filterParams) {
+                            filterParams = freshColDef.filterParams;
+                        }
+                    } catch (e) {
+                        // Fallback to original filterParams
+                    }
+                }
+
                 this.setUserParams(filterParams);
             }
         },
         setUserParams(filterParams = {}) {
-            const colDef = this.params?.colDef || {};
-            const rendererParams = colDef.cellRendererParams || {};
-            const editorParams = colDef.cellEditorParams || {};
-            
+            let colDef = this.params?.colDef || {};
+            let rendererParams = colDef.cellRendererParams || {};
+            let editorParams = colDef.cellEditorParams || {};
+
+            // CRITICAL FIX: Try to get fresh column definition from grid API
+            // This ensures we get the latest data even if the original params are stale
+            if (this.params?.api && this.params?.column) {
+                try {
+                    const colId = this.params.column.getColId();
+                    const freshColDef = this.params.api.getColumnDef(colId);
+                    if (freshColDef) {
+                        colDef = freshColDef;
+                        rendererParams = freshColDef.cellRendererParams || {};
+                        editorParams = freshColDef.cellEditorParams || {};
+                        // Also update filterParams if fresh one has users
+                        if (freshColDef.filterParams?.users?.length > 0) {
+                            filterParams = freshColDef.filterParams;
+                        }
+                    }
+                } catch (e) {
+                    // Fallback to original params
+                }
+            }
+
             // Also check params.filterParams if filterParams is empty
             const paramsFilterParams = this.params?.filterParams || {};
             if (!filterParams || Object.keys(filterParams).length === 0) {
                 filterParams = paramsFilterParams;
             }
-            
+
             // Priority order: filterParams > editorParams > rendererParams
             let users = null;
             let userFocusColor = null;
@@ -346,7 +412,7 @@ export default {
             let resolveMappingFormula = null;
             let userIdFormula = null;
             let isLoading = null;
-            
+
             // Try to get from filterParams first
             if (filterParams && typeof filterParams === 'object') {
                 if (Array.isArray(filterParams.users) && filterParams.users.length > 0) {
@@ -358,7 +424,7 @@ export default {
                 userIdFormula = filterParams.userIdFormula;
                 isLoading = filterParams.isLoading;
             }
-            
+
             // Fallback to editor params
             if ((users === null || (Array.isArray(users) && users.length === 0)) && Array.isArray(editorParams.users) && editorParams.users.length > 0) {
                 users = editorParams.users;
@@ -368,7 +434,7 @@ export default {
                 if (!userIdFormula) userIdFormula = editorParams.userIdFormula;
                 if (isLoading === null || isLoading === undefined) isLoading = editorParams.isLoading;
             }
-            
+
             // Fallback to renderer params
             if ((users === null || (Array.isArray(users) && users.length === 0)) && Array.isArray(rendererParams.users) && rendererParams.users.length > 0) {
                 users = rendererParams.users;
@@ -390,6 +456,10 @@ export default {
                 console.log('[UserFilterComponent] Users loaded:', users.length, 'users', users);
             }
             
+            // Check if users just became available (transition from 0 to >0)
+            const previousUsersCount = this.availableUsers?.length || 0;
+            const usersJustLoaded = previousUsersCount === 0 && users.length > 0;
+
             this.userParams = {
                 users: users,
                 userFocusColor: userFocusColor,
@@ -398,12 +468,24 @@ export default {
                 userIdFormula: userIdFormula,
                 isLoading: isLoading || false,
             };
-            
+
             this.availableUsers = [...users];
-            
+
             // Log when users are set (including empty arrays)
             if (users.length === 0) {
                 console.log('[UserFilterComponent] No users available yet, isLoading:', isLoading);
+            }
+
+            // CRITICAL FIX: If users just loaded and we have an active filter,
+            // notify AG Grid to re-apply filtering. This fixes the issue where
+            // filters don't work on page refresh because users weren't loaded
+            // when the initial filter model was applied.
+            if (usersJustLoaded && this.isFilterActive()) {
+                console.log('[UserFilterComponent] Users loaded with active filter, triggering re-filter');
+                // Use nextTick to ensure the component state is fully updated
+                this.$nextTick(() => {
+                    this.params?.filterChangedCallback?.();
+                });
             }
         },
         getUserName(user) {
