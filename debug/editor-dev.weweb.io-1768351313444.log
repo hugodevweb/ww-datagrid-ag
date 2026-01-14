@@ -1,0 +1,145 @@
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+wwElement.vue:1345 [onFilterChanged] Called, isDatasourceRefreshing: false
+wwElement.vue:1734 [getRows] Called, startRow: 0 endRow: 100 isDatasourceRefreshing: false
+wwElement.vue:1735 [getRows] Stack trace
+getRows @ wwElement.vue:1735
+(anonymous) @ main.esm.mjs:45304
+setTimeout
+loadFromDatasource @ main.esm.mjs:45303
+load @ main.esm.mjs:45231
+(anonymous) @ main.esm.mjs:45852
+performCheckBlocksToLoad @ main.esm.mjs:45852
+checkBlockToLoad @ main.esm.mjs:45837
+addBlock @ main.esm.mjs:45820
+createBlock @ main.esm.mjs:45396
+getRow @ main.esm.mjs:45386
+getRow @ main.esm.mjs:45734
+calculateIndexesToDraw @ main.esm.mjs:31428
+recycleRows @ main.esm.mjs:31436
+redrawAfterModelUpdate @ main.esm.mjs:31092
+onPageLoaded @ main.esm.mjs:30961
+callback @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+dispatchEvent @ main.esm.mjs:27006
+onModelUpdated @ main.esm.mjs:29827
+callback @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+dispatchEvent @ main.esm.mjs:27006
+dispatchModelUpdatedEvent @ main.esm.mjs:45672
+resetCache @ main.esm.mjs:45714
+reset @ main.esm.mjs:45669
+callback @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+dispatchEvent @ main.esm.mjs:27006
+(anonymous) @ main.esm.mjs:38350
+(anonymous) @ main.esm.mjs:4443
+_AgPromise @ main.esm.mjs:4417
+then @ main.esm.mjs:4441
+onFilterChanged @ main.esm.mjs:38341
+action @ main.esm.mjs:37654
+callOnFilterChangedOutsideRenderCycle @ main.esm.mjs:37660
+(anonymous) @ main.esm.mjs:37952
+filterChangedCallback @ main.esm.mjs:37763
+onApply @ UserFilterComponent.vue:529
+$options.isLoadingUsers.onClick._cache.<computed>._cache.<computed> @ UserFilterComponent.vue:100
+eC @ index-DUUsgiXR.js:18
+xp @ index-DUUsgiXR.js:18
+t @ index-DUUsgiXR.js:39
+wwElement.vue:727 [Supabase Query] Table: cases_with_owners | Filters: owner_ids: in [6d30bd8e-230c-40e0-931c-307b1c50b87c] | Sort: case_type_id asc | Search: none | Range: 0-99
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+wwElement.vue:1391 [onFilterChanged] Setting datasource via setGridOption
+wwElement.vue:1734 [getRows] Called, startRow: 0 endRow: 100 isDatasourceRefreshing: true
+wwElement.vue:1735 [getRows] Stack trace
+getRows @ wwElement.vue:1735
+(anonymous) @ main.esm.mjs:45304
+setTimeout
+loadFromDatasource @ main.esm.mjs:45303
+load @ main.esm.mjs:45231
+(anonymous) @ main.esm.mjs:45852
+performCheckBlocksToLoad @ main.esm.mjs:45852
+checkBlockToLoad @ main.esm.mjs:45837
+addBlock @ main.esm.mjs:45820
+createBlock @ main.esm.mjs:45396
+getRow @ main.esm.mjs:45386
+getRow @ main.esm.mjs:45734
+calculateIndexesToDraw @ main.esm.mjs:31428
+recycleRows @ main.esm.mjs:31436
+redrawAfterModelUpdate @ main.esm.mjs:31092
+onPageLoaded @ main.esm.mjs:30961
+callback @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+dispatchEvent @ main.esm.mjs:27006
+onModelUpdated @ main.esm.mjs:29827
+callback @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+dispatchEvent @ main.esm.mjs:27006
+dispatchModelUpdatedEvent @ main.esm.mjs:45672
+resetCache @ main.esm.mjs:45714
+reset @ main.esm.mjs:45669
+setDatasource @ main.esm.mjs:45648
+(anonymous) @ main.esm.mjs:45622
+(anonymous) @ main.esm.mjs:71
+VanillaFrameworkOverrides.wrapIncoming @ main.esm.mjs:18464
+(anonymous) @ main.esm.mjs:71
+(anonymous) @ main.esm.mjs:75
+processEventListeners @ main.esm.mjs:67
+dispatchToListeners @ main.esm.mjs:81
+dispatchEvent @ main.esm.mjs:51
+(anonymous) @ main.esm.mjs:28156
+updateGridOptions @ main.esm.mjs:28154
+updateGridOptions @ main.esm.mjs:20191
+setGridOption @ main.esm.mjs:20188
+setGridOption @ main.esm.mjs:20152
+(anonymous) @ wwElement.vue:1392
+setTimeout
+(anonymous) @ wwElement.vue:1386
+setTimeout
+onFilterChanged @ wwElement.vue:1371
+(anonymous) @ main.esm.mjs:28066
+VanillaFrameworkOverrides.wrapOutgoing @ main.esm.mjs:18465
+(anonymous) @ main.esm.mjs:28065
+callback @ main.esm.mjs:87
+(anonymous) @ main.esm.mjs:114
+flushAsyncQueue @ main.esm.mjs:114
+setTimeout
+flush @ main.esm.mjs:103
+dispatchAsync @ main.esm.mjs:105
+(anonymous) @ main.esm.mjs:89
+dispatchToListeners @ main.esm.mjs:86
+dispatchEvent @ main.esm.mjs:50
+dispatchEvent @ main.esm.mjs:27006
+(anonymous) @ main.esm.mjs:38350
+(anonymous) @ main.esm.mjs:4443
+_AgPromise @ main.esm.mjs:4417
+then @ main.esm.mjs:4441
+onFilterChanged @ main.esm.mjs:38341
+action @ main.esm.mjs:37654
+callOnFilterChangedOutsideRenderCycle @ main.esm.mjs:37660
+(anonymous) @ main.esm.mjs:37952
+filterChangedCallback @ main.esm.mjs:37763
+onApply @ UserFilterComponent.vue:529
+$options.isLoadingUsers.onClick._cache.<computed>._cache.<computed> @ UserFilterComponent.vue:100
+eC @ index-DUUsgiXR.js:18
+xp @ index-DUUsgiXR.js:18
+t @ index-DUUsgiXR.js:39
+wwElement.vue:727 [Supabase Query] Table: cases_with_owners | Filters: owner_ids: in [6d30bd8e-230c-40e0-931c-307b1c50b87c] | Sort: case_type_id asc | Search: none | Range: 0-99
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]
+UserFilterComponent.vue:352 [UserFilterComponent] Users loaded: 6 users (6) [{…}, {…}, {…}, {…}, {…}, {…}, __v_skip: true]

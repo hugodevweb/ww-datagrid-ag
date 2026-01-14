@@ -1417,6 +1417,7 @@ export default {
 
     const onFilterChanged = (event) => {
       if (!gridApi.value) return;
+
       const filterModel = gridApi.value.getFilterModel();
       if (
         JSON.stringify(filterModel || {}) !==
@@ -1427,49 +1428,28 @@ export default {
           name: "filterChanged",
           event: filterModel,
         });
-        
+
         // If using Supabase, debounce filter changes to avoid excessive API calls
         if (props.content?.dataSource === 'supabase') {
           // Clear existing debounce timer
           if (filterDebounceTimer.value) {
             clearTimeout(filterDebounceTimer.value);
           }
-          
+
           // Debounce filter changes (300ms)
           filterDebounceTimer.value = setTimeout(() => {
             if (isInfiniteScrollEnabled.value) {
-              // For infinite scrolling, refresh the datasource
-              // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
-              // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-              if (gridApi.value) {
-                const currentFilters = gridApi.value.getFilterModel();
-                const currentSort = gridApi.value.getState()?.sort?.sortModel;
+              // For infinite scrolling, AG Grid automatically handles filter changes
+              // when filterChangedCallback() is called by the filter component.
+              // It resets its cache and calls getRows with the new filterModel.
+              // We do NOT need to manually set the datasource - that causes duplicate queries.
+              // Just update records after the grid has refreshed.
+              // AG Grid handles this automatically - just update records after refresh
+              nextTick(() => {
                 setTimeout(() => {
-                  if (!gridApi.value) return;
-                  gridApi.value.setGridOption('datasource', datasource.value);
-                  // AG Grid should preserve filters, but ensure they're still there
-                  setTimeout(() => {
-                    if (!gridApi.value) return;
-                    const newFilters = gridApi.value.getFilterModel();
-                    if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
-                      gridApi.value.setFilterModel(currentFilters);
-                    }
-                    if (currentSort && currentSort.length > 0) {
-                      const newSort = gridApi.value.getState()?.sort?.sortModel;
-                      if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
-                        gridApi.value.applyColumnState({
-                          state: currentSort,
-                          defaultState: { sort: null },
-                        });
-                      }
-                    }
-                    // Update records after datasource refresh
-                    setTimeout(() => {
-                      updateRecordsFromGrid();
-                    }, 200);
-                  }, 50);
-                }, 0);
-              }
+                  updateRecordsFromGrid();
+                }, 200);
+              });
             } else {
               // For pagination mode, fetch data
               const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
@@ -1494,6 +1474,7 @@ export default {
 
     const onSortChanged = (event) => {
       if (!gridApi.value) return;
+
       const state = gridApi.value.getState();
       if (
         JSON.stringify(state.sort?.sortModel || []) !==
@@ -1504,42 +1485,20 @@ export default {
           name: "sortChanged",
           event: state.sort?.sortModel || [],
         });
-        
+
         // If using Supabase, refetch data with new sort
         if (props.content?.dataSource === 'supabase') {
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, refresh the datasource
-            // CRITICAL FIX: Preserve current filter and sort state when refreshing datasource
-            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-            if (gridApi.value) {
-              const currentFilters = gridApi.value.getFilterModel();
-              const currentSort = gridApi.value.getState()?.sort?.sortModel;
+            // For infinite scrolling, AG Grid automatically handles sort changes.
+            // It resets its cache and calls getRows with the new sortModel.
+            // We do NOT need to manually set the datasource - that causes duplicate queries.
+            // Just update records after the grid has refreshed.
+            // AG Grid handles this automatically - just update records after refresh
+            nextTick(() => {
               setTimeout(() => {
-                if (!gridApi.value) return;
-                gridApi.value.setGridOption('datasource', datasource.value);
-                // AG Grid should preserve filters and sorts, but ensure they're still there
-                setTimeout(() => {
-                  if (!gridApi.value) return;
-                  const newFilters = gridApi.value.getFilterModel();
-                  if (JSON.stringify(newFilters) !== JSON.stringify(currentFilters)) {
-                    gridApi.value.setFilterModel(currentFilters);
-                  }
-                  if (currentSort && currentSort.length > 0) {
-                    const newSort = gridApi.value.getState()?.sort?.sortModel;
-                    if (JSON.stringify(newSort) !== JSON.stringify(currentSort)) {
-                      gridApi.value.applyColumnState({
-                        state: currentSort,
-                        defaultState: { sort: null },
-                      });
-                    }
-                    // Update records after datasource refresh
-                    setTimeout(() => {
-                      updateRecordsFromGrid();
-                    }, 200);
-                  }
-                }, 50);
-              }, 0);
-            }
+                updateRecordsFromGrid();
+              }, 200);
+            });
           } else {
             // For pagination mode, fetch data
             const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
@@ -1759,7 +1718,7 @@ export default {
         rowCount: undefined, // Will be determined dynamically
         getRows: async (params) => {
           const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
-          
+
           // Skip fetching if we're updating data locally (e.g., removing a row)
           // This prevents unnecessary re-fetches when we're making local modifications
           // For infinite scroll, AG Grid will automatically try to refetch when rows are removed
