@@ -1262,6 +1262,10 @@ export default {
 
     // Track last applied view configuration to detect changes
     const lastAppliedViewConfig = ref(null);
+    
+    // Flag to track when view configuration is being applied programmatically
+    // This prevents filter/sort changed events from being triggered during view config changes
+    const isApplyingViewConfig = ref(false);
 
     // Helper function to apply view configuration to the grid
     const applyViewConfiguration = (viewConfig, isInitial = false) => {
@@ -1269,9 +1273,15 @@ export default {
       
       debugLog('[ViewConfiguration] Applying view configuration:', viewConfig, 'isInitial:', isInitial);
       
+      // Set flag to indicate we're applying view config programmatically
+      isApplyingViewConfig.value = true;
+      
       // Defer API calls to prevent error #252 during render cycle
       setTimeout(() => {
-        if (!gridApi.value) return;
+        if (!gridApi.value) {
+          isApplyingViewConfig.value = false;
+          return;
+        }
         
         try {
           // 1. Apply filters
@@ -1308,8 +1318,16 @@ export default {
           // Store the applied config
           lastAppliedViewConfig.value = JSON.stringify(viewConfig);
           
+          // Reset flag after a short delay to allow AG Grid events to settle
+          // AG Grid events are triggered asynchronously after API calls
+          setTimeout(() => {
+            isApplyingViewConfig.value = false;
+            debugLog('[ViewConfiguration] View config application complete, events re-enabled');
+          }, 100);
+          
         } catch (e) {
           debugLog('[ViewConfiguration] Error applying view configuration:', e);
+          isApplyingViewConfig.value = false;
           // Retry after a short delay if it's an AG Grid timing issue
           if (e.message && e.message.includes('#252')) {
             setTimeout(() => {
@@ -1425,10 +1443,16 @@ export default {
         JSON.stringify(filterValue.value || {})
       ) {
         setFilters(filterModel);
-        ctx.emit("trigger-event", {
-          name: "filterChanged",
-          event: filterModel,
-        });
+        
+        // Only emit event if this is a user-initiated change (not from view configuration)
+        if (!isApplyingViewConfig.value) {
+          ctx.emit("trigger-event", {
+            name: "filterChanged",
+            event: filterModel,
+          });
+        } else {
+          debugLog('[FilterChanged] Skipping event emission - change is from view configuration');
+        }
 
         // If using Supabase, debounce filter changes to avoid excessive API calls
         if (props.content?.dataSource === 'supabase') {
@@ -1482,10 +1506,16 @@ export default {
         JSON.stringify(sortValue.value || [])
       ) {
         setSort(state.sort?.sortModel || []);
-        ctx.emit("trigger-event", {
-          name: "sortChanged",
-          event: state.sort?.sortModel || [],
-        });
+        
+        // Only emit event if this is a user-initiated change (not from view configuration)
+        if (!isApplyingViewConfig.value) {
+          ctx.emit("trigger-event", {
+            name: "sortChanged",
+            event: state.sort?.sortModel || [],
+          });
+        } else {
+          debugLog('[SortChanged] Skipping event emission - change is from view configuration');
+        }
 
         // If using Supabase, refetch data with new sort
         if (props.content?.dataSource === 'supabase') {
