@@ -64,10 +64,21 @@ A highly customizable data grid/table component that supports features like sort
 - `selectAll`: `'all' | 'currentPage' | 'filtered'` - Behavior of select all button
 - `pagination`: `boolean` - Enable/disable pagination. Default: `false`.
 - `paginationPageSize`: `number` - Number of rows per page. Default: `10`.
-- `initialFilters`: `{id: { filterType, type, filter } }` (Optional): An aggrid object describing the initial filtering. Here is an example: `{ id1: { filterType: "number", type: "greaterThan", filter: 50}}`
-- `initialSort`: `Array<{colId: id, sort: 'asc' |'dsc'}>` (Optional): Description of the initial sort column. Here is an example: `[{colId: "ID", sort: "asc"}]`
-- `initialColumnsOrder`: `Array<ColId>` (Optional): List of the column order, if different from columns definition ones
-- `initialColumnsWidths`: `{ [columnId: string]: number }` (Optional): An object mapping column field names (or actionName for action columns) to widths in pixels. Example: `{ "title": 200, "status": 150, "action": 120 }`. When provided, these widths override the column config widths, allowing you to restore user-resized column widths.
+- `viewConfiguration`: `{ sizes?: object, filters?: object, sorting?: array, columnsOrder?: array }` (Optional): A unified view configuration object that controls the grid's state. When this configuration changes, all settings are applied to the grid, overriding any user modifications, and row selections are cleared. Structure:
+  - `sizes`: `{ [columnId: string]: number }` - Column widths in pixels. Example: `{ "title": 200, "status": 150 }`
+  - `filters`: AG Grid filter model object. Example: `{ "status": { filterType: "text", type: "equals", filter: "active" } }`
+  - `sorting`: `Array<{colId: string, sort: 'asc' | 'desc'}>` - Sort configuration. Example: `[{ colId: "name", sort: "asc" }]`
+  - `columnsOrder`: `Array<string>` - Column IDs in display order. Example: `["name", "email", "status"]`
+  
+  Full example:
+  ```javascript
+  viewConfiguration: {
+    sizes: { "name": 200, "email": 250 },
+    filters: { "status": { filterType: "text", type: "equals", filter: "active" } },
+    sorting: [{ colId: "name", sort: "asc" }],
+    columnsOrder: ["name", "email", "status", "actions"]
+  }
+  ```
 - `lang`: `'en' | 'fr' | 'de' | 'pt' | 'custom'` - Locale use for the interface. Default: `"en"`. If `custom` the property localeText should be provided
 - `localeText`: only needed when lang is set to custom. Must be an object provided to aggrid
 - `conditionalRowStyles`: `Array<{
@@ -215,7 +226,7 @@ A highly customizable data grid/table component that supports features like sort
 - rowDragStart: Triggered when row drag is initiated. Payload: { row: { /* row data */}, id: 0 }
 - rowDragged: Triggered when row drag is ended. Payload: { row: { /* row data */}, id: 0, targetIndex: 0, rows: Array[RowData] }
 - columnMoved: Triggered when a column has been moved. Payload: { toIndex: 0, columnId: 'id', columnsOrder: Array[id] }
-- columnResized: Triggered when a column has been resized by the user. Payload: { columnId: 'id', width: 200, columnsWidths: { 'title': 200, 'status': 150, ... } }. The `columnsWidths` object contains all current column widths and can be stored and passed back to `initialColumnsWidths` to restore user preferences.
+- columnResized: Triggered when a column has been resized by the user. Payload: { columnId: 'id', width: 200, columnsWidths: { 'title': 200, 'status': 150, ... } }. The `columnsWidths` object contains all current column widths and can be stored and passed back to `viewConfiguration.sizes` to restore user preferences.
 - filterChanged: Triggered when filters are applied or changed. Payload: filter model object
 - sortChanged: Triggered when sorting is applied or changed. Payload: array of sort configurations
 - scroll: Triggered when the grid is scrolled. Useful for implementing infinite scroll or load-more pagination. Payload: { scrollTop: 0, scrollLeft: 0, scrollHeight: 0, clientHeight: 0, distanceFromBottom: 0, isNearBottom: false, isAtBottom: false, totalRows: 0 }

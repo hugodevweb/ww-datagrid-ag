@@ -148,9 +148,7 @@ export default {
       "resizableColumns",
       "rowReorder",
       "reorderInfoBox",
-      "initialFilters",
-      "initialSort",
-      "initialColumnsOrder",
+      "viewConfiguration",
       ["lang", "localeText"],
       "enableDebugLogs",
     ],
@@ -2534,41 +2532,8 @@ export default {
       },
       /* wwEditor:end */
     },
-    initialFilters: {
-      label: { en: "Initial Filters" },
-      type: "RawObject",
-      section: "settings",
-      bindable: true,
-      defaultValue: null,
-      bindingValidation: {
-        type: "object",
-        tooltip: "An object representing the initial filter model",
-      },
-    },
-    initialSort: {
-      label: { en: "Initial Sort" },
-      type: "RawObject",
-      section: "settings",
-      bindable: true,
-      defaultValue: null,
-      bindingValidation: {
-        type: "array",
-        tooltip: "An array representing the initial sort model",
-      },
-    },
-    initialColumnsOrder: {
-      label: { en: "Initial Columns Order" },
-      type: "RawObject",
-      section: "settings",
-      bindable: true,
-      defaultValue: null,
-      bindingValidation: {
-        type: "array",
-        tooltip: "An array representing the id of the initial columns order",
-      },
-    },
-    initialColumnsWidths: {
-      label: { en: "Initial Columns Widths" },
+    viewConfiguration: {
+      label: { en: "View Configuration" },
       type: "RawObject",
       section: "settings",
       bindable: true,
@@ -2576,10 +2541,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "An object mapping column field names to widths in pixels. Example: { \"title\": 200, \"action\": 120 }",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId] }",
       },
       propertyHelp: {
-        tooltip: "Set initial column widths by providing an object where keys are column field names (or actionName for action columns) and values are widths in pixels. Example: { \"title\": 200, \"status\": 150, \"action\": 120 }",
+        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [] }",
       },
       /* wwEditor:end */
     },

@@ -1203,10 +1203,11 @@ export default {
       
       const columns = params.api.getAllGridColumns();
       
-      // Only set column order from grid if initialColumnsOrder is not provided
-      // Otherwise, use the initialColumnsOrder from props
-      if (props.content.initialColumnsOrder && Array.isArray(props.content.initialColumnsOrder)) {
-        setColumnOrder([...props.content.initialColumnsOrder]);
+      // Only set column order from grid if viewConfiguration.columnsOrder is not provided
+      // Otherwise, use the viewConfiguration.columnsOrder from props
+      const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
+      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
+        setColumnOrder([...viewColumnsOrder]);
       } else {
         setColumnOrder(columns.map((col) => col.getColId()));
       }
@@ -1259,97 +1260,97 @@ export default {
       }, 50);
     };
 
-    // CRITICAL FIX: Track if initial filters/sorts have been applied
-    // They should only be applied ONCE on mount, not continuously
-    const initialFiltersApplied = ref(false);
-    const initialSortApplied = ref(false);
-    const initialColumnsOrderApplied = ref(false);
+    // Track last applied view configuration to detect changes
+    const lastAppliedViewConfig = ref(null);
 
-    // Watch for grid ready to apply initial filters/sorts ONCE
+    // Helper function to apply view configuration to the grid
+    const applyViewConfiguration = (viewConfig, isInitial = false) => {
+      if (!gridApi.value) return;
+      
+      debugLog('[ViewConfiguration] Applying view configuration:', viewConfig, 'isInitial:', isInitial);
+      
+      // Defer API calls to prevent error #252 during render cycle
+      setTimeout(() => {
+        if (!gridApi.value) return;
+        
+        try {
+          // 1. Apply filters
+          const filters = viewConfig?.filters || {};
+          gridApi.value.setFilterModel(filters);
+          debugLog('[ViewConfiguration] Applied filters:', filters);
+          
+          // 2. Apply sorting
+          const sorting = viewConfig?.sorting || [];
+          gridApi.value.applyColumnState({
+            state: sorting,
+            defaultState: { sort: null },
+          });
+          debugLog('[ViewConfiguration] Applied sorting:', sorting);
+          
+          // 3. Apply column order
+          const columnsOrder = viewConfig?.columnsOrder;
+          if (columnsOrder && Array.isArray(columnsOrder)) {
+            gridApi.value.applyColumnState({
+              state: columnsOrder.map((colId) => ({ colId })),
+              applyOrder: true,
+            });
+            setColumnOrder([...columnsOrder]);
+            debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
+          }
+          
+          // 4. Clear row selections when view changes (not on initial load)
+          if (!isInitial) {
+            gridApi.value.deselectAll();
+            setSelectedRows([]);
+            debugLog('[ViewConfiguration] Cleared row selections');
+          }
+          
+          // Store the applied config
+          lastAppliedViewConfig.value = JSON.stringify(viewConfig);
+          
+        } catch (e) {
+          debugLog('[ViewConfiguration] Error applying view configuration:', e);
+          // Retry after a short delay if it's an AG Grid timing issue
+          if (e.message && e.message.includes('#252')) {
+            setTimeout(() => {
+              applyViewConfiguration(viewConfig, isInitial);
+            }, 100);
+          }
+        }
+      }, 0);
+    };
+
+    // Watch for grid ready to apply initial view configuration
     watch(
       () => gridReady.value,
       (ready) => {
         if (!ready || !gridApi.value) return;
         
-        // CRITICAL FIX: Defer all initial state applications to prevent error #252
-        // These API calls can conflict with AG Grid's initial render cycle
-        setTimeout(() => {
-          if (!gridApi.value) return;
-          
-          // Apply initial filters only once
-          if (props.content.initialFilters && !initialFiltersApplied.value) {
-            try {
-              gridApi.value.setFilterModel(props.content.initialFilters);
-              initialFiltersApplied.value = true;
-            } catch (e) {
-              if (e.message && e.message.includes('#252')) {
-                // Retry after a short delay
-                setTimeout(() => {
-                  if (gridApi.value && !initialFiltersApplied.value) {
-                    gridApi.value.setFilterModel(props.content.initialFilters);
-                    initialFiltersApplied.value = true;
-                  }
-                }, 100);
-              }
-            }
-          }
-          
-          // Apply initial sort only once
-          if (props.content.initialSort && !initialSortApplied.value) {
-            try {
-              gridApi.value.applyColumnState({
-                state: props.content.initialSort || [],
-                defaultState: { sort: null },
-              });
-              initialSortApplied.value = true;
-            } catch (e) {
-              if (e.message && e.message.includes('#252')) {
-                // Retry after a short delay
-                setTimeout(() => {
-                  if (gridApi.value && !initialSortApplied.value) {
-                    gridApi.value.applyColumnState({
-                      state: props.content.initialSort || [],
-                      defaultState: { sort: null },
-                    });
-                    initialSortApplied.value = true;
-                  }
-                }, 100);
-              }
-            }
-          }
-          
-          // Apply initial column order only once
-          if (
-            props.content.initialColumnsOrder &&
-            Array.isArray(props.content.initialColumnsOrder) &&
-            !initialColumnsOrderApplied.value
-          ) {
-            try {
-              gridApi.value.applyColumnState({
-                state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
-                applyOrder: true,
-              });
-              setColumnOrder([...props.content.initialColumnsOrder]);
-              initialColumnsOrderApplied.value = true;
-            } catch (e) {
-              if (e.message && e.message.includes('#252')) {
-                // Retry after a short delay
-                setTimeout(() => {
-                  if (gridApi.value && !initialColumnsOrderApplied.value) {
-                    gridApi.value.applyColumnState({
-                      state: props.content.initialColumnsOrder.map((colId) => ({ colId })),
-                      applyOrder: true,
-                    });
-                    setColumnOrder([...props.content.initialColumnsOrder]);
-                    initialColumnsOrderApplied.value = true;
-                  }
-                }, 100);
-              }
-            }
-          }
-        }, 0);
+        // Apply initial view configuration when grid is ready
+        if (props.content.viewConfiguration) {
+          applyViewConfiguration(props.content.viewConfiguration, true);
+        }
       },
       { immediate: true }
+    );
+
+    // Watch for viewConfiguration changes to apply new settings
+    watch(
+      () => props.content.viewConfiguration,
+      (newConfig, oldConfig) => {
+        if (!gridApi.value || !gridReady.value) return;
+        
+        // Stringify to compare deep equality
+        const newConfigStr = JSON.stringify(newConfig);
+        const oldConfigStr = lastAppliedViewConfig.value;
+        
+        // Only apply if the configuration has actually changed
+        if (newConfigStr !== oldConfigStr) {
+          debugLog('[ViewConfiguration] Configuration changed, applying new view');
+          applyViewConfiguration(newConfig, false);
+        }
+      },
+      { deep: true }
     );
 
     // CRITICAL FIX: initialState should only be set once on mount, not reactive
@@ -1364,12 +1365,12 @@ export default {
       const state = {
         partialColumnState: true,
       };
-      // NOTE: Initial filters and sorts are applied via watcher (lines 541-575)
-      // We don't include them in initialState to avoid AG Grid re-applying them
-      // when the component updates. Instead, they're applied once via API calls.
-      if (props.content.initialColumnsOrder && Array.isArray(props.content.initialColumnsOrder)) {
+      // NOTE: Filters and sorts are applied via watcher when viewConfiguration changes
+      // We only set column order in initialState for AG Grid's initial render
+      const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
+      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
         state.columnOrder = {
-          orderedColIds: props.content.initialColumnsOrder,
+          orderedColIds: viewColumnsOrder,
         };
       }
       initialState.value = state;
@@ -2524,8 +2525,8 @@ export default {
           return false;
         };
       };
-      // Get initial columns widths from props (for restoring user-resized widths)
-      const initialColumnsWidths = this.content.initialColumnsWidths;
+      // Get column widths from viewConfiguration (for restoring user-resized widths)
+      const viewColumnSizes = this.content.viewConfiguration?.sizes;
       
       const allColumnDefs = this.content.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
@@ -2543,21 +2544,21 @@ export default {
         // Get column identifier (actionName for action columns, field for others)
         const colId = col?.actionName || col?.field;
         
-        // Check if initial width is provided for this column (overrides column config width)
-        const initialWidth = initialColumnsWidths && colId && typeof initialColumnsWidths[colId] === 'number'
-          ? initialColumnsWidths[colId]
+        // Check if view width is provided for this column (overrides column config width)
+        const viewWidth = viewColumnSizes && colId && typeof viewColumnSizes[colId] === 'number'
+          ? viewColumnSizes[colId]
           : null;
         
-        // Use initialColumnsWidths if provided, otherwise use column config width
-        // Note: When initialColumnsWidths is provided for a column, it overrides flex as well
-        const width = initialWidth !== null
-          ? initialWidth
+        // Use viewConfiguration.sizes if provided, otherwise use column config width
+        // Note: When viewConfiguration.sizes is provided for a column, it overrides flex as well
+        const width = viewWidth !== null
+          ? viewWidth
           : (!col?.width || col?.width === "auto" || col?.widthAlgo === "flex"
               ? null
               : wwLib.wwUtils.getLengthUnit(col?.width)?.[0]);
         
-        // Only use flex if no initialWidth is provided for this column
-        const flex = initialWidth !== null
+        // Only use flex if no viewWidth is provided for this column
+        const flex = viewWidth !== null
           ? null
           : (col?.widthAlgo === "flex" ? col?.flex ?? 1 : null);
 
@@ -3287,22 +3288,23 @@ export default {
         }
       });
 
-      // Reorder columns based on initialColumnsOrder if provided
+      // Reorder columns based on viewConfiguration.columnsOrder if provided
       let columns;
-      if (this.content.initialColumnsOrder && Array.isArray(this.content.initialColumnsOrder)) {
+      const viewColumnsOrder = this.content.viewConfiguration?.columnsOrder;
+      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
         const orderedColumns = [];
         const usedColIds = new Set();
 
-        // First, add columns in the order specified by initialColumnsOrder
-        for (const colId of this.content.initialColumnsOrder) {
+        // First, add columns in the order specified by viewConfiguration.columnsOrder
+        for (const colId of viewColumnsOrder) {
           if (columnsMap.has(colId)) {
             orderedColumns.push(columnsMap.get(colId));
             usedColIds.add(colId);
           }
         }
 
-        // Then, add any remaining columns that weren't in initialColumnsOrder
-        // (to handle cases where new columns were added to config but not to initialColumnsOrder)
+        // Then, add any remaining columns that weren't in viewConfiguration.columnsOrder
+        // (to handle cases where new columns were added to config but not to viewConfiguration.columnsOrder)
         for (const colDef of allColumnDefs) {
           const colId = colDef.colId || colDef.field;
           if (colId && !usedColIds.has(colId)) {
