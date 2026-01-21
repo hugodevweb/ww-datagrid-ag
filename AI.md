@@ -193,6 +193,7 @@ A highly customizable data grid/table component that supports features like sort
 - filters: ***READ ONLY*** Current filter state as an object containing active filters.
 - sort: ***READ ONLY*** Current sort state as an array of sort configurations.
 - columnsOrder: ***READ ONLY*** Current columns order state as an array of column id.
+- currentConfig: ***READ ONLY*** Current grid configuration object including user edits. Contains: `{ sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId] }`. This can be stored and passed back to `viewConfiguration` to restore user preferences.
 
 ***Component Actions:***
 - setCellValue(rowId, columnId, newValue): Sets a cell value for a specific row and column. Returns `true` if successful, `false` otherwise.

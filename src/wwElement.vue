@@ -1003,6 +1003,55 @@ export default {
         defaultValue: false,
         readonly: true,
       });
+    
+    // Exposed variable for current grid configuration (includes user edits)
+    // This can be stored and passed back to viewConfiguration to restore state
+    const { value: currentConfig, setValue: setCurrentConfig } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "currentConfig",
+        type: "object",
+        defaultValue: {
+          sizes: {},
+          filters: {},
+          sorting: [],
+          columnsOrder: [],
+        },
+        readonly: true,
+      });
+    
+    // Helper function to get current column widths from the grid
+    const getCurrentColumnWidths = () => {
+      if (!gridApi.value) return {};
+      
+      const columns = gridApi.value.getAllGridColumns();
+      const widths = {};
+      
+      columns?.forEach((col) => {
+        const colId = col.getColId();
+        const actualWidth = col.getActualWidth();
+        if (colId && actualWidth) {
+          widths[colId] = actualWidth;
+        }
+      });
+      
+      return widths;
+    };
+    
+    // Helper function to update the currentConfig exposed variable
+    const updateCurrentConfig = () => {
+      if (!gridApi.value) return;
+      
+      const columns = gridApi.value.getAllGridColumns();
+      const config = {
+        sizes: getCurrentColumnWidths(),
+        filters: filterValue.value || {},
+        sorting: sortValue.value || [],
+        columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
+      };
+      
+      setCurrentConfig(config);
+    };
 
     // Function to update records variable from grid API (gets displayed rows)
     // Defined early so it can be used in onGridReady and other handlers
@@ -1216,6 +1265,8 @@ export default {
       nextTick(() => {
         setTimeout(() => {
           updateRecordsFromGrid();
+          // Initialize currentConfig after grid is ready
+          updateCurrentConfig();
         }, 200);
       });
       
@@ -1322,6 +1373,8 @@ export default {
           // AG Grid events are triggered asynchronously after API calls
           setTimeout(() => {
             isApplyingViewConfig.value = false;
+            // Update currentConfig to reflect the applied view configuration
+            updateCurrentConfig();
             debugLog('[ViewConfiguration] View config application complete, events re-enabled');
           }, 100);
           
@@ -1444,6 +1497,9 @@ export default {
       ) {
         setFilters(filterModel);
         
+        // Update currentConfig to reflect the new filter state
+        updateCurrentConfig();
+        
         // Only emit event if this is a user-initiated change (not from view configuration)
         if (!isApplyingViewConfig.value) {
           ctx.emit("trigger-event", {
@@ -1506,6 +1562,9 @@ export default {
         JSON.stringify(sortValue.value || [])
       ) {
         setSort(state.sort?.sortModel || []);
+        
+        // Update currentConfig to reflect the new sort state
+        updateCurrentConfig();
         
         // Only emit event if this is a user-initiated change (not from view configuration)
         if (!isApplyingViewConfig.value) {
@@ -1589,6 +1648,10 @@ export default {
       if (!event.finished || event.source !== "uiColumnMoved") return;
       const columns = event.api.getAllGridColumns();
       setColumnOrder(columns.map((col) => col.getColId()));
+      
+      // Update currentConfig to reflect the new column order
+      updateCurrentConfig();
+      
       ctx.emit("trigger-event", {
         name: "columnMoved",
         event: {
@@ -1614,6 +1677,9 @@ export default {
           columnsWidths[colId] = actualWidth;
         }
       });
+      
+      // Update currentConfig to reflect the new column widths
+      updateCurrentConfig();
       
       // Get the resized column info
       const resizedColumn = event.column;
