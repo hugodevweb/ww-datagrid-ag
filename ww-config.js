@@ -140,6 +140,7 @@ export default {
           "enableClickSelection",
           "disableCheckboxes",
           "selectAll",
+          "focusedRowId",
         ],
       },
       "invalidEditValueMode",
@@ -375,32 +376,6 @@ export default {
           bindingValidation: {
             type: "any",
             tooltip: "The new value to set for the cell (can be any type: string, number, object, array, etc.)",
-          },
-          /* wwEditor:end */
-        },
-      ],
-    },
-    {
-      label: "Set in focus",
-      action: "setInFocus",
-      args: [
-        {
-          name: "Row id",
-          type: "string",
-          /* wwEditor:start */
-          bindingValidation: {
-            type: "string",
-            tooltip: "The ID of the row to focus (must match the idFormula output). Pass null to clear focus from all cells.",
-          },
-          /* wwEditor:end */
-        },
-        {
-          name: "Column id",
-          type: "string",
-          /* wwEditor:start */
-          bindingValidation: {
-            type: "string",
-            tooltip: "The column ID to focus (optional - if not provided, focuses the first column)",
           },
           /* wwEditor:end */
         },
@@ -2461,6 +2436,22 @@ export default {
       hidden: (content) => content.rowSelection !== "multiple",
       /* wwEditor:end */
     },
+    focusedRowId: {
+      label: { en: "Focused Row ID" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      defaultValue: null,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "The ID of the row to keep in focus (must match the idFormula output). Set to null or empty to clear focus.",
+      },
+      propertyHelp: {
+        tooltip: "When set, this row will always be displayed as focused and scrolled into view when rendered. The focus persists across data changes like filtering, sorting, and pagination.",
+      },
+      /* wwEditor:end */
+    },
     movableColumns: {
       label: { en: "Movable Columns" },
       type: "OnOff",
@@ -2541,10 +2532,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId] }",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId] }. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [] }",
+        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [] }. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
       },
       /* wwEditor:end */
     },

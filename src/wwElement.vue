@@ -143,6 +143,15 @@ export default {
       }
     };
 
+    // Helper to check if a viewConfiguration value is effectively empty
+    // Returns true if value is null, undefined, empty object {}, or empty array []
+    const isEmptyConfigValue = (value) => {
+      if (value === null || value === undefined) return true;
+      if (Array.isArray(value)) return value.length === 0;
+      if (typeof value === 'object') return Object.keys(value).length === 0;
+      return false;
+    };
+
     // Helper function to get the Supabase field path for filtering a column
     // Only used when dataSource is 'supabase'
     const getSupabaseFilterField = (columnId) => {
@@ -1252,10 +1261,10 @@ export default {
       
       const columns = params.api.getAllGridColumns();
       
-      // Only set column order from grid if viewConfiguration.columnsOrder is not provided
+      // Only set column order from grid if viewConfiguration.columnsOrder is not provided or empty
       // Otherwise, use the viewConfiguration.columnsOrder from props
       const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
-      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
+      if (!isEmptyConfigValue(viewColumnsOrder) && Array.isArray(viewColumnsOrder)) {
         setColumnOrder([...viewColumnsOrder]);
       } else {
         setColumnOrder(columns.map((col) => col.getColId()));
@@ -1298,6 +1307,42 @@ export default {
       setTimeout(() => {
         isGridRendering.value = false;
         dataRendered.value = true;
+        
+        // Apply focused row if focusedRowId is set (scroll to row on first render)
+        const focusedRowId = props.content?.focusedRowId;
+        if (focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '') {
+          // Use a longer delay to ensure grid is fully ready
+          setTimeout(() => {
+            if (gridApi.value && !isGridRendering.value) {
+              // Find and scroll to the focused row
+              const rowIdStr = String(focusedRowId);
+              let rowNode = gridApi.value.getRowNode(rowIdStr);
+              
+              // Search through all rows if not found directly
+              if (!rowNode) {
+                gridApi.value.forEachNode((node) => {
+                  if (!rowNode && node.data) {
+                    let baseId = resolveMappingFormula(props.content.idFormula, node.data);
+                    if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+                      baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+                    }
+                    const baseIdStr = baseId != null ? String(baseId) : '';
+                    if (baseIdStr === rowIdStr || 
+                        (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+                        (node.id && String(node.id) === rowIdStr)) {
+                      rowNode = node;
+                    }
+                  }
+                });
+              }
+              
+              // Scroll to and focus the row if found
+              if (rowNode && rowNode.rowIndex !== null && rowNode.rowIndex !== undefined) {
+                gridApi.value.ensureIndexVisible(rowNode.rowIndex, 'middle');
+              }
+            }
+          }, 150);
+        }
       }, 50);
     };
     
@@ -1308,6 +1353,17 @@ export default {
       // to allow any cascading renders to complete
       setTimeout(() => {
         isGridRendering.value = false;
+        
+        // Re-apply focused row styling after model update (e.g., after filter/sort/pagination)
+        // This ensures the focused row remains visually highlighted even after data changes
+        const focusedRowId = props.content?.focusedRowId;
+        if (focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '') {
+          // Redraw rows to ensure rowStyle is re-applied with current focusedRowId
+          if (gridApi.value && !isGridRendering.value) {
+            // Don't scroll on model updates, just ensure styling is correct
+            // The rowStyle function will handle the visual highlighting
+          }
+        }
       }, 50);
     };
 
@@ -1335,28 +1391,38 @@ export default {
         }
         
         try {
-          // 1. Apply filters
-          const filters = viewConfig?.filters || {};
-          gridApi.value.setFilterModel(filters);
-          debugLog('[ViewConfiguration] Applied filters:', filters);
+          // 1. Apply filters (only if not empty - empty object {} means "no filters provided")
+          const filters = viewConfig?.filters;
+          if (!isEmptyConfigValue(filters)) {
+            gridApi.value.setFilterModel(filters);
+            debugLog('[ViewConfiguration] Applied filters:', filters);
+          } else {
+            debugLog('[ViewConfiguration] Skipped filters (empty value)');
+          }
           
-          // 2. Apply sorting
-          const sorting = viewConfig?.sorting || [];
-          gridApi.value.applyColumnState({
-            state: sorting,
-            defaultState: { sort: null },
-          });
-          debugLog('[ViewConfiguration] Applied sorting:', sorting);
+          // 2. Apply sorting (only if not empty - empty array [] means "no sorting provided")
+          const sorting = viewConfig?.sorting;
+          if (!isEmptyConfigValue(sorting)) {
+            gridApi.value.applyColumnState({
+              state: sorting,
+              defaultState: { sort: null },
+            });
+            debugLog('[ViewConfiguration] Applied sorting:', sorting);
+          } else {
+            debugLog('[ViewConfiguration] Skipped sorting (empty value)');
+          }
           
-          // 3. Apply column order
+          // 3. Apply column order (only if not empty - empty array [] means "no order provided")
           const columnsOrder = viewConfig?.columnsOrder;
-          if (columnsOrder && Array.isArray(columnsOrder)) {
+          if (!isEmptyConfigValue(columnsOrder) && Array.isArray(columnsOrder)) {
             gridApi.value.applyColumnState({
               state: columnsOrder.map((colId) => ({ colId })),
               applyOrder: true,
             });
             setColumnOrder([...columnsOrder]);
             debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
+          } else {
+            debugLog('[ViewConfiguration] Skipped columns order (empty value)');
           }
           
           // 4. Clear row selections when view changes (not on initial load)
@@ -1438,8 +1504,9 @@ export default {
       };
       // NOTE: Filters and sorts are applied via watcher when viewConfiguration changes
       // We only set column order in initialState for AG Grid's initial render
+      // Skip if columnsOrder is empty (null, undefined, or empty array [])
       const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
-      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
+      if (!isEmptyConfigValue(viewColumnsOrder) && Array.isArray(viewColumnsOrder)) {
         state.columnOrder = {
           orderedColIds: viewColumnsOrder,
         };
@@ -2108,6 +2175,52 @@ export default {
         }
       },
       { deep: true }
+    );
+
+    // Track the last applied focused row ID to avoid duplicate applications
+    const lastAppliedFocusedRowId = ref(null);
+
+    // Watch for focusedRowId changes and apply focus to the specified row
+    // This provides a declarative way to keep a row in focus (persists across data changes)
+    watch(
+      () => props.content?.focusedRowId,
+      async (newRowId, oldRowId) => {
+        // Skip if grid is not ready or value hasn't changed
+        if (!gridApi.value || !gridReady.value) return;
+        
+        // Normalize values for comparison (treat empty string as null)
+        const normalizedNew = newRowId === '' ? null : newRowId;
+        const normalizedOld = oldRowId === '' ? null : oldRowId;
+        
+        // Skip if the effective value hasn't changed
+        if (normalizedNew === normalizedOld) return;
+        
+        // Update tracking variable
+        lastAppliedFocusedRowId.value = normalizedNew;
+        
+        // Defer execution to avoid conflicts with grid rendering
+        setTimeout(async () => {
+          if (!gridApi.value || isGridRendering.value) return;
+          
+          // Clear focus if new value is null/undefined/empty
+          if (normalizedNew === null || normalizedNew === undefined) {
+            // Clear any custom action focus class from all cells
+            if (gridContainerRef.value) {
+              const focusedCells = gridContainerRef.value.querySelectorAll('.ag-cell-action-focus');
+              focusedCells.forEach(cell => cell.classList.remove('ag-cell-action-focus'));
+            }
+            gridApi.value.clearFocusedCell();
+            // Redraw rows to remove focused row styling
+            gridApi.value.redrawRows();
+            return;
+          }
+          
+          // Apply visual focus styling to the specified row
+          // The rowStyle function will apply the visual indicator based on focusedRowId
+          gridApi.value.redrawRows(); // Ensure row styles are updated first
+        }, 100);
+      },
+      { immediate: false }
     );
 
     // Watch for dataSource changes and fetch initial data
@@ -3384,10 +3497,12 @@ export default {
         }
       });
 
-      // Reorder columns based on viewConfiguration.columnsOrder if provided
+      // Reorder columns based on viewConfiguration.columnsOrder if provided and not empty
+      // Empty array [] is treated as "not provided" to preserve default column order
       let columns;
       const viewColumnsOrder = this.content.viewConfiguration?.columnsOrder;
-      if (viewColumnsOrder && Array.isArray(viewColumnsOrder)) {
+      const hasValidColumnsOrder = viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0;
+      if (hasValidColumnsOrder) {
         const orderedColumns = [];
         const usedColIds = new Set();
 
@@ -3505,11 +3620,16 @@ export default {
     },
     rowStyle() {
       // Return a function that AG Grid will call for each row
-      // This function evaluates conditional styling rules and returns a style object
+      // This function evaluates conditional styling rules and focused row styling
+      // IMPORTANT: Focused row styling is applied LAST to override conditional styles
       const conditionalRowStyles = this.content?.conditionalRowStyles;
+      const focusedRowId = this.content?.focusedRowId;
       
-      // If no conditional styles are defined, return null (no custom row styling)
-      if (!conditionalRowStyles || !Array.isArray(conditionalRowStyles) || conditionalRowStyles.length === 0) {
+      // If no conditional styles and no focused row, return null (no custom row styling)
+      const hasConditionalStyles = conditionalRowStyles && Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
+      const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
+      
+      if (!hasConditionalStyles && !hasFocusedRow) {
         return null;
       }
       
@@ -3527,58 +3647,87 @@ export default {
         // Later rules override earlier ones for conflicting properties
         let mergedStyle = {};
         
-        for (const rule of conditionalRowStyles) {
-          // Skip rules without a condition formula
-          if (!rule?.conditionFormula) {
-            continue;
+        // Check if this row is the focused row (we'll apply styling at the end)
+        let isFocusedRow = false;
+        if (hasFocusedRow) {
+          // Get the row's ID using the idFormula
+          let baseId = this.resolveMappingFormula(this.content.idFormula, rowData);
+          
+          // Fallback to common ID fields if formula doesn't return a valid ID
+          if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+            baseId = rowData.id || rowData._id || rowData.uuid || rowData.ID || rowData.Id;
           }
           
-          // Evaluate the condition formula with the row data as context
-          let conditionResult = false;
-          try {
-            conditionResult = this.resolveMappingFormula(rule.conditionFormula, rowData);
-          } catch (error) {
-            // Log error in debug mode and skip this rule
-            this.debugLog('[Conditional Row Style] Error evaluating condition:', error);
-            continue;
-          }
+          // Compare with focusedRowId (convert both to strings for comparison)
+          const baseIdStr = baseId != null ? String(baseId) : '';
+          const focusedIdStr = String(focusedRowId);
           
-          // If condition is true, apply the styles from this rule
-          if (conditionResult) {
-            // Apply backgroundColor
-            if (rule.backgroundColor) {
-              mergedStyle.backgroundColor = rule.backgroundColor;
+          isFocusedRow = (baseIdStr === focusedIdStr);
+        }
+        
+        // Apply conditional row styles FIRST
+        if (hasConditionalStyles) {
+          for (const rule of conditionalRowStyles) {
+            // Skip rules without a condition formula
+            if (!rule?.conditionFormula) {
+              continue;
             }
             
-            // Apply textColor (maps to color CSS property)
-            if (rule.textColor) {
-              mergedStyle.color = rule.textColor;
+            // Evaluate the condition formula with the row data as context
+            let conditionResult = false;
+            try {
+              conditionResult = this.resolveMappingFormula(rule.conditionFormula, rowData);
+            } catch (error) {
+              // Log error in debug mode and skip this rule
+              this.debugLog('[Conditional Row Style] Error evaluating condition:', error);
+              continue;
             }
             
-            // Apply fontWeight
-            if (rule.fontWeight) {
-              mergedStyle.fontWeight = rule.fontWeight;
-            }
-            
-            // Apply fontStyle
-            if (rule.fontStyle) {
-              mergedStyle.fontStyle = rule.fontStyle;
-            }
-            
-            // Apply border properties
-            if (rule.borderLeft) {
-              mergedStyle.borderLeft = rule.borderLeft;
-            }
-            if (rule.borderRight) {
-              mergedStyle.borderRight = rule.borderRight;
-            }
-            if (rule.borderTop) {
-              mergedStyle.borderTop = rule.borderTop;
-            }
-            if (rule.borderBottom) {
-              mergedStyle.borderBottom = rule.borderBottom;
+            // If condition is true, apply the styles from this rule
+            if (conditionResult) {
+              // Apply backgroundColor
+              if (rule.backgroundColor) {
+                mergedStyle.backgroundColor = rule.backgroundColor;
+              }
+              
+              // Apply textColor (maps to color CSS property)
+              if (rule.textColor) {
+                mergedStyle.color = rule.textColor;
+              }
+              
+              // Apply fontWeight
+              if (rule.fontWeight) {
+                mergedStyle.fontWeight = rule.fontWeight;
+              }
+              
+              // Apply fontStyle
+              if (rule.fontStyle) {
+                mergedStyle.fontStyle = rule.fontStyle;
+              }
+              
+              // Apply border properties
+              if (rule.borderLeft) {
+                mergedStyle.borderLeft = rule.borderLeft;
+              }
+              if (rule.borderRight) {
+                mergedStyle.borderRight = rule.borderRight;
+              }
+              if (rule.borderTop) {
+                mergedStyle.borderTop = rule.borderTop;
+              }
+              if (rule.borderBottom) {
+                mergedStyle.borderBottom = rule.borderBottom;
+              }
             }
           }
+        }
+        
+        // Apply focused row styling LAST to override conditional styles
+        if (isFocusedRow) {
+          // Using box-shadow for a left border effect that doesn't affect layout
+          mergedStyle.boxShadow = 'inset 4px 0 0 0 var(--ag-range-selection-border-color, #2196F3)';
+          // Add a subtle background tint (overrides any conditional backgroundColor)
+          mergedStyle.backgroundColor = 'var(--ag-range-selection-background-color, rgba(33, 150, 243, 0.1))';
         }
         
         // Return the merged style object, or null if no styles were applied
@@ -4497,7 +4646,7 @@ export default {
                     }
                     
                     // CRITICAL: Wait for the row to appear in the grid before resolving
-                    // This ensures subsequent actions like setInFocus can find the row
+                    // This ensures subsequent actions can find the row
                     try {
                       await this.waitForRowInGrid(rowId, 10000);
                       this.debugLog(`[Datagrid] Row ${rowId} is now present in the grid`);
@@ -4947,194 +5096,109 @@ export default {
         return false;
       }
     },
-    async setInFocus(rowId, columnId) {
-      // CRITICAL FIX: Wait for grid to be fully ready before performing focus operations
-      // This prevents error #252 when setInFocus is called before grid is ready
-      try {
-        await this.waitForGridReady(5000);
-      } catch (error) {
-        console.warn("[Datagrid] Grid not ready for setInFocus:", error.message);
-        return false;
-      }
+    /**
+     * Apply focus to the row specified by focusedRowId property.
+     * This method is called when the grid renders data to ensure the focused row
+     * is always visible and styled correctly.
+     * @param {boolean} scrollToRow - Whether to scroll the row into view (default: false for re-renders)
+     */
+    async applyFocusedRow(scrollToRow = false) {
+      const focusedRowId = this.content?.focusedRowId;
       
-      if (!this.gridApi) {
-        console.warn("[Datagrid] Grid API is not initialized yet");
-        return false;
-      }
-      
-      // Additional check: if grid is currently rendering, defer the call
-      if (this.isGridRendering) {
-        return new Promise((resolve) => {
-          setTimeout(async () => {
-            const result = await this.setInFocus(rowId, columnId);
-            resolve(result);
-          }, 100);
-        });
-      }
-      
-      // Helper function to clear custom action focus class from all cells
-      const clearActionFocusClass = () => {
+      // If no focused row ID is set, clear any existing focus styling
+      if (focusedRowId === null || focusedRowId === undefined || focusedRowId === '') {
+        // Clear any custom action focus class from all cells
         if (this.gridContainerRef) {
           const focusedCells = this.gridContainerRef.querySelectorAll('.ag-cell-action-focus');
           focusedCells.forEach(cell => cell.classList.remove('ag-cell-action-focus'));
         }
-      };
-      
-      // If rowId is null/undefined, clear focus from all cells
-      if (rowId === null || rowId === undefined) {
-        clearActionFocusClass();
-        this.gridApi.clearFocusedCell();
-        return true;
+        return;
       }
       
-      // Clear any previous action focus class
-      clearActionFocusClass();
+      // Ensure grid is ready
+      if (!this.gridApi || this.isGridRendering) {
+        return;
+      }
       
-      // Try to get the row node
-      let rowNode = this.gridApi.getRowNode(rowId);
+      // Find the row node by ID
+      let rowNode = this.gridApi.getRowNode(String(focusedRowId));
       
-      // If not found and rowId is a number, try converting to string and vice versa
+      // If not found directly, try alternative ID formats
       if (!rowNode) {
-        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
+        const alternativeId = typeof focusedRowId === 'number' ? String(focusedRowId) : Number(focusedRowId);
         if (!isNaN(alternativeId)) {
-          rowNode = this.gridApi.getRowNode(alternativeId);
+          rowNode = this.gridApi.getRowNode(String(alternativeId));
         }
       }
       
       // If still not found, search through all rows by matching the ID formula
-      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
-      // by the base ID (from formula) rather than the full node.id
       if (!rowNode) {
-        const rowIdStr = String(rowId);
+        const rowIdStr = String(focusedRowId);
         
         this.gridApi.forEachNode((node) => {
           if (!rowNode && node.data) {
-            // Get the base ID using the same formula as getRowId (without hash)
             let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
             
-            // If formula returns the field name instead of value, try direct access
-            // This handles cases where the formula might not resolve correctly
             if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              // Try common ID field names directly from node.data
               baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
             }
             
-            // Convert to string for comparison
             const baseIdStr = baseId != null ? String(baseId) : '';
             
-            // Try exact match with base ID (what user provides)
-            if (baseIdStr === rowIdStr) {
-              rowNode = node;
-            }
-            // Also check if the provided rowId matches the start of node.id
-            // (in case getRowId appended a hash: "uuid-hash")
-            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
-              rowNode = node;
-            }
-            // Also check if node.id exactly matches (in case user provided full ID with hash)
-            else if (node.id && String(node.id) === rowIdStr) {
-              rowNode = node;
-            }
-            // Fallback: check if rowId exists as a property value in node.data
-            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
+            if (baseIdStr === rowIdStr || 
+                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+                (node.id && String(node.id) === rowIdStr)) {
               rowNode = node;
             }
           }
         });
       }
       
-      if (!rowNode) {
-        console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
-        // Debug: log available row IDs to help troubleshoot
-        if (this.content?.enableDebugLogs) {
-          const availableIds = [];
-          this.gridApi.forEachNode((node) => {
-            if (node.data) {
-              let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-              if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-                baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-              }
-              availableIds.push({ 
-                baseId, 
-                nodeId: node.id,
-                dataId: node.data.id,
-                dataKeys: Object.keys(node.data || {})
-              });
-            }
-          });
-          console.log('[Datagrid] Available row IDs:', availableIds);
-        }
-        return false;
+      // If row not found, it might be filtered out or not loaded yet (infinite scroll)
+      if (!rowNode || !rowNode.data) {
+        this.debugLog('[applyFocusedRow] Row not found:', focusedRowId);
+        return;
       }
       
-      if (!rowNode.data) {
-        console.warn(`[Datagrid] Row node found but has no data`);
-        return false;
-      }
-      
-      // Determine which column to focus
-      let targetColumnId = columnId;
-      
-      if (!targetColumnId) {
-        // If columnId not provided, use the first column
-        const allColumns = this.gridApi.getAllGridColumns();
-        if (allColumns && allColumns.length > 0) {
-          targetColumnId = allColumns[0].getColId();
-        } else {
-          console.warn(`[Datagrid] No columns available to focus`);
-          return false;
-        }
-      } else {
-        // Validate that the column exists
-        const allColumns = this.gridApi.getAllGridColumns();
-        const columnExists = allColumns.some(col => col.getColId() === targetColumnId);
-        if (!columnExists) {
-          console.warn(`[Datagrid] Column "${targetColumnId}" not found in the grid`);
-          return false;
-        }
-      }
-      
-      // Get row index
-      const rowIndex = rowNode.rowIndex;
-      if (rowIndex === null || rowIndex === undefined) {
-        console.warn(`[Datagrid] Row node found but has no row index`);
-        return false;
-      }
-      
-      // CRITICAL FIX: Wrap grid API calls in setTimeout to prevent error #252
-      // This ensures the calls happen outside the current render cycle
-      setTimeout(() => {
-        if (!this.gridApi) return;
-        
-        try {
-          // Scroll to center the row in the viewport using ensureIndexVisible with 'middle' position
+      // If scrollToRow is true, scroll the row into view and set cell focus
+      if (scrollToRow) {
+        const rowIndex = rowNode.rowIndex;
+        if (rowIndex !== null && rowIndex !== undefined) {
+          // Scroll to center the row
           this.gridApi.ensureIndexVisible(rowIndex, 'middle');
           
-          // Set focus on the cell using nextTick to ensure grid is ready after scrolling
+          // Set focus on the first column
           this.$nextTick(() => {
-            setTimeout(() => {
-              if (this.gridApi) {
-                this.gridApi.setFocusedCell(rowIndex, targetColumnId);
-                
-                // Add custom action focus class to the focused cell for dedicated styling
-                this.$nextTick(() => {
-                  if (this.gridContainerRef) {
-                    // Find the focused cell and add the action focus class
-                    const focusedCell = this.gridContainerRef.querySelector('.ag-cell-focus');
-                    if (focusedCell) {
-                      focusedCell.classList.add('ag-cell-action-focus');
+            if (!this.gridApi) return;
+            
+            const allColumns = this.gridApi.getAllGridColumns();
+            if (allColumns && allColumns.length > 0) {
+              const firstColumnId = allColumns[0].getColId();
+              
+              setTimeout(() => {
+                if (this.gridApi) {
+                  this.gridApi.setFocusedCell(rowIndex, firstColumnId);
+                  
+                  // Add custom action focus class
+                  this.$nextTick(() => {
+                    if (this.gridContainerRef) {
+                      const focusedCell = this.gridContainerRef.querySelector('.ag-cell-focus');
+                      if (focusedCell) {
+                        focusedCell.classList.add('ag-cell-action-focus');
+                      }
                     }
-                  }
-                });
-              }
-            }, 100);
+                  });
+                }
+              }, 100);
+            }
           });
-        } catch (error) {
-          console.error('[Datagrid] Error in setInFocus:', error);
         }
-      }, 0);
+      }
       
-      return true;
+      // Redraw the row to ensure styles are applied (rowStyle will check focusedRowId)
+      if (rowNode) {
+        this.gridApi.redrawRows({ rowNodes: [rowNode] });
+      }
     },
     /* wwEditor:start */
     generateColumns() {
@@ -5473,7 +5537,7 @@ export default {
     }
   }
 
-  // Action focus styling - applies ONLY when cell is focused via setInFocus action (not keyboard navigation)
+  // Action focus styling - applies when cell is focused programmatically (not keyboard navigation)
   :deep(.ag-cell-action-focus:not(.-suppress-row-interaction)) {
     // Background highlight for action-focused cell
     background-color: var(--ag-range-selection-background-color, rgba(33, 150, 243, 0.1)) !important;

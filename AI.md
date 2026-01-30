@@ -62,6 +62,7 @@ A highly customizable data grid/table component that supports features like sort
 - `enableClickSelection`: `Boolean` - True to enable selection on row click
 - `disableCheckboxes`: `Boolean` - True to hide checkbox for selection
 - `selectAll`: `'all' | 'currentPage' | 'filtered'` - Behavior of select all button
+- `focusedRowId`: `string | null` - The ID of the row to keep in focus (must match the idFormula output). When set, this row will be visually highlighted with a left border indicator and scrolled into view on first render. Set to `null` or empty string to clear focus. The focus persists across data changes like filtering, sorting, and pagination. Example: `focusedRowId: "user-123"` or bind to a variable for dynamic control.
 - `pagination`: `boolean` - Enable/disable pagination. Default: `false`.
 - `paginationPageSize`: `number` - Number of rows per page. Default: `10`.
 - `viewConfiguration`: `{ sizes?: object, filters?: object, sorting?: array, columnsOrder?: array }` (Optional): A unified view configuration object that controls the grid's state. When this configuration changes, all settings are applied to the grid, overriding any user modifications, and row selections are cleared. Structure:
@@ -69,6 +70,17 @@ A highly customizable data grid/table component that supports features like sort
   - `filters`: AG Grid filter model object. Example: `{ "status": { filterType: "text", type: "equals", filter: "active" } }`
   - `sorting`: `Array<{colId: string, sort: 'asc' | 'desc'}>` - Sort configuration. Example: `[{ colId: "name", sort: "asc" }]`
   - `columnsOrder`: `Array<string>` - Column IDs in display order. Example: `["name", "email", "status"]`
+  
+  **Empty values handling**: Keys with empty values are gracefully ignored. An empty object `{}` or empty array `[]` is treated as "not provided" and won't override the current grid state. This allows you to always pass all keys while only providing values for the settings you want to change:
+  ```javascript
+  // This will only apply the filters, leaving sizes, sorting, and columnsOrder unchanged
+  viewConfiguration: {
+    sizes: {},           // Ignored - keeps current column widths
+    filters: { "status": { filterType: "text", type: "equals", filter: "active" } },
+    sorting: [],         // Ignored - keeps current sorting
+    columnsOrder: []     // Ignored - keeps current column order
+  }
+  ```
   
   Full example:
   ```javascript
@@ -201,10 +213,9 @@ A highly customizable data grid/table component that supports features like sort
   - `columnId` (string): The column ID (field name or actionName)
   - `newValue` (any): The new value to set for the cell
   - Example: `datagrid.setCellValue('user-123', 'status', 'active')`
-- setInFocus(rowId, columnId?): Scrolls to a row by ID and sets focus on a cell in that row. If rowId is null, clears focus from all cells. Returns `true` if successful, `false` otherwise.
-  - `rowId` (string|number|null): The ID of the row (must match the idFormula output), or null to clear focus
-  - `columnId` (string, optional): The column ID to focus. If not provided, focuses the first column.
-  - Example: `datagrid.setInFocus('user-123', 'email')` or `datagrid.setInFocus('user-123')` or `datagrid.setInFocus(null)` to clear focus
+- applyFocusedRow(scrollToRow?): Re-applies focus to the row specified by the `focusedRowId` property. Useful after manual data changes to ensure the focused row is visible and styled correctly.
+  - `scrollToRow` (boolean, optional, default: false): If true, scrolls the focused row into view.
+  - Example: `datagrid.applyFocusedRow(true)` to scroll to the focused row
 - resetFilters(): Clears all active filters in the grid.
 - resetSort(): Clears all sorting in the grid.
 - deselectAll(): Deselects all currently selected rows.
