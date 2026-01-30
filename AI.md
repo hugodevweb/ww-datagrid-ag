@@ -71,14 +71,26 @@ A highly customizable data grid/table component that supports features like sort
   - `sorting`: `Array<{colId: string, sort: 'asc' | 'desc'}>` - Sort configuration. Example: `[{ colId: "name", sort: "asc" }]`
   - `columnsOrder`: `Array<string>` - Column IDs in display order. Example: `["name", "email", "status"]`
   
-  **Empty values handling**: Keys with empty values are gracefully ignored. An empty object `{}` or empty array `[]` is treated as "not provided" and won't override the current grid state. This allows you to always pass all keys while only providing values for the settings you want to change:
+  **Empty values handling**: Empty values (`{}` or `[]`) will clear/reset that aspect of the grid state. Only **absent keys** (undefined) preserve the current state. This distinction is important:
+  - `filters: {}` → Clears all filters
+  - `sorting: []` → Clears all sorting  
+  - `columnsOrder: []` → Resets to default column order
+  - `sizes: {}` → Resets to default column widths from column configuration
+  - Key completely absent → Preserves current user state
+  
   ```javascript
-  // This will only apply the filters, leaving sizes, sorting, and columnsOrder unchanged
+  // This clears filters, sorting, columnsOrder, and sizes (resets everything)
   viewConfiguration: {
-    sizes: {},           // Ignored - keeps current column widths
-    filters: { "status": { filterType: "text", type: "equals", filter: "active" } },
-    sorting: [],         // Ignored - keeps current sorting
-    columnsOrder: []     // Ignored - keeps current column order
+    sizes: {},           // Resets column widths to defaults
+    filters: {},         // Clears all filters
+    sorting: [],         // Clears all sorting
+    columnsOrder: []     // Resets to default column order
+  }
+  
+  // This only applies filters, preserving current sizes, sorting, and columnsOrder
+  viewConfiguration: {
+    filters: { "status": { filterType: "text", type: "equals", filter: "active" } }
+    // sizes, sorting, columnsOrder keys are absent - preserves current state
   }
   ```
   

@@ -1261,12 +1261,17 @@ export default {
       
       const columns = params.api.getAllGridColumns();
       
-      // Only set column order from grid if viewConfiguration.columnsOrder is not provided or empty
-      // Otherwise, use the viewConfiguration.columnsOrder from props
-      const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
-      if (!isEmptyConfigValue(viewColumnsOrder) && Array.isArray(viewColumnsOrder)) {
+      // Set initial column order from viewConfiguration if provided with values
+      // At grid initialization, we use viewConfiguration.columnsOrder if it has values
+      // Otherwise, use the default order from grid (from column definitions)
+      const viewConfig = props.content.viewConfiguration;
+      const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
+      const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
+      
+      if (viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0) {
         setColumnOrder([...viewColumnsOrder]);
       } else {
+        // Use default order from grid (no explicit order in viewConfiguration)
         setColumnOrder(columns.map((col) => col.getColId()));
       }
       
@@ -1391,41 +1396,115 @@ export default {
         }
         
         try {
-          // 1. Apply filters (only if not empty - empty object {} means "no filters provided")
-          const filters = viewConfig?.filters;
-          if (!isEmptyConfigValue(filters)) {
-            gridApi.value.setFilterModel(filters);
-            debugLog('[ViewConfiguration] Applied filters:', filters);
+          // 1. Apply filters if key is present (even if empty {} - which clears all filters)
+          // Only skip if the key is completely absent from viewConfig
+          if (viewConfig && 'filters' in viewConfig) {
+            const filters = viewConfig.filters;
+            gridApi.value.setFilterModel(isEmptyConfigValue(filters) ? null : filters);
+            debugLog('[ViewConfiguration] Applied filters:', filters, '(empty clears all filters)');
           } else {
-            debugLog('[ViewConfiguration] Skipped filters (empty value)');
+            debugLog('[ViewConfiguration] Skipped filters (key not present, keeping current state)');
           }
           
-          // 2. Apply sorting (only if not empty - empty array [] means "no sorting provided")
-          const sorting = viewConfig?.sorting;
-          if (!isEmptyConfigValue(sorting)) {
-            gridApi.value.applyColumnState({
-              state: sorting,
-              defaultState: { sort: null },
-            });
-            debugLog('[ViewConfiguration] Applied sorting:', sorting);
+          // 2. Apply sorting if key is present (even if empty [] - which clears all sorting)
+          // Only skip if the key is completely absent from viewConfig
+          if (viewConfig && 'sorting' in viewConfig) {
+            const sorting = viewConfig.sorting;
+            if (isEmptyConfigValue(sorting)) {
+              // Clear all sorting
+              gridApi.value.applyColumnState({
+                defaultState: { sort: null },
+              });
+              debugLog('[ViewConfiguration] Cleared all sorting (empty array)');
+            } else {
+              gridApi.value.applyColumnState({
+                state: sorting,
+                defaultState: { sort: null },
+              });
+              debugLog('[ViewConfiguration] Applied sorting:', sorting);
+            }
           } else {
-            debugLog('[ViewConfiguration] Skipped sorting (empty value)');
+            debugLog('[ViewConfiguration] Skipped sorting (key not present, keeping current state)');
           }
           
-          // 3. Apply column order (only if not empty - empty array [] means "no order provided")
-          const columnsOrder = viewConfig?.columnsOrder;
-          if (!isEmptyConfigValue(columnsOrder) && Array.isArray(columnsOrder)) {
-            gridApi.value.applyColumnState({
-              state: columnsOrder.map((colId) => ({ colId })),
-              applyOrder: true,
-            });
-            setColumnOrder([...columnsOrder]);
-            debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
+          // 3. Apply column order if key is present (even if empty [] - which resets to default order)
+          // Only skip if the key is completely absent from viewConfig
+          if (viewConfig && 'columnsOrder' in viewConfig) {
+            const columnsOrder = viewConfig.columnsOrder;
+            if (isEmptyConfigValue(columnsOrder) || !Array.isArray(columnsOrder)) {
+              // Reset to default column order (from column definitions)
+              const defaultOrder = gridApi.value.getAllGridColumns()?.map(col => col.getColId()) || [];
+              setColumnOrder([...defaultOrder]);
+              debugLog('[ViewConfiguration] Reset columns order to default:', defaultOrder);
+            } else {
+              gridApi.value.applyColumnState({
+                state: columnsOrder.map((colId) => ({ colId })),
+                applyOrder: true,
+              });
+              setColumnOrder([...columnsOrder]);
+              debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
+            }
           } else {
-            debugLog('[ViewConfiguration] Skipped columns order (empty value)');
+            debugLog('[ViewConfiguration] Skipped columns order (key not present, keeping current state)');
           }
           
-          // 4. Clear row selections when view changes (not on initial load)
+          // 4. Apply column sizes if key is present (even if empty {} - which resets to default widths)
+          // Only skip if the key is completely absent from viewConfig
+          if (viewConfig && 'sizes' in viewConfig) {
+            const sizes = viewConfig.sizes;
+            const columns = gridApi.value.getAllGridColumns();
+            
+            if (isEmptyConfigValue(sizes)) {
+              // Reset to default column widths from column configuration
+              // Build column state with default widths (or null for flex columns)
+              const columnState = [];
+              const contentColumns = props.content?.columns || [];
+              
+              for (const col of columns) {
+                const colId = col.getColId();
+                // Find the column config to get default width
+                const colConfig = contentColumns.find(c => 
+                  (c?.actionName || c?.field) === colId
+                );
+                
+                if (colConfig) {
+                  // For flex columns, clear width to let flex take over
+                  // For fixed columns, use the configured width
+                  if (colConfig.widthAlgo === 'flex') {
+                    columnState.push({ colId, width: null, flex: colConfig.flex ?? 1 });
+                  } else if (colConfig.width && colConfig.width !== 'auto') {
+                    const defaultWidth = wwLib.wwUtils.getLengthUnit(colConfig.width)?.[0];
+                    if (defaultWidth) {
+                      columnState.push({ colId, width: defaultWidth, flex: null });
+                    }
+                  }
+                }
+              }
+              
+              if (columnState.length > 0) {
+                gridApi.value.applyColumnState({ state: columnState });
+              }
+              debugLog('[ViewConfiguration] Reset column sizes to default:', columnState);
+            } else if (typeof sizes === 'object') {
+              // Apply specific column widths
+              const columnState = columns.map(col => {
+                const colId = col.getColId();
+                const width = sizes[colId];
+                return width !== undefined ? { colId, width } : { colId };
+              }).filter(state => state.width !== undefined);
+              
+              if (columnState.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: columnState,
+                });
+                debugLog('[ViewConfiguration] Applied column sizes:', sizes);
+              }
+            }
+          } else {
+            debugLog('[ViewConfiguration] Skipped column sizes (key not present, keeping current state)');
+          }
+          
+          // 5. Clear row selections when view changes (not on initial load)
           if (!isInitial) {
             gridApi.value.deselectAll();
             setSelectedRows([]);
@@ -1502,11 +1581,16 @@ export default {
       const state = {
         partialColumnState: true,
       };
-      // NOTE: Filters and sorts are applied via watcher when viewConfiguration changes
+      // NOTE: Filters, sorts, and sizes are applied via watcher when viewConfiguration changes
       // We only set column order in initialState for AG Grid's initial render
-      // Skip if columnsOrder is empty (null, undefined, or empty array [])
-      const viewColumnsOrder = props.content.viewConfiguration?.columnsOrder;
-      if (!isEmptyConfigValue(viewColumnsOrder) && Array.isArray(viewColumnsOrder)) {
+      // At initialization, both "key absent" and "empty array []" use default column order
+      // The distinction between absent vs empty matters for runtime changes (handled by applyViewConfiguration)
+      const viewConfig = props.content.viewConfiguration;
+      const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
+      const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
+      
+      // Only set initial column order if explicitly provided with values
+      if (viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0) {
         state.columnOrder = {
           orderedColIds: viewColumnsOrder,
         };
@@ -2735,7 +2819,11 @@ export default {
         };
       };
       // Get column widths from viewConfiguration (for restoring user-resized widths)
-      const viewColumnSizes = this.content.viewConfiguration?.sizes;
+      // Note: When sizes key is present but empty ({}), default column widths from column config will be used
+      // When sizes key is absent (undefined), the current user-resized widths are preserved
+      const viewConfig = this.content.viewConfiguration;
+      const hasSizesKey = viewConfig && typeof viewConfig === 'object' && 'sizes' in viewConfig;
+      const viewColumnSizes = hasSizesKey ? viewConfig.sizes : null;
       
       const allColumnDefs = this.content.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
@@ -3497,8 +3585,10 @@ export default {
         }
       });
 
-      // Reorder columns based on viewConfiguration.columnsOrder if provided and not empty
-      // Empty array [] is treated as "not provided" to preserve default column order
+      // Reorder columns based on viewConfiguration.columnsOrder if provided with values
+      // Empty array [] or absent key means use default column order from definitions
+      // The distinction between "key absent" vs "key present but empty" is handled
+      // by applyViewConfiguration at runtime for resetting column order
       let columns;
       const viewColumnsOrder = this.content.viewConfiguration?.columnsOrder;
       const hasValidColumnsOrder = viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0;
