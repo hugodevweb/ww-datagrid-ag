@@ -51,13 +51,21 @@ export default {
         },
     },
     data() {
+        // Pre-check if options are already available at creation time.
+        // This prevents showing a skeleton flash when the component is recreated
+        // (e.g., due to columnDefs recomputation) but the options data is already loaded.
+        const editorParams = this.params?.colDef?.cellEditorParams || {};
+        const rendererParams = this.params?.colDef?.cellRendererParams || {};
+        const rawOptions = this.params?.options || editorParams?.options || rendererParams?.options || [];
+        const optionsAlreadyAvailable = Array.isArray(rawOptions) && rawOptions.length > 0;
+        
         return {
             selectedValue: null,
             originalValue: null,
             dropdownPosition: { top: 100, left: 100, width: 200 }, // Better initial values
             teleportTarget: null,
             highlightedIndex: -1,
-            hasEverRendered: false, // Track if we've ever rendered with data
+            hasEverRendered: optionsAlreadyAvailable, // Skip skeleton if options already loaded
         };
     },
     computed: {

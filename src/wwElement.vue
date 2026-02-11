@@ -3210,7 +3210,10 @@ export default {
               optionsLabelFormula: col?.optionsLabelFormula,
               optionsColorFormula: col?.optionsColorFormula,
               resolveMappingFormula: this.resolveMappingFormula,
-              isLoading: this.isLoading,
+              // Use a getter to avoid isLoading being a reactive dependency of columnDefs.
+              // This prevents columnDefs from recomputing when loading state changes,
+              // which would cause AG Grid to recreate all cell renderers (flickering).
+              get isLoading() { return false; },
             };
             
             // Helper function to get label from value
@@ -3295,7 +3298,10 @@ export default {
               cellFontFamily: this.content.cellFontFamily,
               resolveMappingFormula: this.resolveMappingFormula,
               userIdFormula: userIdFormula,
-              isLoading: this.isLoading,
+              // Use a getter to avoid isLoading being a reactive dependency of columnDefs.
+              // This prevents columnDefs from recomputing when loading state changes,
+              // which would cause AG Grid to recreate all cell renderers (flickering).
+              get isLoading() { return false; },
             };
             
             // Helper function to extract user ID(s) from raw cell value using userIdFormula
@@ -3893,36 +3899,30 @@ export default {
       // Get ID from formula
       let rowId = this.resolveMappingFormula(this.content.idFormula, params.data);
       
-      // Ensure we always return a unique ID
-      // If formula returns undefined/null/empty, generate a unique ID based on data
-      if (rowId === null || rowId === undefined || rowId === '') {
-        // Create a unique ID from the data object
-        const dataStr = JSON.stringify(params.data || {});
-        let hash = 0;
-        for (let i = 0; i < dataStr.length; i++) {
-          const char = dataStr.charCodeAt(i);
-          hash = ((hash << 5) - hash) + char;
-          hash = hash & hash;
-        }
-        // Use hash + timestamp + random to ensure uniqueness
-        rowId = `row-${Math.abs(hash)}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      } else {
-        // Convert to string
-        rowId = String(rowId);
-        
-        // Append a hash of the data to ensure uniqueness even if formula returns duplicates
-        // This prevents duplicate ID errors when the formula returns the same value for multiple rows
-        const dataStr = JSON.stringify(params.data || {});
-        let hash = 0;
-        for (let i = 0; i < dataStr.length; i++) {
-          const char = dataStr.charCodeAt(i);
-          hash = ((hash << 5) - hash) + char;
-          hash = hash & hash;
-        }
-        rowId = `${rowId}-${Math.abs(hash)}`;
+      // If formula returns a valid ID, use it directly (stable across re-renders)
+      // IMPORTANT: Do NOT append data hashes - that causes row IDs to change whenever
+      // any field in the row data changes, which forces AG Grid to destroy and recreate
+      // all cell renderers (causing visible flickering on custom/user columns).
+      if (rowId !== null && rowId !== undefined && rowId !== '') {
+        return String(rowId);
       }
       
-      return String(rowId);
+      // Fallback: generate a deterministic ID from the row index when no idFormula is set.
+      // Using the row index from params ensures stability across re-renders as long as
+      // the data order doesn't change. This is a reasonable fallback when no ID is configured.
+      if (params.node?.rowIndex != null) {
+        return `row-idx-${params.node.rowIndex}`;
+      }
+      
+      // Last resort: hash-based ID from data content (deterministic but may change if data mutates)
+      const dataStr = JSON.stringify(params.data || {});
+      let hash = 0;
+      for (let i = 0; i < dataStr.length; i++) {
+        const char = dataStr.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return `row-${Math.abs(hash)}`;
     },
     onActionTrigger(event) {
       this.$emit("trigger-event", {

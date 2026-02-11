@@ -223,6 +223,14 @@ export default {
         },
     },
     data() {
+        // Pre-check if users are already available at creation time.
+        // This prevents showing a skeleton flash when the component is recreated
+        // (e.g., due to columnDefs recomputation) but the users data is already loaded.
+        const editorParams = this.params?.colDef?.cellEditorParams || {};
+        const rendererParams = this.params?.colDef?.cellRendererParams || {};
+        const users = this.params?.users || editorParams?.users || rendererParams?.users || [];
+        const usersAlreadyAvailable = Array.isArray(users) && users.length > 0;
+        
         return {
             selectedUserIds: [],
             originalUserIds: [],
@@ -230,7 +238,7 @@ export default {
             tooltipPosition: { top: 0, left: 0 },
             teleportTarget: null,
             highlightedIndex: -1,
-            hasEverRendered: false,
+            hasEverRendered: usersAlreadyAvailable,
             searchQuery: "",
             showTooltip: false,
             currentTooltipUser: null,
