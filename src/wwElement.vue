@@ -2264,8 +2264,36 @@ export default {
     // Track the last applied focused row ID to avoid duplicate applications
     const lastAppliedFocusedRowId = ref(null);
 
+    // Helper to find a row node by its ID (using idFormula matching)
+    const findRowNodeById = (rowId) => {
+      if (!gridApi.value || rowId === null || rowId === undefined || rowId === '') return null;
+      const rowIdStr = String(rowId);
+      
+      // Try direct lookup first (fastest path)
+      let rowNode = gridApi.value.getRowNode(rowIdStr);
+      if (rowNode) return rowNode;
+      
+      // Search through all rows by matching the ID formula
+      gridApi.value.forEachNode((node) => {
+        if (!rowNode && node.data) {
+          let baseId = resolveMappingFormula(props.content.idFormula, node.data);
+          if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+            baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
+          }
+          const baseIdStr = baseId != null ? String(baseId) : '';
+          if (baseIdStr === rowIdStr ||
+              (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
+              (node.id && String(node.id) === rowIdStr)) {
+            rowNode = node;
+          }
+        }
+      });
+      return rowNode;
+    };
+
     // Watch for focusedRowId changes and apply focus to the specified row
     // This provides a declarative way to keep a row in focus (persists across data changes)
+    // PERFORMANCE: Only redraws the old and new focused rows, not the entire grid
     watch(
       () => props.content?.focusedRowId,
       async (newRowId, oldRowId) => {
@@ -2286,6 +2314,15 @@ export default {
         setTimeout(async () => {
           if (!gridApi.value || isGridRendering.value) return;
           
+          // Collect only the affected row nodes (old focused + new focused)
+          const rowNodesToRedraw = [];
+          
+          // Find the previously focused row node to remove its styling
+          if (normalizedOld !== null && normalizedOld !== undefined) {
+            const oldNode = findRowNodeById(normalizedOld);
+            if (oldNode) rowNodesToRedraw.push(oldNode);
+          }
+          
           // Clear focus if new value is null/undefined/empty
           if (normalizedNew === null || normalizedNew === undefined) {
             // Clear any custom action focus class from all cells
@@ -2294,14 +2331,23 @@ export default {
               focusedCells.forEach(cell => cell.classList.remove('ag-cell-action-focus'));
             }
             gridApi.value.clearFocusedCell();
-            // Redraw rows to remove focused row styling
-            gridApi.value.redrawRows();
+            // Only redraw the previously focused row to remove its styling
+            if (rowNodesToRedraw.length > 0) {
+              gridApi.value.redrawRows({ rowNodes: rowNodesToRedraw });
+            }
             return;
           }
           
-          // Apply visual focus styling to the specified row
-          // The rowStyle function will apply the visual indicator based on focusedRowId
-          gridApi.value.redrawRows(); // Ensure row styles are updated first
+          // Find the newly focused row node to apply styling
+          const newNode = findRowNodeById(normalizedNew);
+          if (newNode && !rowNodesToRedraw.includes(newNode)) {
+            rowNodesToRedraw.push(newNode);
+          }
+          
+          // Only redraw the affected rows (old + new focused), not the entire grid
+          if (rowNodesToRedraw.length > 0) {
+            gridApi.value.redrawRows({ rowNodes: rowNodesToRedraw });
+          }
         }, 100);
       },
       { immediate: false }
@@ -3718,24 +3764,40 @@ export default {
       // Return a function that AG Grid will call for each row
       // This function evaluates conditional styling rules and focused row styling
       // IMPORTANT: Focused row styling is applied LAST to override conditional styles
+      //
+      // PERFORMANCE: We only use conditionalRowStyles as a reactive dependency here.
+      // focusedRowId is read at call time (inside the returned function) so that
+      // changing the focused row does NOT cause this computed to re-evaluate and
+      // return a new function reference — which would force AG Grid to re-render
+      // all rows. Instead, the focusedRowId watcher handles targeted redraws of
+      // only the affected rows.
       const conditionalRowStyles = this.content?.conditionalRowStyles;
-      const focusedRowId = this.content?.focusedRowId;
       
-      // If no conditional styles and no focused row, return null (no custom row styling)
       const hasConditionalStyles = conditionalRowStyles && Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
-      const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
       
-      if (!hasConditionalStyles && !hasFocusedRow) {
-        return null;
-      }
+      // We always return a function now (instead of null) so that the function
+      // reference stays stable. Returning null vs function on focusedRowId toggle
+      // would also cause AG Grid to detect a prop change.
+      // Keep a reference to 'this' for use inside the closure
+      const self = this;
       
-      // Return a function that receives row params and returns style object
+      // Return a stable function that reads focusedRowId at call time
       return (params) => {
         // params.data contains the row data
         const rowData = params.data;
         
         // If no row data, return null
         if (!rowData) {
+          return null;
+        }
+        
+        // Read focusedRowId at call time (not at computed evaluation time)
+        // This prevents the computed from re-evaluating when focusedRowId changes
+        const focusedRowId = self.content?.focusedRowId;
+        const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
+        
+        // If no conditional styles and no focused row, return null early
+        if (!hasConditionalStyles && !hasFocusedRow) {
           return null;
         }
         
@@ -3747,7 +3809,7 @@ export default {
         let isFocusedRow = false;
         if (hasFocusedRow) {
           // Get the row's ID using the idFormula
-          let baseId = this.resolveMappingFormula(this.content.idFormula, rowData);
+          let baseId = self.resolveMappingFormula(self.content.idFormula, rowData);
           
           // Fallback to common ID fields if formula doesn't return a valid ID
           if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
@@ -3772,10 +3834,10 @@ export default {
             // Evaluate the condition formula with the row data as context
             let conditionResult = false;
             try {
-              conditionResult = this.resolveMappingFormula(rule.conditionFormula, rowData);
+              conditionResult = self.resolveMappingFormula(rule.conditionFormula, rowData);
             } catch (error) {
               // Log error in debug mode and skip this rule
-              this.debugLog('[Conditional Row Style] Error evaluating condition:', error);
+              self.debugLog('[Conditional Row Style] Error evaluating condition:', error);
               continue;
             }
             
