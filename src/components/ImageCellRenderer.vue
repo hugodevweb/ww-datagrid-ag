@@ -13,6 +13,11 @@ export default {
             required: true,
         },
     },
+    methods: {
+        refresh() {
+            return true;
+        },
+    },
 };
 </script>
 

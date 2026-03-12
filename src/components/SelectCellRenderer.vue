@@ -276,6 +276,17 @@ export default {
         },
     },
     methods: {
+        // AG Grid interface: called when the cell needs to update without full recreate.
+        // Returning true keeps the existing component instance alive and lets Vue's
+        // reactivity handle any param/value changes via the params prop.
+        refresh(params) {
+            if (!this.isEditMode) {
+                const actualValue = params?.data?.[params?.colDef?.field] ?? params?.value;
+                this.selectedValue = actualValue;
+                this.originalValue = actualValue;
+            }
+            return true;
+        },
         handleClickOutside(event) {
             // Close dropdown if clicking outside
             const dropdown = this.$refs.selectElement?.parentElement;

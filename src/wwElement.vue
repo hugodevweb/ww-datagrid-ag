@@ -33,6 +33,7 @@
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="rowDragManaged"
+      :rowBuffer="content.rowBuffer ?? 30"
       @grid-ready="onGridReady"
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
@@ -3167,17 +3168,24 @@ export default {
               return col?.currencyCode || 'EUR';
             };
 
+            // Helper function to get locale for currency formatting
+            const getLocale = (col) => {
+              const locale = col?.currencyLocale;
+              if (!locale || locale === 'auto') return navigator.language || 'en-US';
+              return locale;
+            };
+
             // Helper function to format currency value (cents to formatted string)
-            const formatCurrency = (value, currencyCode) => {
+            const formatCurrency = (value, currencyCode, locale) => {
               if (value == null || value === '') return '';
-              
+
               // Convert cents to currency units
               const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
               if (isNaN(currencyValue)) return '';
 
               // Use Intl.NumberFormat for proper currency formatting
               try {
-                return new Intl.NumberFormat('en-US', {
+                return new Intl.NumberFormat(locale || navigator.language || 'en-US', {
                   style: 'currency',
                   currency: currencyCode || 'EUR',
                   minimumFractionDigits: 2,
@@ -3227,7 +3235,8 @@ export default {
               valueFormatter: (params) => {
                 const rawValue = params.data?.[col?.field];
                 const currencyCode = getCurrencyCode(params.data, col);
-                return formatCurrency(rawValue, currencyCode);
+                const locale = getLocale(col);
+                return formatCurrency(rawValue, currencyCode, locale);
               },
               // Get display value for sorting (cents / 100)
               valueGetter: (params) => {

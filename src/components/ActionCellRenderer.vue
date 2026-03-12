@@ -20,6 +20,9 @@ export default {
         },
     },
     methods: {
+        refresh() {
+            return true;
+        },
         onButtonClicked() {
             this.params.trigger({
                 actionName: this.params.name,

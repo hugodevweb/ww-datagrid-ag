@@ -145,6 +145,7 @@ export default {
       },
       "invalidEditValueMode",
       "cellEditMode",
+      "rowBuffer",
       "movableColumns",
       "resizableColumns",
       "rowReorder",
@@ -1587,6 +1588,22 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              currencyLocale: {
+                label: "Locale",
+                type: "Text",
+                hidden: array?.item?.cellDataType !== "currency",
+                bindable: true,
+                defaultValue: "auto",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "BCP 47 locale tag (e.g., en-US, fr-FR) or 'auto' to use the browser's locale",
+                },
+                propertyHelp: {
+                  tooltip: "Locale used for currency formatting. Use 'auto' to format with the user's browser locale, or specify a BCP 47 locale tag (e.g., 'en-US', 'fr-FR', 'de-DE', 'ja-JP')",
+                },
+                /* wwEditor:end */
+              },
               currencyCodeField: {
                 label: "Currency Code Field",
                 type: "Formula",
@@ -2234,6 +2251,7 @@ export default {
               "timeFormat",
               "currencyMode",
               "currencyCode",
+              "currencyLocale",
               "currencyCodeField",
               "customFilterType",
               "actionName",
@@ -2449,6 +2467,19 @@ export default {
       },
       propertyHelp: {
         tooltip: "When set, this row will always be displayed as focused and scrolled into view when rendered. The focus persists across data changes like filtering, sorting, and pagination.",
+      },
+      /* wwEditor:end */
+    },
+    rowBuffer: {
+      label: { en: "Row Buffer" },
+      type: "Number",
+      section: "settings",
+      bindable: true,
+      defaultValue: 30,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "number",
+        tooltip: "Number of rows rendered outside the visible viewport. Higher values reduce flickering during fast scrolling at the cost of more DOM nodes. Default is 30.",
       },
       /* wwEditor:end */
     },

@@ -92,6 +92,11 @@ export default {
         }
     },
     methods: {
+        // AG Grid interface: called when the cell needs to update without full recreate.
+        // Returning true keeps the existing component instance alive.
+        refresh() {
+            return true;
+        },
         // AG Grid editor interface method
         // Returns the current cell value
         getValue() {
