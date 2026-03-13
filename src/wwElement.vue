@@ -2745,30 +2745,6 @@ export default {
       return undefined;
     },
     columnDefs() {
-      // PERFORMANCE: Memoize columnDefs to avoid returning new object references
-      // when column-related inputs haven't actually changed.
-      // When WeWeb replaces the content object (e.g., because focusedRowId changed),
-      // Vue re-evaluates this computed even though column config is identical.
-      // Returning the same array reference prevents AG Grid from destroying and
-      // recreating Vue component cell renderers (which causes visible flickering).
-      const fingerprint = JSON.stringify({
-        columns: this.content.columns,
-        viewConfiguration: this.content.viewConfiguration,
-        cellAlignmentMode: this.content.cellAlignmentMode,
-        actionFont: !!this.content.actionFont,
-        userFocusColor: this.content.userFocusColor,
-        cellFontFamily: this.content.cellFontFamily,
-        lang: this.content.lang,
-        rowReorder: this.content.rowReorder,
-        isInfiniteScrollEnabled: this.isInfiniteScrollEnabled,
-        resizableColumns: this.content.resizableColumns,
-      });
-
-      if (fingerprint === this._lastColumnDefsFingerprint && this._cachedColumnDefs) {
-        return this._cachedColumnDefs;
-      }
-      this._lastColumnDefsFingerprint = fingerprint;
-
       // First, map all columns to their definitions
       const columnsMap = new Map();
 
@@ -3728,7 +3704,6 @@ export default {
         columns[0].rowDrag = true;
       }
 
-      this._cachedColumnDefs = columns;
       return columns;
     },
     rowSelection() {
