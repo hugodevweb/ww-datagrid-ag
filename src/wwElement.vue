@@ -3200,13 +3200,23 @@ export default {
             // Helper function to parse user input to cents
             const parseCurrencyInput = (input) => {
               if (input == null || input === '') return null;
-              
+
+              const locale = getLocale(col);
+              // Detect locale-specific decimal and group separators
+              const parts = new Intl.NumberFormat(locale).formatToParts(1234567.89);
+              const decimalSep = parts.find(p => p.type === 'decimal')?.value || '.';
+              const groupSep = parts.find(p => p.type === 'group')?.value || ',';
+
               // Remove currency symbols and whitespace
-              const cleaned = String(input).replace(/[€$£¥,\s]/g, '');
+              let cleaned = String(input).replace(/[€$£¥\s]/g, '').trim();
+              // Remove group separators
+              cleaned = cleaned.split(groupSep).join('');
+              // Normalize decimal separator to '.'
+              if (decimalSep !== '.') cleaned = cleaned.replace(decimalSep, '.');
+
               const parsed = parseFloat(cleaned);
-              
               if (isNaN(parsed)) return null;
-              
+
               // Convert to cents (multiply by 100)
               return Math.round(parsed * 100);
             };
@@ -3238,9 +3248,18 @@ export default {
                 const locale = getLocale(col);
                 return formatCurrency(rawValue, currencyCode, locale);
               },
-              // Get display value for sorting (cents / 100)
+              // Return locale-formatted decimal string for edit mode display.
+              // Sorting uses the comparator (reads raw data), filtering uses filterValueGetter.
               valueGetter: (params) => {
-                return getDisplayValue(params.data?.[col?.field]);
+                const rawValue = params.data?.[col?.field];
+                if (rawValue == null || rawValue === '') return null;
+                const currencyValue = typeof rawValue === 'number' ? rawValue / 100 : parseFloat(rawValue) / 100;
+                if (isNaN(currencyValue)) return null;
+                const locale = getLocale(col);
+                return new Intl.NumberFormat(locale, {
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                }).format(currencyValue);
               },
               // Get display value for filtering (user types 12, not 1200)
               filterValueGetter: (params) => {
