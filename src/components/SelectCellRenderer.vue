@@ -66,6 +66,8 @@ export default {
             teleportTarget: null,
             highlightedIndex: -1,
             hasEverRendered: optionsAlreadyAvailable, // Skip skeleton if options already loaded
+            _skeletonFallbackTimer: null, // timeout to stop skeleton when options never arrive
+            _refreshedParams: null, // ag-grid-vue3 does not update the params prop after refresh(); cache manually
         };
     },
     computed: {
@@ -92,8 +94,9 @@ export default {
             if (!this.hasEverRendered) {
                 const optionsNotLoaded = this.processedOptions.length === 0;
                 
-                // Show skeleton if options are not loaded (regardless of whether there's a value)
-                // This handles the case where grid loads but options haven't been set yet
+                // Show skeleton only when we expect options to arrive (e.g. options binding not yet ready).
+                // If options stay empty with no explicit loading signal, we stop showing skeleton after a short
+                // delay so the cell shows the value/placeholder instead of staying stuck (e.g. when col.options is undefined).
                 if (optionsNotLoaded) {
                     return true;
                 }
@@ -102,18 +105,22 @@ export default {
             return false;
         },
         processedOptions() {
+            // ag-grid-vue3 does not update the params prop after calling refresh().
+            // We cache the latest params received in refresh() into _refreshedParams and prefer it here.
+            const activeParams = this._refreshedParams || this.params;
+
             // AG Grid editor params are nested - try both locations
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
+            const editorParams = activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = activeParams?.colDef?.cellRendererParams || {};
+
             // Get options from either editor params or renderer params
-            const options = this.params?.options || 
-                           editorParams?.options || 
-                           rendererParams?.options || 
+            const options = activeParams?.options ||
+                           editorParams?.options ||
+                           rendererParams?.options ||
                            [];
-            
-            const resolveMappingFormula = this.params?.resolveMappingFormula || 
-                                         editorParams?.resolveMappingFormula || 
+
+            const resolveMappingFormula = activeParams?.resolveMappingFormula ||
+                                         editorParams?.resolveMappingFormula ||
                                          rendererParams?.resolveMappingFormula;
             
             if (!Array.isArray(options) || options.length === 0) {
@@ -121,9 +128,9 @@ export default {
             }
 
             // Check if we need to use formula mapping (for dynamically bound options)
-            const hasFormulas = (this.params?.optionsValueFormula || editorParams?.optionsValueFormula) || 
-                               (this.params?.optionsLabelFormula || editorParams?.optionsLabelFormula) || 
-                               (this.params?.optionsColorFormula || editorParams?.optionsColorFormula);
+            const hasFormulas = (activeParams?.optionsValueFormula || editorParams?.optionsValueFormula) ||
+                               (activeParams?.optionsLabelFormula || editorParams?.optionsLabelFormula) ||
+                               (activeParams?.optionsColorFormula || editorParams?.optionsColorFormula);
 
             // If no formulas, return options as-is (static options)
             if (!hasFormulas || !resolveMappingFormula) {
@@ -136,9 +143,9 @@ export default {
             }
 
             // Map options using formulas for dynamically bound data
-            const valueFormula = this.params?.optionsValueFormula || editorParams?.optionsValueFormula;
-            const labelFormula = this.params?.optionsLabelFormula || editorParams?.optionsLabelFormula;
-            const colorFormula = this.params?.optionsColorFormula || editorParams?.optionsColorFormula;
+            const valueFormula = activeParams?.optionsValueFormula || editorParams?.optionsValueFormula;
+            const labelFormula = activeParams?.optionsLabelFormula || editorParams?.optionsLabelFormula;
+            const colorFormula = activeParams?.optionsColorFormula || editorParams?.optionsColorFormula;
             
             return options.map(option => {
                 const value = resolveMappingFormula(valueFormula, option) ?? option.value;
@@ -200,22 +207,31 @@ export default {
         const actualValue = this.params?.data?.[this.params?.colDef?.field] ?? this.params?.value;
         this.selectedValue = actualValue;
         this.originalValue = actualValue;
-        
+
         // Set the correct teleport target (iframe's body or parent body)
         this.teleportTarget = this.getCorrectBody();
-        
+
         // Set initial highlighted index to current selection
         this.highlightedIndex = this.processedOptions.findIndex(opt => opt.value === this.selectedValue);
         if (this.highlightedIndex === -1 && this.processedOptions.length > 0) {
             this.highlightedIndex = 0;
         }
-        
+
         // Mark as rendered once we have options available
         // This prevents skeleton from showing on subsequent data updates
         // Only mark as rendered when options are actually available, not just when there's a value
         this.$nextTick(() => {
             if (this.processedOptions.length > 0) {
                 this.hasEverRendered = true;
+            } else if (!this.isEditMode) {
+                // Options not loaded: stop showing skeleton after a short delay so we don't stay stuck
+                // when col.options is undefined (e.g. dynamic binding never populated)
+                this._skeletonFallbackTimer = setTimeout(() => {
+                    this._skeletonFallbackTimer = null;
+                    if (!this.hasEverRendered && this.processedOptions.length === 0) {
+                        this.hasEverRendered = true;
+                    }
+                }, 2000);
             }
         });
         
@@ -253,6 +269,10 @@ export default {
         }
     },
     beforeUnmount() {
+        if (this._skeletonFallbackTimer) {
+            clearTimeout(this._skeletonFallbackTimer);
+            this._skeletonFallbackTimer = null;
+        }
         // Clean up click outside listener
         this.removeClickOutsideListener();
     },
@@ -269,6 +289,10 @@ export default {
         processedOptions: {
             handler(newOptions) {
                 if (!this.hasEverRendered && newOptions.length > 0) {
+                    if (this._skeletonFallbackTimer) {
+                        clearTimeout(this._skeletonFallbackTimer);
+                        this._skeletonFallbackTimer = null;
+                    }
                     this.hasEverRendered = true;
                 }
             },
@@ -280,6 +304,9 @@ export default {
         // Returning true keeps the existing component instance alive and lets Vue's
         // reactivity handle any param/value changes via the params prop.
         refresh(params) {
+            // ag-grid-vue3 does not update the params prop reactively after refresh().
+            // Cache the latest params here so processedOptions and other computeds pick up new options.
+            this._refreshedParams = params;
             if (!this.isEditMode) {
                 const actualValue = params?.data?.[params?.colDef?.field] ?? params?.value;
                 this.selectedValue = actualValue;

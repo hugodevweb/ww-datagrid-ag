@@ -2620,6 +2620,26 @@ export default {
       }
     );
 
+    // When select/user column options arrive from API after the grid has rendered,
+    // AG Grid does NOT call refresh() on existing cell renderers — it only updates
+    // its internal column definitions. We watch for option changes and force a
+    // refreshCells() so that cell renderers receive the new params with options.
+    // flush:'post' ensures the component has re-rendered (columnDefs recomputed)
+    // before we act; setTimeout ensures ag-grid-vue3 has forwarded the new
+    // columnDefs to the grid API.
+    watch(
+      () => props.content?.columns?.map(col => col?.options || col?.users),
+      (newVal, oldVal) => {
+        if (!oldVal || !gridApi.value || !gridReady.value) return;
+        setTimeout(() => {
+          if (gridApi.value) {
+            gridApi.value.refreshCells({ force: true });
+          }
+        }, 100);
+      },
+      { deep: true, flush: 'post' }
+    );
+
     function refreshData() {
       // Wait for grid to be ready and not rendering before refreshing cells
       // Use setTimeout to avoid error #252
