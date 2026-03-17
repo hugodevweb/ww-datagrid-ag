@@ -15,7 +15,7 @@ export default {
     },
     methods: {
         refresh() {
-            return true;
+            return false;
         },
     },
 };

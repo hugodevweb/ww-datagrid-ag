@@ -2116,7 +2116,7 @@ export default {
       if (props.content?.dataSource === 'supabase') {
         return supabaseData.value;
       }
-      
+
       // Otherwise, use local data (existing behavior)
       const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
       return Array.isArray(data) ? data ?? [] : [];
@@ -2132,7 +2132,7 @@ export default {
       if (isUpdatingDataLocally.value) {
         return;
       }
-      
+
       // For non-infinite scroll modes, update records from rowData
       // For infinite scroll, records will be updated via grid API watchers
       if (!isInfiniteScrollEnabled.value) {
@@ -2145,7 +2145,7 @@ export default {
           }, 100);
         });
       }
-      
+
       // If we've already rendered data once, don't show loading skeleton for updates
       // This prevents select cells from flickering when bound data is updated
       if (hasEverRendered.value) {
@@ -2155,6 +2155,23 @@ export default {
         } else if (Array.isArray(newData) && newData.length === 0) {
           dataRendered.value = true;
         }
+        // Force AG Grid's internal row store to pick up the new data.
+        // refreshCells() alone is not enough because it re-renders from AG Grid's
+        // internal store, which may still hold stale references if the row objects
+        // were mutated in place rather than replaced.
+        // Using applyTransaction({ update }) explicitly tells AG Grid which rows changed.
+        nextTick(() => {
+          setTimeout(() => {
+            if (gridApi.value) {
+              if (Array.isArray(newData) && newData.length > 0) {
+                // Shallow-clone each row so AG Grid sees new object references
+                const clonedRows = newData.map(row => ({ ...row }));
+                gridApi.value.applyTransaction({ update: clonedRows });
+              }
+              gridApi.value.refreshCells({ force: true });
+            }
+          }, 0);
+        });
         return;
       }
 

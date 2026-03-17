@@ -161,12 +161,12 @@ export default {
             });
         },
         currentOption() {
-            // Get the actual value from the data, not from params.value 
-            // (params.value might be the label if valueGetter is used)
-            const value = this.isEditMode 
-                ? this.selectedValue 
-                : (this.params?.data?.[this.params?.colDef?.field] ?? this.params?.value);
-            return this.processedOptions.find(opt => opt.value === value) || null;
+            // Always use selectedValue which is kept up-to-date by both the
+            // watcher (on mount) and refresh() (on data changes).
+            // Previously this read from this.params.data in display mode, but
+            // ag-grid-vue3 does not update the params prop after refresh(),
+            // so the old value would persist on screen.
+            return this.processedOptions.find(opt => opt.value === this.selectedValue) || null;
         },
         displayLabel() {
             return this.currentOption?.label || this.params?.value || '';

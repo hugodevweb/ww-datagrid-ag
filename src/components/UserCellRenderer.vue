@@ -478,10 +478,10 @@ export default {
     },
     methods: {
         // AG Grid interface: called when the cell needs to update without full recreate.
-        // Returning true keeps the existing component instance alive and lets Vue's
-        // reactivity handle any param/value changes via the params prop.
+        // Returning false forces AG Grid to destroy and recreate the component with
+        // fresh params, ensuring updated data is displayed after external changes.
         refresh() {
-            return true;
+            return false;
         },
         initializeValue() {
             const value = this.currentValue;
