@@ -314,22 +314,69 @@ export default {
           // Use the IDs directly for Supabase filtering
           // CRITICAL FIX: Use improved column lookup for many-to-many relationships
           const column = findUserColumn(columnId);
-          
+
           if (column) {
-            // Filter values are already user IDs, use them directly
-            const selectedUserIds = filter.values.filter(id => id != null); // Remove any null/undefined IDs
-            
-            if (selectedUserIds.length > 0) {
+            // Separate __empty__ sentinel from real user IDs
+            const wantsEmpty = filter.values.includes('__empty__');
+            const selectedUserIds = filter.values.filter(id => id != null && id !== '__empty__'); // Remove null/undefined and __empty__
+
+            if (selectedUserIds.length > 0 || wantsEmpty) {
               // Determine user column type: check userColumnType first, fall back to isManyToMany for backward compatibility
               const userColumnType = column?.userColumnType || (column?.isManyToMany === true ? 'manyToMany' : 'directFK');
-              
+
               // Get the appropriate filter field
               // For many-to-many, use supabaseFilterField if provided, otherwise use supabaseField
               // For direct FK and JSONB, use supabaseField (which is the column field)
-              const filterField = (userColumnType === 'manyToMany' && column?.supabaseFilterField?.trim()) 
-                ? column.supabaseFilterField.trim() 
+              const filterField = (userColumnType === 'manyToMany' && column?.supabaseFilterField?.trim())
+                ? column.supabaseFilterField.trim()
                 : supabaseField;
-              
+
+              // If only filtering for empty (no user), just check for null/empty
+              if (wantsEmpty && selectedUserIds.length === 0) {
+                if (userColumnType === 'jsonbArray') {
+                  // JSONB: null or empty array — use ->0 to check first element
+                  // For null columns and empty arrays [], accessing index 0 returns null
+                  currentQuery = currentQuery.is(`${filterField}->0`, null);
+                } else if (userColumnType === 'manyToMany') {
+                  // Many-to-many: filter field is null
+                  currentQuery = currentQuery.is(filterField, null);
+                } else {
+                  // Direct FK: field is null
+                  currentQuery = currentQuery.is(filterField, null);
+                }
+              } else if (wantsEmpty && selectedUserIds.length > 0) {
+                // Both empty and specific users selected: use OR to combine
+                const orConditions = [];
+
+                // Add null/empty condition
+                if (userColumnType === 'jsonbArray') {
+                  // Use ->0.is.null to match both null and empty JSONB arrays
+                  orConditions.push(`${filterField}->0.is.null`);
+                } else {
+                  orConditions.push(`${filterField}.is.null`);
+                }
+
+                // Add user ID conditions
+                if (userColumnType === 'jsonbArray') {
+                  selectedUserIds.forEach(id => {
+                    orConditions.push(`${filterField}.cs.{${id}}`);
+                  });
+                } else if (userColumnType === 'manyToMany') {
+                  selectedUserIds.forEach(id => {
+                    orConditions.push(`${filterField}.eq.${id}`);
+                  });
+                } else {
+                  // Direct FK
+                  if (selectedUserIds.length === 1) {
+                    orConditions.push(`${filterField}.eq.${selectedUserIds[0]}`);
+                  } else {
+                    orConditions.push(`${filterField}.in.(${selectedUserIds.join(',')})`);
+                  }
+                }
+
+                currentQuery = currentQuery.or(orConditions.join(','));
+              } else {
+              // Only specific users selected (no __empty__)
               // Apply filter based on user column type
               if (userColumnType === 'jsonbArray') {
                 // JSONB Array: Use contains operator for Supabase JSONB arrays
@@ -358,10 +405,10 @@ export default {
                 } else {
                   currentQuery = currentQuery.in(filterField, selectedUserIds);
                 }
-                
+
                 // For many-to-many with nested paths, exclude null values at each level
                 const isNestedPath = filterField.includes('.');
-                
+
                 if (isNestedPath) {
                   // For nested paths in junction tables, we need to check each level of the path
                   // to ensure the entire relationship chain exists
@@ -370,7 +417,7 @@ export default {
                   // - case_owners.profile is not null (nested relationship exists)
                   // - case_owners.profile.id is not null (field exists)
                   const pathParts = filterField.split('.');
-                  
+
                   // Build and check each intermediate path level
                   // This ensures that if any part of the relationship chain is null, the row is excluded
                   let currentPath = '';
@@ -397,11 +444,12 @@ export default {
                 } else {
                   currentQuery = currentQuery.in(filterField, selectedUserIds);
                 }
-                
+
                 // For direct FK, exclude null values
                 currentQuery = currentQuery.not(filterField, 'is', null);
               }
-              
+              }
+
             } else {
               debugLog('[Supabase Filter] Warning: No valid user IDs found for names:', filter.values);
             }

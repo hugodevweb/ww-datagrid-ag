@@ -21,19 +21,30 @@
             </div>
             
             <!-- Selected Users Pills -->
-            <div v-if="selectedUsers.length > 0" class="selected-users-pills">
-                <div 
-                    v-for="user in selectedUsers" 
+            <div v-if="selectedUsers.length > 0 || isEmptySelected" class="selected-users-pills">
+                <div
+                    v-if="isEmptySelected"
+                    class="user-pill empty-pill"
+                >
+                    <span class="pill-name">{{ emptyLabel }}</span>
+                    <button
+                        class="pill-remove"
+                        @click.stop="toggleEmpty"
+                        type="button"
+                    >×</button>
+                </div>
+                <div
+                    v-for="user in selectedUsers"
                     :key="user.id"
                     class="user-pill"
                 >
-                    <img 
-                        :src="user.avatar_url || getDefaultAvatar(user)" 
+                    <img
+                        :src="user.avatar_url || getDefaultAvatar(user)"
                         :alt="getUserName(user)"
                         class="pill-avatar"
                     />
                     <span class="pill-name">{{ getUserName(user) }}</span>
-                    <button 
+                    <button
                         class="pill-remove"
                         @click.stop="removeUserId(user.id)"
                         type="button"
@@ -43,20 +54,42 @@
             
             <!-- Users List -->
             <div class="user-list">
-                <div 
-                    v-for="(user, index) in filteredUsers" 
+                <!-- Empty/No user option -->
+                <div
+                    v-if="!searchQuery.trim()"
+                    class="user-option empty-user-option"
+                    :class="{
+                        'selected': isEmptySelected,
+                        'highlighted': highlightedIndex === 0
+                    }"
+                    @click="toggleEmpty"
+                    @mouseenter="highlightedIndex = 0"
+                >
+                    <div class="empty-avatar-placeholder">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+                            <circle cx="12" cy="12" r="10"/>
+                            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                        </svg>
+                    </div>
+                    <div class="option-info">
+                        <div class="option-name">{{ emptyLabel }}</div>
+                    </div>
+                    <div v-if="isEmptySelected" class="option-check">✓</div>
+                </div>
+                <div
+                    v-for="(user, index) in filteredUsers"
                     :key="user.id"
                     class="user-option"
-                    :class="{ 
+                    :class="{
                         'selected': isUserIdSelected(user.id),
-                        'highlighted': index === highlightedIndex
+                        'highlighted': index === adjustedHighlightOffset
                     }"
                     :style="getUserOptionStyle(user)"
                     @click="toggleUser(user)"
-                    @mouseenter="highlightedIndex = index"
+                    @mouseenter="highlightedIndex = index + emptyOptionOffset"
                 >
-                    <img 
-                        :src="user.avatar_url || getDefaultAvatar(user)" 
+                    <img
+                        :src="user.avatar_url || getDefaultAvatar(user)"
                         :alt="getUserName(user)"
                         class="option-avatar"
                     />
@@ -66,7 +99,7 @@
                     </div>
                     <div v-if="isUserIdSelected(user.id)" class="option-check">✓</div>
                 </div>
-                <div v-if="filteredUsers.length === 0" class="no-users">
+                <div v-if="filteredUsers.length === 0 && searchQuery.trim()" class="no-users">
                     No users found
                 </div>
             </div>
@@ -137,8 +170,38 @@ export default {
         // Get user objects for selected IDs (for display)
         selectedUsers() {
             return this.selectedUserIds
+                .filter(id => id !== '__empty__')
                 .map(id => this.availableUsers.find(u => u.id === id))
                 .filter(Boolean);
+        },
+        isEmptySelected() {
+            return this.pendingSelection.has('__empty__');
+        },
+        // Offset for highlighted index when empty option is shown
+        emptyOptionOffset() {
+            return this.searchQuery.trim() ? 0 : 1;
+        },
+        adjustedHighlightOffset() {
+            return this.highlightedIndex - this.emptyOptionOffset;
+        },
+        emptyLabel() {
+            const locale = navigator.language || navigator.userLanguage || 'en';
+            const lang = locale.split('-')[0].toLowerCase();
+            const translations = {
+                'en': 'No user',
+                'fr': 'Aucun utilisateur',
+                'es': 'Sin usuario',
+                'de': 'Kein Benutzer',
+                'pt': 'Sem utilizador',
+                'it': 'Nessun utente',
+                'nl': 'Geen gebruiker',
+                'pl': 'Brak użytkownika',
+                'ru': 'Нет пользователя',
+                'ja': 'ユーザーなし',
+                'zh': '无用户',
+                'ko': '사용자 없음',
+            };
+            return translations[lang] || translations['en'];
         },
         isLoadingUsers() {
             // Show loading only if isLoading is true AND users array is empty or not available
@@ -505,6 +568,15 @@ export default {
         isUserIdSelected(userId) {
             return this.pendingSelection.has(userId);
         },
+        toggleEmpty() {
+            const nextSelection = new Set(this.pendingSelection);
+            if (nextSelection.has('__empty__')) {
+                nextSelection.delete('__empty__');
+            } else {
+                nextSelection.add('__empty__');
+            }
+            this.pendingSelection = nextSelection;
+        },
         toggleUser(user) {
             const userId = user.id;
             const nextSelection = new Set(this.pendingSelection);
@@ -529,13 +601,21 @@ export default {
             return {};
         },
         selectHighlightedUser() {
-            if (this.highlightedIndex >= 0 && this.highlightedIndex < this.filteredUsers.length) {
-                const user = this.filteredUsers[this.highlightedIndex];
+            if (this.highlightedIndex < 0) return;
+            // If empty option is visible and highlighted index is 0, toggle empty
+            if (!this.searchQuery.trim() && this.highlightedIndex === 0) {
+                this.toggleEmpty();
+                return;
+            }
+            const userIndex = this.highlightedIndex - this.emptyOptionOffset;
+            if (userIndex >= 0 && userIndex < this.filteredUsers.length) {
+                const user = this.filteredUsers[userIndex];
                 this.toggleUser(user);
             }
         },
         highlightNextUser() {
-            if (this.highlightedIndex < this.filteredUsers.length - 1) {
+            const totalItems = this.filteredUsers.length + this.emptyOptionOffset;
+            if (this.highlightedIndex < totalItems - 1) {
                 this.highlightedIndex++;
                 this.scrollToHighlighted();
             }
@@ -585,12 +665,13 @@ export default {
                 return true;
             }
             const rowValue = this.getRowValue(params);
-            
-            // If row has no users, it doesn't match any filter
-            if (!rowValue || (Array.isArray(rowValue) && rowValue.length === 0)) {
-                return false;
+            const isEmpty = !rowValue || (Array.isArray(rowValue) && rowValue.length === 0);
+
+            // If row has no users, check if "no user" filter is selected
+            if (isEmpty) {
+                return this.appliedSelection.has('__empty__');
             }
-            
+
             // rowValue is now an array of user IDs or a single user ID
             if (Array.isArray(rowValue)) {
                 // Multiple users: check if any of the row's user IDs match selected IDs
@@ -818,6 +899,27 @@ export default {
     font-weight: bold;
     font-size: 16px;
     flex-shrink: 0;
+}
+
+.empty-user-option {
+    border-bottom: 1px solid #e0e0e0;
+    margin-bottom: 4px;
+}
+
+.empty-avatar-placeholder {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: #999;
+    background-color: #f0f0f0;
+}
+
+.empty-pill {
+    background: #f0f0f0;
 }
 
 .no-users {
