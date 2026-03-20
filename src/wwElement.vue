@@ -1138,6 +1138,7 @@ export default {
     const columnChooserRef = ref(null);
     const columnChooserSearch = ref('');
     const chooserColumnOrder = ref([]); // local ordered list of colIds for the panel
+    const chooserHiddenState = ref([]); // local reactive hidden-columns list for the chooser UI
     const chooserDragColId = ref(null);
     const chooserDragOverColId = ref(null);
 
@@ -1150,17 +1151,18 @@ export default {
     let clickOutsideTimer = null;
     watch(showColumnChooser, (val) => {
       if (val) {
-        // Initialize chooser order from current grid column state
+        // Initialize chooser order and hidden state from current grid state
         if (gridApi.value) {
           const gridCols = gridApi.value.getAllGridColumns();
           chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
+          chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
         }
         columnChooserSearch.value = '';
         // Delay so the current click that opened the panel doesn't immediately close it.
         // Timer is tracked so it can be cancelled if the panel closes before it fires.
         clickOutsideTimer = setTimeout(() => {
           clickOutsideTimer = null;
-          document.addEventListener('click', handleClickOutside);
+          wwLib.getFrontDocument().addEventListener('click', handleClickOutside);
         }, 0);
       } else {
         // Cancel pending attach if panel closed before timer fired
@@ -1168,7 +1170,7 @@ export default {
           clearTimeout(clickOutsideTimer);
           clickOutsideTimer = null;
         }
-        document.removeEventListener('click', handleClickOutside);
+        wwLib.getFrontDocument().removeEventListener('click', handleClickOutside);
         chooserDragColId.value = null;
         chooserDragOverColId.value = null;
       }
@@ -1176,7 +1178,7 @@ export default {
 
     onBeforeUnmount(() => {
       if (clickOutsideTimer !== null) clearTimeout(clickOutsideTimer);
-      document.removeEventListener('click', handleClickOutside);
+      wwLib.getFrontDocument().removeEventListener('click', handleClickOutside);
     });
 
     const { value: records, setValue: setRecords } =
@@ -1713,6 +1715,7 @@ export default {
             if (isEmptyConfigValue(hidden)) {
               // Show all columns (clear hidden state)
               setHiddenColumns([]);
+              chooserHiddenState.value = [];
               const allCols = gridApi.value.getAllGridColumns();
               const colIds = allCols?.map(c => c.getColId()).filter(Boolean) || [];
               if (colIds.length > 0) {
@@ -1721,6 +1724,7 @@ export default {
               debugLog('[ViewConfiguration] Cleared all hidden columns (empty array)');
             } else if (Array.isArray(hidden)) {
               setHiddenColumns([...hidden]);
+              chooserHiddenState.value = [...hidden];
               const hiddenSet = new Set(hidden);
               const allCols = gridApi.value.getAllGridColumns();
               const toShow = [];
@@ -1754,6 +1758,12 @@ export default {
             isApplyingViewConfig.value = false;
             // Update currentConfig to reflect the applied view configuration
             updateCurrentConfig();
+            // Sync chooser order and hidden state so the column management menu is up to date
+            if (gridApi.value) {
+              const gridCols = gridApi.value.getAllGridColumns();
+              chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
+              chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
+            }
             debugLog('[ViewConfiguration] View config application complete, events re-enabled');
           }, 100);
           
@@ -2994,6 +3004,7 @@ export default {
       columnChooserRef,
       columnChooserSearch,
       chooserColumnOrder,
+      chooserHiddenState,
       chooserDragColId,
       chooserDragOverColId,
       updateCurrentConfig,
@@ -3039,7 +3050,7 @@ export default {
         colMap.set(colId, {
           colId,
           headerName: col.headerName || colId,
-          isHidden: (this.hiddenColumns || []).includes(colId),
+          isHidden: (this.chooserHiddenState || []).includes(colId),
           isLocked: !!col.lockedInChooser,
         });
       }
@@ -3065,7 +3076,7 @@ export default {
       return this.allColumnsList.filter(c => c.headerName.toLowerCase().includes(q));
     },
     allColumnsVisible() {
-      return !this.hiddenColumns || this.hiddenColumns.length === 0;
+      return !this.chooserHiddenState || this.chooserHiddenState.length === 0;
     },
     // Cheap count of runtime-toggleable columns (design-time hidden are excluded).
     // Used by someColumnsHidden to avoid pulling in the heavier allColumnsList computation.
@@ -3076,9 +3087,9 @@ export default {
     },
     someColumnsHidden() {
       return !!(
-        this.hiddenColumns &&
-        this.hiddenColumns.length > 0 &&
-        this.hiddenColumns.length < this.visibleColumnCount
+        this.chooserHiddenState &&
+        this.chooserHiddenState.length > 0 &&
+        this.chooserHiddenState.length < this.visibleColumnCount
       );
     },
     columnDefs() {
@@ -4282,6 +4293,7 @@ export default {
       if (!current.includes(colId)) {
         current.push(colId);
         this.setHiddenColumns(current);
+        this.chooserHiddenState = current;
         this.gridApi?.setColumnsVisible([colId], false);
         this.updateCurrentConfig();
         this.$emit('trigger-event', {
@@ -4299,6 +4311,7 @@ export default {
       if (!(this.hiddenColumns || []).includes(colId)) return; // already visible, no-op
       const current = (this.hiddenColumns || []).filter(id => id !== colId);
       this.setHiddenColumns(current);
+      this.chooserHiddenState = current;
       this.gridApi?.setColumnsVisible([colId], true);
       this.updateCurrentConfig();
       this.$emit('trigger-event', {
@@ -4333,6 +4346,7 @@ export default {
         if (this.gridApi) this.gridApi.setColumnsVisible(colIds, true);
       }
       const newHiddenColumns = willBeVisible ? [] : [...colIds];
+      this.chooserHiddenState = newHiddenColumns;
       this.updateCurrentConfig();
       this.$emit('trigger-event', {
         name: 'columnVisibilityChanged',
@@ -6399,11 +6413,56 @@ export default {
 }
 
 .cc-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
   width: 16px;
   height: 16px;
   cursor: pointer;
-  accent-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
   flex-shrink: 0;
+  border-radius: 4px;
+  border: 2px solid var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+  background: transparent;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:checked {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0px;
+      width: 5px;
+      height: 9px;
+      border: 2px solid #fff;
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+  }
+
+  &:indeterminate {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 50%;
+      width: 8px;
+      height: 2px;
+      background: #fff;
+      transform: translateY(-50%);
+    }
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
 }
 
 // Column list
