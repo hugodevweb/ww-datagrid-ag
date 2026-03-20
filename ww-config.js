@@ -89,6 +89,18 @@ export default {
           "actionLineHeight",
         ],
       },
+      {
+        label: "Column Chooser",
+        isCollapsible: true,
+        properties: [
+          "columnChooserBackground",
+          "columnChooserBorderColor",
+          "columnChooserBorderRadius",
+          "columnChooserTextColor",
+          "columnChooserAccentColor",
+          "columnChooserWidth",
+        ],
+      },
     ],
     customSettingsPropertiesOrder: [
       "dataSource",
@@ -308,6 +320,7 @@ export default {
   actions: [
     { label: "Reset filters", action: "resetFilters" },
     { label: "Reset sort", action: "resetSort" },
+    { label: "Open column management", action: "openColumnChooser" },
     {
       label: "Select all",
       action: "selectAll",
@@ -1916,6 +1929,21 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              lockedInChooser: {
+                label: "Lock in Column Chooser",
+                type: "OnOff",
+                bindable: true,
+                defaultValue: false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "When enabled, the column appears in the column chooser but cannot be hidden or reordered from it.",
+                },
+                propertyHelp: {
+                  tooltip: "Lock this column in the column chooser panel so users can see it but cannot hide it or change its position.",
+                },
+                /* wwEditor:end */
+              },
               validation: {
                 label: { en: "Validation Rules" },
                 type: "Array",
@@ -2302,6 +2330,7 @@ export default {
                   "filter",
                   "sortable",
                   "suppressRowInteraction",
+                  "lockedInChooser",
                   "validation",
                 ],
               },
@@ -2534,6 +2563,61 @@ export default {
         tooltip: "When enabled, users can hide columns from the column header menu and use a column chooser to show/hide columns.",
       },
       /* wwEditor:end */
+    },
+    columnChooserBackground: {
+      label: "Background Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    columnChooserBorderColor: {
+      label: "Border Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    columnChooserBorderRadius: {
+      label: "Border Radius",
+      type: "Length",
+      options: { noRange: true },
+      responsive: true,
+      bindable: true,
+    },
+    columnChooserTextColor: {
+      label: "Text Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    columnChooserAccentColor: {
+      label: "Accent Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      /* wwEditor:start */
+      propertyHelp: {
+        tooltip: "Color used for checkboxes, drag-over indicators, and other interactive highlights in the column chooser panel.",
+      },
+      /* wwEditor:end */
+    },
+    columnChooserWidth: {
+      label: "Width",
+      type: "Length",
+      options: { noRange: true },
+      responsive: true,
+      bindable: true,
     },
     invalidEditValueMode: {
       label: { en: "Validation Mode" },

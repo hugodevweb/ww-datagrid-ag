@@ -53,29 +53,12 @@
     >
     </ag-grid-vue>
     <div v-if="content.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
-      <button
-        class="column-chooser-btn"
-        :class="{ 'has-hidden': hiddenColumns && hiddenColumns.length > 0 }"
-        @click.stop="showColumnChooser = !showColumnChooser"
-        title="Choose Columns"
-      >
-        <!-- Columns icon -->
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="1" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
-          <rect x="6" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
-          <rect x="11" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
-        </svg>
-        <span v-if="hiddenColumns && hiddenColumns.length > 0" class="cc-badge">
-          {{ hiddenColumns.length }}
-        </span>
-      </button>
-
       <Transition name="cc-fade">
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
           <!-- Header -->
           <div class="cc-header">
-            <span class="cc-title">Choose Columns</span>
-            <button class="cc-close-btn" @click="showColumnChooser = false" aria-label="Close">
+            <span class="cc-title">Gérer les colonnes</span>
+            <button class="cc-close-btn" @click="showColumnChooser = false" aria-label="Fermer">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
@@ -84,7 +67,7 @@
 
           <!-- Search row with select-all -->
           <div class="cc-search-row">
-            <label class="cc-checkbox-wrap" title="Toggle all">
+            <label class="cc-checkbox-wrap" title="Tout afficher / masquer">
               <input
                 type="checkbox"
                 class="cc-checkbox"
@@ -102,7 +85,7 @@
                 class="cc-search-input"
                 type="text"
                 v-model="columnChooserSearch"
-                placeholder="Search..."
+                placeholder="Rechercher..."
                 @click.stop
               />
             </div>
@@ -117,22 +100,24 @@
               :class="{
                 'cc-row--drag-over': chooserDragOverColId === col.colId && chooserDragColId !== col.colId,
                 'cc-row--dragging': chooserDragColId === col.colId,
+                'cc-row--locked': col.isLocked,
               }"
-              :draggable="!columnChooserSearch"
+              :draggable="!columnChooserSearch && !col.isLocked"
               @dragstart="onChooserDragStart(col.colId)"
               @dragover.prevent="onChooserDragOver(col.colId)"
               @drop.prevent="onChooserDrop(col.colId)"
               @dragend="onChooserDragEnd"
             >
-              <label class="cc-checkbox-wrap">
+              <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': col.isLocked }">
                 <input
                   type="checkbox"
                   class="cc-checkbox"
                   :checked="!col.isHidden"
+                  :disabled="col.isLocked"
                   @change="toggleColumnVisibility(col.colId)"
                 />
               </label>
-              <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch }">
+              <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch || col.isLocked }">
                 <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
                   <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
                   <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
@@ -142,7 +127,7 @@
               <span class="cc-col-name">{{ col.headerName }}</span>
             </div>
             <div v-if="filteredColumnsList.length === 0" class="cc-empty">
-              No columns match "{{ columnChooserSearch }}"
+              Aucune colonne ne correspond à "{{ columnChooserSearch }}"
             </div>
           </div>
         </div>
@@ -3055,6 +3040,7 @@ export default {
           colId,
           headerName: col.headerName || colId,
           isHidden: (this.hiddenColumns || []).includes(colId),
+          isLocked: !!col.lockedInChooser,
         });
       }
 
@@ -4070,6 +4056,12 @@ export default {
     },
     cssVars() {
       return {
+        "--ww-data-grid_cc-background": this.content.columnChooserBackground,
+        "--ww-data-grid_cc-border-color": this.content.columnChooserBorderColor,
+        "--ww-data-grid_cc-border-radius": this.content.columnChooserBorderRadius,
+        "--ww-data-grid_cc-text-color": this.content.columnChooserTextColor,
+        "--ww-data-grid_cc-accent-color": this.content.columnChooserAccentColor,
+        "--ww-data-grid_cc-width": this.content.columnChooserWidth,
         "--ww-data-grid_action-backgroundColor":
           this.content.actionBackgroundColor,
         "--ww-data-grid_action-color": this.content.actionColor,
@@ -4281,6 +4273,9 @@ export default {
     },
   },
   methods: {
+    openColumnChooser() {
+      this.showColumnChooser = true;
+    },
     hideColumn(colId) {
       if (!colId) return;
       const current = [...(this.hiddenColumns || [])];
@@ -4316,6 +4311,8 @@ export default {
       });
     },
     toggleColumnVisibility(colId) {
+      const col = this.allColumnsList.find(c => c.colId === colId);
+      if (col?.isLocked) return;
       if ((this.hiddenColumns || []).includes(colId)) {
         this.showColumn(colId);
       } else {
@@ -4323,7 +4320,7 @@ export default {
       }
     },
     toggleAllColumns() {
-      const colIds = this.allColumnsList.map(c => c.colId);
+      const colIds = this.allColumnsList.filter(c => !c.isLocked).map(c => c.colId);
       // Capture the intended outcome before any mutation
       const willBeVisible = !this.allColumnsVisible;
       if (!willBeVisible) {
@@ -4347,6 +4344,8 @@ export default {
       });
     },
     onChooserDragStart(colId) {
+      const col = this.allColumnsList.find(c => c.colId === colId);
+      if (col?.isLocked) return;
       this.chooserDragColId = colId;
     },
     onChooserDragOver(colId) {
@@ -4357,6 +4356,12 @@ export default {
     onChooserDrop(targetColId) {
       const fromColId = this.chooserDragColId;
       if (!fromColId || fromColId === targetColId) {
+        this.chooserDragColId = null;
+        this.chooserDragOverColId = null;
+        return;
+      }
+      const targetCol = this.allColumnsList.find(c => c.colId === targetColId);
+      if (targetCol?.isLocked) {
         this.chooserDragColId = null;
         this.chooserDragOverColId = null;
         return;
@@ -6291,10 +6296,10 @@ export default {
   position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  width: 260px;
-  background: var(--ag-background-color, #1e2228);
-  border: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
-  border-radius: 8px;
+  width: var(--ww-data-grid_cc-width, 260px);
+  background: var(--ww-data-grid_cc-background, var(--ag-background-color, #1e2228));
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
+  border-radius: var(--ww-data-grid_cc-border-radius, 8px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   z-index: 1000;
   overflow: hidden;
@@ -6314,13 +6319,13 @@ export default {
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--ag-border-color, rgba(255,255,255,0.08));
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.08)));
 }
 
 .cc-title {
   font-size: 14px;
   font-weight: 700;
-  color: var(--ag-foreground-color, #e8eaed);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   letter-spacing: 0.01em;
 }
 
@@ -6350,7 +6355,7 @@ export default {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--ag-border-color, rgba(255,255,255,0.06));
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.06)));
 }
 
 .cc-search-box {
@@ -6376,11 +6381,11 @@ export default {
   border: none;
   outline: none;
   font-size: 13px;
-  color: var(--ag-foreground-color, #e8eaed);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   width: 100%;
 
   &::placeholder {
-    color: var(--ag-foreground-color, #9aa0aa);
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #9aa0aa));
     opacity: 0.5;
   }
 }
@@ -6397,7 +6402,7 @@ export default {
   width: 16px;
   height: 16px;
   cursor: pointer;
-  accent-color: var(--ag-active-color, #3b9eff);
+  accent-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
   flex-shrink: 0;
 }
 
@@ -6434,13 +6439,27 @@ export default {
   }
 
   &.cc-row--drag-over {
-    border-left-color: var(--ag-active-color, #3b9eff);
+    border-left-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
     background: rgba(59, 158, 255, 0.06);
   }
 
   &.cc-row--dragging {
     opacity: 0.4;
   }
+
+  &.cc-row--locked {
+    opacity: 0.5;
+    cursor: default;
+
+    &:hover {
+      background: transparent;
+    }
+  }
+}
+
+.cc-checkbox-wrap--locked {
+  cursor: default;
+  pointer-events: none;
 }
 
 .cc-drag-handle {
@@ -6469,7 +6488,7 @@ export default {
 
 .cc-col-name {
   font-size: 13px;
-  color: var(--ag-foreground-color, #d8dce3);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #d8dce3));
   flex: 1;
   white-space: nowrap;
   overflow: hidden;
@@ -6479,7 +6498,7 @@ export default {
 .cc-empty {
   padding: 12px 16px;
   font-size: 12px;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #9aa0aa));
   opacity: 0.6;
   text-align: center;
 }
