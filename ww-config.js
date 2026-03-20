@@ -148,6 +148,7 @@ export default {
       "rowBuffer",
       "movableColumns",
       "resizableColumns",
+      "allowColumnHiding",
       "rowReorder",
       "reorderInfoBox",
       "viewConfiguration",
@@ -249,6 +250,16 @@ export default {
         columnsWidths: {},
       },
       getTestEvent: "getColumnResizedTestEvent",
+    },
+    {
+      name: "columnVisibilityChanged",
+      label: { en: "On Column Visibility Changed" },
+      event: {
+        columnId: null,
+        visible: true,
+        hiddenColumns: [],
+      },
+      getTestEvent: "getColumnVisibilityChangedTestEvent",
     },
     {
       name: "cellEditStart",
@@ -2508,6 +2519,22 @@ export default {
       },
       /* wwEditor:end */
     },
+    allowColumnHiding: {
+      label: { en: "Allow Column Hiding" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable or disable runtime column hiding",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, users can hide columns from the column header menu and use a column chooser to show/hide columns.",
+      },
+      /* wwEditor:end */
+    },
     invalidEditValueMode: {
       label: { en: "Validation Mode" },
       type: "TextSelect",
@@ -2563,10 +2590,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId] }. Empty values ({} or []) are ignored.",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId] }. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [] }. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
+        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [] }. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
       },
       /* wwEditor:end */
     },

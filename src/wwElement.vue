@@ -52,6 +52,102 @@
       @model-updated="onModelUpdated"
     >
     </ag-grid-vue>
+    <div v-if="content.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
+      <button
+        class="column-chooser-btn"
+        :class="{ 'has-hidden': hiddenColumns && hiddenColumns.length > 0 }"
+        @click.stop="showColumnChooser = !showColumnChooser"
+        title="Choose Columns"
+      >
+        <!-- Columns icon -->
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="1" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <rect x="6" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+          <rect x="11" y="1" width="4" height="14" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+        </svg>
+        <span v-if="hiddenColumns && hiddenColumns.length > 0" class="cc-badge">
+          {{ hiddenColumns.length }}
+        </span>
+      </button>
+
+      <Transition name="cc-fade">
+        <div v-if="showColumnChooser" class="cc-panel" @click.stop>
+          <!-- Header -->
+          <div class="cc-header">
+            <span class="cc-title">Choose Columns</span>
+            <button class="cc-close-btn" @click="showColumnChooser = false" aria-label="Close">
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Search row with select-all -->
+          <div class="cc-search-row">
+            <label class="cc-checkbox-wrap" title="Toggle all">
+              <input
+                type="checkbox"
+                class="cc-checkbox"
+                :checked="allColumnsVisible"
+                :indeterminate.prop="someColumnsHidden"
+                @change="toggleAllColumns"
+              />
+            </label>
+            <div class="cc-search-box">
+              <svg class="cc-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+                <path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              </svg>
+              <input
+                class="cc-search-input"
+                type="text"
+                v-model="columnChooserSearch"
+                placeholder="Search..."
+                @click.stop
+              />
+            </div>
+          </div>
+
+          <!-- Column list -->
+          <div class="cc-list">
+            <div
+              v-for="col in filteredColumnsList"
+              :key="col.colId"
+              class="cc-row"
+              :class="{
+                'cc-row--drag-over': chooserDragOverColId === col.colId && chooserDragColId !== col.colId,
+                'cc-row--dragging': chooserDragColId === col.colId,
+              }"
+              :draggable="!columnChooserSearch"
+              @dragstart="onChooserDragStart(col.colId)"
+              @dragover.prevent="onChooserDragOver(col.colId)"
+              @drop.prevent="onChooserDrop(col.colId)"
+              @dragend="onChooserDragEnd"
+            >
+              <label class="cc-checkbox-wrap">
+                <input
+                  type="checkbox"
+                  class="cc-checkbox"
+                  :checked="!col.isHidden"
+                  @change="toggleColumnVisibility(col.colId)"
+                />
+              </label>
+              <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch }">
+                <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+                  <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
+                  <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+                  <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
+                </svg>
+              </span>
+              <span class="cc-col-name">{{ col.headerName }}</span>
+            </div>
+            <div v-if="filteredColumnsList.length === 0" class="cc-empty">
+              No columns match "{{ columnChooserSearch }}"
+            </div>
+          </div>
+        </div>
+      </Transition>
+    </div>
   </div>
 </template>
 
@@ -1045,6 +1141,59 @@ export default {
         defaultValue: [],
         readonly: true,
       });
+    const { value: hiddenColumns, setValue: setHiddenColumns } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "hiddenColumns",
+        type: "array",
+        defaultValue: [],
+        readonly: true,
+      });
+    const showColumnChooser = ref(false);
+    const columnChooserRef = ref(null);
+    const columnChooserSearch = ref('');
+    const chooserColumnOrder = ref([]); // local ordered list of colIds for the panel
+    const chooserDragColId = ref(null);
+    const chooserDragOverColId = ref(null);
+
+    const handleClickOutside = (event) => {
+      if (columnChooserRef.value && !columnChooserRef.value.contains(event.target)) {
+        showColumnChooser.value = false;
+      }
+    };
+
+    let clickOutsideTimer = null;
+    watch(showColumnChooser, (val) => {
+      if (val) {
+        // Initialize chooser order from current grid column state
+        if (gridApi.value) {
+          const gridCols = gridApi.value.getAllGridColumns();
+          chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
+        }
+        columnChooserSearch.value = '';
+        // Delay so the current click that opened the panel doesn't immediately close it.
+        // Timer is tracked so it can be cancelled if the panel closes before it fires.
+        clickOutsideTimer = setTimeout(() => {
+          clickOutsideTimer = null;
+          document.addEventListener('click', handleClickOutside);
+        }, 0);
+      } else {
+        // Cancel pending attach if panel closed before timer fired
+        if (clickOutsideTimer !== null) {
+          clearTimeout(clickOutsideTimer);
+          clickOutsideTimer = null;
+        }
+        document.removeEventListener('click', handleClickOutside);
+        chooserDragColId.value = null;
+        chooserDragOverColId.value = null;
+      }
+    });
+
+    onBeforeUnmount(() => {
+      if (clickOutsideTimer !== null) clearTimeout(clickOutsideTimer);
+      document.removeEventListener('click', handleClickOutside);
+    });
+
     const { value: records, setValue: setRecords } =
       wwLib.wwVariable.useComponentVariable({
         uid: props.uid,
@@ -1074,10 +1223,29 @@ export default {
           filters: {},
           sorting: [],
           columnsOrder: [],
+          hiddenColumns: [],
         },
         readonly: true,
       });
     
+    // Exposed variable for the configured column definitions (mirrors props.content.columns)
+    const { value: columnDefsVar, setValue: setColumnDefsVar } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "columnDefs",
+        type: "array",
+        defaultValue: [],
+        readonly: true,
+      });
+
+    watch(
+      () => props.content?.columns,
+      (newCols) => {
+        setColumnDefsVar(Array.isArray(newCols) ? newCols : []);
+      },
+      { immediate: true, deep: true }
+    );
+
     // Helper function to get current column widths from the grid
     const getCurrentColumnWidths = () => {
       if (!gridApi.value) return {};
@@ -1106,6 +1274,7 @@ export default {
         filters: filterValue.value || {},
         sorting: sortValue.value || [],
         columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
+        hiddenColumns: hiddenColumns.value || [],
       };
       
       setCurrentConfig(config);
@@ -1553,7 +1722,38 @@ export default {
             debugLog('[ViewConfiguration] Skipped column sizes (key not present, keeping current state)');
           }
           
-          // 5. Clear row selections when view changes (not on initial load)
+          // 5. Apply hidden columns if key is present
+          if (viewConfig && 'hiddenColumns' in viewConfig) {
+            const hidden = viewConfig.hiddenColumns;
+            if (isEmptyConfigValue(hidden)) {
+              // Show all columns (clear hidden state)
+              setHiddenColumns([]);
+              const allCols = gridApi.value.getAllGridColumns();
+              const colIds = allCols?.map(c => c.getColId()).filter(Boolean) || [];
+              if (colIds.length > 0) {
+                gridApi.value.setColumnsVisible(colIds, true);
+              }
+              debugLog('[ViewConfiguration] Cleared all hidden columns (empty array)');
+            } else if (Array.isArray(hidden)) {
+              setHiddenColumns([...hidden]);
+              const hiddenSet = new Set(hidden);
+              const allCols = gridApi.value.getAllGridColumns();
+              const toShow = [];
+              const toHide = [];
+              allCols?.forEach(col => {
+                const cid = col.getColId();
+                if (!cid) return;
+                (hiddenSet.has(cid) ? toHide : toShow).push(cid);
+              });
+              if (toShow.length) gridApi.value.setColumnsVisible(toShow, true);
+              if (toHide.length) gridApi.value.setColumnsVisible(toHide, false);
+              debugLog('[ViewConfiguration] Applied hidden columns:', hidden);
+            }
+          } else {
+            debugLog('[ViewConfiguration] Skipped hidden columns (key not present, keeping current state)');
+          }
+
+          // 6. Clear row selections when view changes (not on initial load)
           if (!isInitial) {
             gridApi.value.deselectAll();
             setSelectedRows([]);
@@ -1847,8 +2047,14 @@ export default {
     const onColumnMoved = (event) => {
       if (!event.finished || event.source !== "uiColumnMoved") return;
       const columns = event.api.getAllGridColumns();
-      setColumnOrder(columns.map((col) => col.getColId()));
-      
+      const newOrder = columns.map((col) => col.getColId());
+      setColumnOrder(newOrder);
+
+      // Keep chooser panel in sync so it doesn't show a stale order if open
+      if (showColumnChooser.value) {
+        chooserColumnOrder.value = newOrder.filter(Boolean);
+      }
+
       // Update currentConfig to reflect the new column order
       updateCurrentConfig();
       
@@ -2797,6 +3003,16 @@ export default {
       // Expose waitForSupabaseInstance for methods to use
       waitForSupabaseInstance,
       safeGridApiCall,
+      hiddenColumns,
+      setHiddenColumns,
+      showColumnChooser,
+      columnChooserRef,
+      columnChooserSearch,
+      chooserColumnOrder,
+      chooserDragColId,
+      chooserDragOverColId,
+      updateCurrentConfig,
+      columnDefsVar,
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -2828,6 +3044,56 @@ export default {
       // Custom formatting is handled via valueFormatter/valueParser on individual columns
       // This avoids "data type definition undefined does not exist" errors
       return undefined;
+    },
+    allColumnsList() {
+      // Build a map of colId → column meta from content.columns (exclude design-time hidden)
+      const colMap = new Map();
+      for (const col of (this.content.columns || [])) {
+        if (!col || (!col.field && !col.actionName) || col.hide) continue;
+        const colId = col.actionName || col.field;
+        colMap.set(colId, {
+          colId,
+          headerName: col.headerName || colId,
+          isHidden: (this.hiddenColumns || []).includes(colId),
+        });
+      }
+
+      // Sort by chooserColumnOrder (reflects live grid order), append any extras
+      const ordered = [];
+      const seen = new Set();
+      for (const colId of (this.chooserColumnOrder || [])) {
+        if (colMap.has(colId)) {
+          ordered.push(colMap.get(colId));
+          seen.add(colId);
+        }
+      }
+      // Append columns not yet in the ordered list
+      for (const [colId, meta] of colMap) {
+        if (!seen.has(colId)) ordered.push(meta);
+      }
+      return ordered;
+    },
+    filteredColumnsList() {
+      const q = (this.columnChooserSearch || '').toLowerCase().trim();
+      if (!q) return this.allColumnsList;
+      return this.allColumnsList.filter(c => c.headerName.toLowerCase().includes(q));
+    },
+    allColumnsVisible() {
+      return !this.hiddenColumns || this.hiddenColumns.length === 0;
+    },
+    // Cheap count of runtime-toggleable columns (design-time hidden are excluded).
+    // Used by someColumnsHidden to avoid pulling in the heavier allColumnsList computation.
+    visibleColumnCount() {
+      return (this.content.columns || []).filter(
+        col => col && (col.field || col.actionName) && !col.hide
+      ).length;
+    },
+    someColumnsHidden() {
+      return !!(
+        this.hiddenColumns &&
+        this.hiddenColumns.length > 0 &&
+        this.hiddenColumns.length < this.visibleColumnCount
+      );
     },
     columnDefs() {
       // First, map all columns to their definitions
@@ -4015,6 +4281,110 @@ export default {
     },
   },
   methods: {
+    hideColumn(colId) {
+      if (!colId) return;
+      const current = [...(this.hiddenColumns || [])];
+      if (!current.includes(colId)) {
+        current.push(colId);
+        this.setHiddenColumns(current);
+        this.gridApi?.setColumnsVisible([colId], false);
+        this.updateCurrentConfig();
+        this.$emit('trigger-event', {
+          name: 'columnVisibilityChanged',
+          event: {
+            columnId: colId,
+            visible: false,
+            hiddenColumns: current,
+          },
+        });
+      }
+    },
+    showColumn(colId) {
+      if (!colId) return;
+      if (!(this.hiddenColumns || []).includes(colId)) return; // already visible, no-op
+      const current = (this.hiddenColumns || []).filter(id => id !== colId);
+      this.setHiddenColumns(current);
+      this.gridApi?.setColumnsVisible([colId], true);
+      this.updateCurrentConfig();
+      this.$emit('trigger-event', {
+        name: 'columnVisibilityChanged',
+        event: {
+          columnId: colId,
+          visible: true,
+          hiddenColumns: current,
+        },
+      });
+    },
+    toggleColumnVisibility(colId) {
+      if ((this.hiddenColumns || []).includes(colId)) {
+        this.showColumn(colId);
+      } else {
+        this.hideColumn(colId);
+      }
+    },
+    toggleAllColumns() {
+      const colIds = this.allColumnsList.map(c => c.colId);
+      // Capture the intended outcome before any mutation
+      const willBeVisible = !this.allColumnsVisible;
+      if (!willBeVisible) {
+        // Hide all columns
+        this.setHiddenColumns([...colIds]);
+        if (this.gridApi) this.gridApi.setColumnsVisible(colIds, false);
+      } else {
+        // Show all columns
+        this.setHiddenColumns([]);
+        if (this.gridApi) this.gridApi.setColumnsVisible(colIds, true);
+      }
+      const newHiddenColumns = willBeVisible ? [] : [...colIds];
+      this.updateCurrentConfig();
+      this.$emit('trigger-event', {
+        name: 'columnVisibilityChanged',
+        event: {
+          columnId: null,
+          visible: willBeVisible,
+          hiddenColumns: newHiddenColumns,
+        },
+      });
+    },
+    onChooserDragStart(colId) {
+      this.chooserDragColId = colId;
+    },
+    onChooserDragOver(colId) {
+      if (this.chooserDragColId && colId !== this.chooserDragColId) {
+        this.chooserDragOverColId = colId;
+      }
+    },
+    onChooserDrop(targetColId) {
+      const fromColId = this.chooserDragColId;
+      if (!fromColId || fromColId === targetColId) {
+        this.chooserDragColId = null;
+        this.chooserDragOverColId = null;
+        return;
+      }
+      // Reorder chooserColumnOrder
+      const order = [...this.chooserColumnOrder];
+      const fromIdx = order.indexOf(fromColId);
+      const toIdx = order.indexOf(targetColId);
+      if (fromIdx !== -1 && toIdx !== -1) {
+        order.splice(fromIdx, 1);
+        order.splice(toIdx, 0, fromColId);
+        this.chooserColumnOrder = order;
+        // Apply new order to AG Grid
+        if (this.gridApi) {
+          this.gridApi.applyColumnState({
+            state: order.map(colId => ({ colId })),
+            applyOrder: true,
+          });
+        }
+        this.updateCurrentConfig();
+      }
+      this.chooserDragColId = null;
+      this.chooserDragOverColId = null;
+    },
+    onChooserDragEnd() {
+      this.chooserDragColId = null;
+      this.chooserDragOverColId = null;
+    },
     /* wwEditor:start */
     checkIfColumnsStructureChanged(newDefs, oldDefs) {
       // If no old defs, structure changed (initial load)
@@ -5657,6 +6027,7 @@ export default {
 </script>
 
 <style scoped lang="scss">
+@import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap');
 .ww-datagrid {
   position: relative;
   isolation: isolate; // Create a new stacking context to contain AG Grid elements
@@ -5862,5 +6233,266 @@ export default {
     }
   }
   /* wwEditor:end */
+}
+
+// ── Column Chooser ───────────────────────────────────────────────────────────
+
+.column-chooser-container {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 5;
+}
+
+// Trigger button
+.column-chooser-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  height: 100%;
+  min-height: 28px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
+  border-radius: 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ag-header-foreground-color, #ccc);
+  line-height: 1;
+  transition: background 0.15s;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  &.has-hidden {
+    color: var(--ag-active-color, #3b9eff);
+  }
+}
+
+.cc-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--ag-active-color, #3b9eff);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+// Panel
+.cc-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  width: 260px;
+  background: var(--ag-background-color, #1e2228);
+  border: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  z-index: 1000;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Work Sans', sans-serif;
+
+  // Apply Work Sans to all text descendants
+  *, *::before, *::after {
+    font-family: 'Work Sans', sans-serif;
+  }
+}
+
+// Header
+.cc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--ag-border-color, rgba(255,255,255,0.08));
+}
+
+.cc-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ag-foreground-color, #e8eaed);
+  letter-spacing: 0.01em;
+}
+
+.cc-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--ag-foreground-color, #9aa0aa);
+  padding: 0;
+  transition: background 0.15s, color 0.15s;
+
+  &:hover {
+    background: rgba(255,255,255,0.08);
+    color: var(--ag-foreground-color, #e8eaed);
+  }
+}
+
+// Search row (select-all + search input)
+.cc-search-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ag-border-color, rgba(255,255,255,0.06));
+}
+
+.cc-search-box {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--ag-control-panel-background-color, rgba(255,255,255,0.06));
+  border: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.cc-search-icon {
+  color: var(--ag-foreground-color, #9aa0aa);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.cc-search-input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  font-size: 13px;
+  color: var(--ag-foreground-color, #e8eaed);
+  width: 100%;
+
+  &::placeholder {
+    color: var(--ag-foreground-color, #9aa0aa);
+    opacity: 0.5;
+  }
+}
+
+// Custom checkbox
+.cc-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.cc-checkbox {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--ag-active-color, #3b9eff);
+  flex-shrink: 0;
+}
+
+// Column list
+.cc-list {
+  overflow-y: auto;
+  max-height: 280px;
+  padding: 4px 0 6px;
+
+  &::-webkit-scrollbar {
+    width: 4px;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.15);
+    border-radius: 2px;
+  }
+}
+
+// Each column row
+.cc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 14px;
+  cursor: default;
+  transition: background 0.1s;
+  border-left: 2px solid transparent;
+
+  &:hover {
+    background: rgba(255,255,255,0.05);
+  }
+
+  &.cc-row--drag-over {
+    border-left-color: var(--ag-active-color, #3b9eff);
+    background: rgba(59, 158, 255, 0.06);
+  }
+
+  &.cc-row--dragging {
+    opacity: 0.4;
+  }
+}
+
+.cc-drag-handle {
+  display: flex;
+  align-items: center;
+  color: var(--ag-foreground-color, #9aa0aa);
+  opacity: 0.4;
+  cursor: grab;
+  flex-shrink: 0;
+  transition: opacity 0.15s;
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &.cc-drag-handle--disabled {
+    opacity: 0.15;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  .cc-row:hover & {
+    opacity: 0.7;
+  }
+}
+
+.cc-col-name {
+  font-size: 13px;
+  color: var(--ag-foreground-color, #d8dce3);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-empty {
+  padding: 12px 16px;
+  font-size: 12px;
+  color: var(--ag-foreground-color, #9aa0aa);
+  opacity: 0.6;
+  text-align: center;
+}
+
+// Fade transition
+.cc-fade-enter-active,
+.cc-fade-leave-active {
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.cc-fade-enter-from,
+.cc-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 </style>

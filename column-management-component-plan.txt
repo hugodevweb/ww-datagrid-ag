@@ -1,0 +1,450 @@
+================================================================================
+  COLUMN MANAGEMENT MENU — STANDALONE WEWEB COMPONENT (SEPARATE REPO)
+================================================================================
+
+1. PURPOSE
+----------
+Build a standalone WeWeb component (own repo: ww-column-manager) that provides
+a column hide/show/reorder UI. It is NOT embedded in the datagrid — it's a
+separate component placed anywhere on the page. It takes a configuration as
+input and outputs an updated one that the datagrid consumes.
+
+The datagrid already exposes a `currentConfig` variable and accepts a
+`viewConfiguration` input — the new component acts as the bridge between them.
+
+
+2. HIGH-LEVEL ARCHITECTURE
+--------------------------
+
+  ┌──────────────────┐       currentConfig        ┌─────────────────────┐
+  │                  │ ──────────────────────────► │                     │
+  │  ww-datagrid-ag  │                             │  ww-column-manager  │
+  │                  │ ◄────────────────────────── │                     │
+  └──────────────────┘       viewConfiguration     └─────────────────────┘
+                              (updated config)
+
+  - The datagrid exposes `currentConfig` (a component variable):
+      { sizes, filters, sorting, columnsOrder, hiddenColumns }
+  - The column manager receives that config + the column definitions as input.
+  - The user interacts with the column manager (toggle visibility, reorder).
+  - The column manager outputs an updated configuration object.
+  - The datagrid receives that object via its `viewConfiguration` property.
+
+This is a pure data-flow relationship — no direct component coupling.
+
+
+3. DATA STRUCTURES
+------------------
+
+3.1 INPUT A: `columns` — Column Definitions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+What columns exist. Provided by the user (or bound from a variable).
+
+Type: Array<Object>
+Example:
+  [
+    { "colId": "name",          "headerName": "Full Name",   "cellDataType": "text" },
+    { "colId": "email",         "headerName": "Email",       "cellDataType": "text" },
+    { "colId": "created_at",    "headerName": "Created",     "cellDataType": "dateString" },
+    { "colId": "amount",        "headerName": "Amount",      "cellDataType": "currency" },
+    { "colId": "action_delete", "headerName": "Delete",      "cellDataType": "action" }
+  ]
+
+Required fields per item:
+  - colId (string)       — unique column identifier (matches the datagrid's field/actionName)
+  - headerName (string)  — display label
+
+Optional:
+  - cellDataType (string) — for showing type icons in the UI (text, number, date, etc.)
+
+
+3.2 INPUT B: `currentConfig` — Current Grid State
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The datagrid's `currentConfig` variable, bound in the editor.
+
+Type: Object
+Example:
+  {
+    "sizes":        { "name": 200, "email": 300 },
+    "filters":      { "status": { "type": "equals", "filter": "active" } },
+    "sorting":      [{ "colId": "name", "sort": "asc" }],
+    "columnsOrder": ["name", "email", "created_at", "amount", "action_delete"],
+    "hiddenColumns": ["created_at"]
+  }
+
+The column manager reads `columnsOrder` and `hiddenColumns`.
+It passes through `sizes`, `filters`, and `sorting` untouched.
+
+
+3.3 OUTPUT: `updatedConfig` — Updated Configuration
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Exposed as a component variable. Bind this to the datagrid's `viewConfiguration`.
+
+Type: Object (same shape as currentConfig)
+  {
+    "sizes":        { ... },     // PASSED THROUGH unchanged from input
+    "filters":      { ... },     // PASSED THROUGH unchanged from input
+    "sorting":      [ ... ],     // PASSED THROUGH unchanged from input
+    "columnsOrder": [ ... ],     // UPDATED by reorder operations
+    "hiddenColumns": [ ... ]     // UPDATED by show/hide operations
+  }
+
+CRITICAL: Pass through ALL fields from the input, even those the component
+doesn't manage. The datagrid interprets missing keys as "keep current state"
+but present-and-empty keys as "reset". Omitting `sizes` is fine; sending
+`sizes: {}` would reset all column widths.
+
+
+4. WIRING IN THE WEWEB EDITOR
+------------------------------
+
+The user connects the two components with standard WeWeb bindings:
+
+  1. Place both components on the page
+
+  2. On the column manager, bind:
+     - `columns`       → a list of column defs (static or from a variable)
+     - `currentConfig` → datagrid's `currentConfig` variable
+
+  3. On the datagrid, bind:
+     - `viewConfiguration` → column manager's `updatedConfig` variable
+
+  Data flow loop:
+    datagrid.currentConfig → column-manager.currentConfig
+    column-manager.updatedConfig → datagrid.viewConfiguration
+
+
+5. COMPONENT PROPERTIES (ww-config.js)
+---------------------------------------
+
+properties: {
+  // ── Data Inputs ──
+  columns: {
+    label: "Columns",
+    type: "Array",
+    section: "settings",
+    bindable: true,
+    defaultValue: [],
+    options: {
+      item: {
+        type: "Object",
+        options: {
+          item: {
+            colId:      { label: "Column ID",   type: "Text", bindable: true },
+            headerName: { label: "Header Name",  type: "Text", bindable: true },
+            cellDataType: { label: "Type",       type: "Text", bindable: true },
+          }
+        }
+      }
+    }
+  },
+  currentConfig: {
+    label: "Grid Configuration",
+    type: "RawObject",
+    section: "settings",
+    bindable: true,
+    defaultValue: null,
+  },
+
+  // ── Behavior ──
+  panelPosition: {
+    label: "Panel Position",
+    type: "TextSelect",
+    section: "settings",
+    defaultValue: "bottom-right",
+    options: {
+      options: [
+        { value: "bottom-left",  label: "Bottom Left" },
+        { value: "bottom-right", label: "Bottom Right" },
+        { value: "top-left",     label: "Top Left" },
+        { value: "top-right",    label: "Top Right" },
+      ]
+    }
+  },
+  panelWidth: {
+    label: "Panel Width",
+    type: "Number",
+    section: "settings",
+    defaultValue: 260,
+  },
+  showSearch: {
+    label: "Show Search",
+    type: "OnOff",
+    section: "settings",
+    defaultValue: true,
+  },
+  allowReorder: {
+    label: "Allow Reorder",
+    type: "OnOff",
+    section: "settings",
+    defaultValue: true,
+  },
+
+  // ── Styling ──
+  backgroundColor: {
+    label: "Background",
+    type: "Color",
+    section: "style",
+    defaultValue: "#1e2228",
+  },
+  textColor: {
+    label: "Text Color",
+    type: "Color",
+    section: "style",
+    defaultValue: "#cccccc",
+  },
+  accentColor: {
+    label: "Accent Color",
+    type: "Color",
+    section: "style",
+    defaultValue: "#3b9eff",
+  },
+  borderColor: {
+    label: "Border Color",
+    type: "Color",
+    section: "style",
+    defaultValue: "rgba(255,255,255,0.1)",
+  },
+  buttonLabel: {
+    label: "Button Label",
+    type: "Text",
+    section: "style",
+    defaultValue: "",
+    // Empty = icon only; set to "Columns" to add a text label
+  },
+}
+
+
+6. COMPONENT VARIABLES (exposed to editor for binding)
+-------------------------------------------------------
+
+  updatedConfig: {
+    // THE OUTPUT. Bind to the datagrid's viewConfiguration.
+    // Updated on every user interaction (toggle, reorder).
+    type: "object",
+    defaultValue: null,
+  },
+  hiddenCount: {
+    // Number of hidden columns. Use for external badges/labels.
+    type: "number",
+    defaultValue: 0,
+  },
+  isOpen: {
+    // Whether the panel is open. Can be used for conditional styling.
+    type: "boolean",
+    defaultValue: false,
+  },
+
+
+7. TRIGGER EVENTS
+-----------------
+
+  columnVisibilityChanged:
+    // Fired when column visibility changes
+    // Payload: { columnId: string|null, visible: boolean, hiddenColumns: string[] }
+
+  columnsReordered:
+    // Fired when columns are reordered via drag-and-drop
+    // Payload: { columnsOrder: string[] }
+
+  configUpdated:
+    // Fired on ANY config change (visibility or reorder)
+    // Payload: { config: Object }  (the full updatedConfig)
+
+
+8. INTERNAL LOGIC
+-----------------
+
+8.1 Building the Column List
+  On mount and when inputs change:
+  - Start with `columns` prop as the base list
+  - Apply ordering from `currentConfig.columnsOrder` (if present)
+  - Mark visibility from `currentConfig.hiddenColumns`
+
+  Result: internal array of { colId, headerName, cellDataType, isHidden }
+  in the correct display order.
+
+  Merge algorithm:
+    const ordered = [];
+    const colMap = new Map(columns.map(c => [c.colId, c]));
+
+    // First: columns in the order specified by currentConfig.columnsOrder
+    for (const colId of (currentConfig?.columnsOrder || [])) {
+      if (colMap.has(colId)) {
+        ordered.push({
+          ...colMap.get(colId),
+          isHidden: (currentConfig?.hiddenColumns || []).includes(colId),
+        });
+        colMap.delete(colId);
+      }
+    }
+    // Then: any remaining columns not in the order (newly added, etc.)
+    for (const [colId, col] of colMap) {
+      ordered.push({
+        ...col,
+        isHidden: (currentConfig?.hiddenColumns || []).includes(colId),
+      });
+    }
+
+8.2 Toggle Visibility
+  toggleColumn(colId):
+    flip isHidden for the column
+    rebuild hiddenColumns array
+    emit updatedConfig
+
+  toggleAll():
+    if any visible → hide all
+    else → show all
+    emit updatedConfig
+
+8.3 Reorder
+  onDrop(fromColId, toColId):
+    reorder internal list
+    rebuild columnsOrder array
+    emit updatedConfig
+
+8.4 Emit Updated Config
+  emitConfig():
+    updatedConfig = {
+      ...(currentConfig || {}),                // preserve sizes, filters, sorting
+      columnsOrder: internalList.map(c => c.colId),
+      hiddenColumns: internalList.filter(c => c.isHidden).map(c => c.colId),
+    }
+    → set `updatedConfig` component variable
+    → fire `configUpdated` trigger event
+
+
+9. TEMPLATE OVERVIEW
+--------------------
+
+  <div class="ww-column-manager">
+
+    <!-- Toggle button -->
+    <button @click="togglePanel">
+      <svg>...</svg>  <!-- columns icon -->
+      <span v-if="buttonLabel">{{ buttonLabel }}</span>
+      <span v-if="hiddenCount" class="badge">{{ hiddenCount }}</span>
+    </button>
+
+    <!-- Dropdown panel -->
+    <Transition name="fade">
+      <div v-if="isOpen" class="panel">
+
+        <!-- Header with close button -->
+        <div class="panel-header">
+          <span>Manage Columns</span>
+          <button @click="isOpen = false">✕</button>
+        </div>
+
+        <!-- Search + select-all -->
+        <div v-if="showSearch" class="panel-toolbar">
+          <input type="checkbox" :checked="allVisible" :indeterminate="someHidden"
+                 @change="toggleAll" />
+          <input type="text" v-model="searchQuery" placeholder="Search..." />
+        </div>
+
+        <!-- Column list -->
+        <div class="panel-list">
+          <div v-for="col in filteredColumns" :key="col.colId"
+               :draggable="allowReorder && !searchQuery"
+               @dragstart="..." @dragover.prevent="..." @drop.prevent="..." @dragend="...">
+            <input type="checkbox" :checked="!col.isHidden"
+                   @change="toggleColumn(col.colId)" />
+            <span v-if="allowReorder && !searchQuery" class="grip">⠿</span>
+            <span class="name">{{ col.headerName }}</span>
+          </div>
+        </div>
+
+      </div>
+    </Transition>
+
+  </div>
+
+
+10. FILE STRUCTURE (new repo)
+------------------------------
+
+  ww-column-manager/
+  ├── src/
+  │   └── wwElement.vue          # The component (WeWeb convention)
+  ├── ww-config.js               # WeWeb configuration (properties, events, variables)
+  ├── package.json
+  └── README.md
+
+
+11. WHAT TO CLEAN UP IN ww-datagrid-ag (AFTER migration)
+---------------------------------------------------------
+
+Once the standalone component is wired and working, remove from the datagrid:
+
+  Template (wwElement.vue lines 55-151):
+    - Entire <div class="column-chooser-container"> block
+
+  Setup/refs:
+    - showColumnChooser, columnChooserRef, columnChooserSearch
+    - chooserColumnOrder, chooserDragColId, chooserDragOverColId
+    - handleClickOutside, clickOutsideTimer watcher
+
+  Computed:
+    - allColumnsList, filteredColumnsList
+    - allColumnsVisible, someColumnsHidden, visibleColumnCount
+
+  Methods:
+    - hideColumn, showColumn, toggleColumnVisibility, toggleAllColumns
+    - onChooserDragStart, onChooserDragOver, onChooserDrop, onChooserDragEnd
+
+  ww-config.js:
+    - allowColumnHiding property
+    - Its entry in customSettingsPropertiesOrder
+
+  Styles:
+    - All .column-chooser-* and .cc-* rules (~260 lines)
+
+  KEEP in the datagrid:
+    - `viewConfiguration` property (the new component writes to it)
+    - `currentConfig` exposed variable (the new component reads it)
+    - `hiddenColumns` internal variable + grid-level show/hide logic
+      (the datagrid still applies visibility via AG Grid API)
+
+
+12. KEY DESIGN DECISIONS
+------------------------
+
+  a) STATELESS w.r.t. the grid
+     The column manager never calls AG Grid APIs. It only transforms
+     configuration objects. This means it works with any grid component
+     that follows the same config shape.
+
+  b) DATAGRID REMAINS SOURCE OF TRUTH
+     The column manager reads state and proposes changes. The datagrid
+     applies them. If the datagrid rejects a change (e.g., can't hide
+     the last visible column), the next currentConfig update will
+     reflect reality and the column manager will sync.
+
+  c) PASS-THROUGH SEMANTICS
+     The column manager forwards all config keys it doesn't own
+     (sizes, filters, sorting) so the datagrid doesn't reset them.
+
+  d) NO COMPONENT COUPLING
+     Communication happens through WeWeb's binding system (variables
+     and properties). Either component can be replaced independently.
+
+  e) SINGLE OUTPUT VARIABLE
+     Rather than emitting separate events for each operation, the
+     component always outputs the full updatedConfig. This simplifies
+     the wiring — one binding instead of multiple event handlers.
+
+
+13. OPTIONAL FUTURE ENHANCEMENTS
+---------------------------------
+
+  - "Reset" button to restore default order + show all columns
+  - Column pinning toggle (left/right/none)
+  - Named views / presets (save/load column configurations)
+  - Column grouping (collapsible groups in the list)
+  - Keyboard navigation (arrow keys, space to toggle)
+  - Teleport panel to <body> to avoid parent overflow clipping
+  - Column width adjustment (slider or input per column)
+  - Filter/sort controls (extend beyond just visibility + order)
+
+================================================================================
