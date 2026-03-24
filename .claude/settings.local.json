@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:VS_codevueJsww-datagrid-agsrc -type f -name *.vue -o -name *.js)"
+    ]
+  }
+}

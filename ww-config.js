@@ -13,6 +13,7 @@ export default {
           "height",
           "textColor",
           "borderColor",
+          "outerBorderColor",
           "wrapperBorderRadius",
         ],
       },
@@ -655,7 +656,18 @@ export default {
     },
     borderColor: {
       type: "Color",
-      label: "Border Color",
+      label: "Inner Border Color",
+      options: {
+        nullable: true,
+      },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    outerBorderColor: {
+      type: "Color",
+      label: "Outer Border Color",
       options: {
         nullable: true,
       },

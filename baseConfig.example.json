@@ -29,6 +29,7 @@
 
   "textColor": "#111827",
   "borderColor": "#E5E7EB",
+  "outerBorderColor": "#E5E7EB",
   "wrapperBorderRadius": "8px",
 
   "headerBackgroundColor": "#F9FAFB",

@@ -275,17 +275,34 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
+    // Merged config: baseConfig keys override per-instance content (same logic as Options API cfg)
+    const cfg = computed(() => {
+      const content = props.content;
+      if (!content || typeof content !== 'object') return content ?? {};
+      const base = content.baseConfig;
+      const excludes = content.baseConfigExcludes;
+      if (!base || typeof base !== 'object') return content;
+      const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
+      excludeSet.add('baseConfig');
+      excludeSet.add('baseConfigExcludes');
+      const merged = { ...content };
+      for (const key of Object.keys(base)) {
+        if (!excludeSet.has(key)) merged[key] = base[key];
+      }
+      return merged;
+    });
+
     // Use shared translation utility
 
     // Debug logging helper
     const debugLog = (...args) => {
-      if (props.content?.enableDebugLogs) {
+      if (cfg.value?.enableDebugLogs) {
         console.log(...args);
       }
     };
 
     // Performance monitor — all recording is no-ops unless enableDebugLogs is on
-    const gridMonitor = createGridMonitor(() => !!props.content?.enableDebugLogs);
+    const gridMonitor = createGridMonitor(() => !!cfg.value?.enableDebugLogs);
 
     // Helper to check if a viewConfiguration value is effectively empty
     // Returns true if value is null, undefined, empty object {}, or empty array []
@@ -1180,7 +1197,7 @@ export default {
       }
 
       // Sync external variable with column chooser state
-      const ccVarId = props.content?.columnChooserVariableId;
+      const ccVarId = cfg.value?.columnChooserVariableId;
       if (ccVarId) {
         try {
           wwLib.wwVariable.updateValue(ccVarId, val);
@@ -1194,7 +1211,7 @@ export default {
     // Watch external variable to control column chooser visibility
     watch(
       () => {
-        const varId = props.content?.columnChooserVariableId;
+        const varId = cfg.value?.columnChooserVariableId;
         if (!varId) return undefined;
         try {
           return wwLib.wwVariable.getValue(varId);
@@ -1264,8 +1281,8 @@ export default {
     // Clear column caches when major dependencies change to prevent stale memoized functions
     watch(
       () => [
-        props.content?.columns, 
-        props.content?.lang,
+        cfg.value?.columns,
+        cfg.value?.lang,
         props.content?.actionFont,
         props.content?.cellFontFamily,
         props.content?.userFocusColor
@@ -1376,7 +1393,7 @@ export default {
 
     // Update external WeWeb variable when view-edited state changes
     const updateViewEditedVariable = (config) => {
-      const variableId = props.content?.viewEditedVariableId;
+      const variableId = cfg.value?.viewEditedVariableId;
       if (!variableId) return;
 
       // Skip during programmatic view config application — grid is mid-transition
@@ -1872,7 +1889,7 @@ export default {
         if (props.content.viewConfiguration) {
           applyViewConfiguration(props.content.viewConfiguration, true);
           // Grid now matches the initial config — reset the edited variable
-          const variableId = props.content?.viewEditedVariableId;
+          const variableId = cfg.value?.viewEditedVariableId;
           if (variableId) {
             try {
               wwLib.wwVariable.updateValue(variableId, false);
@@ -1930,7 +1947,7 @@ export default {
         // Always reset the edited variable whenever viewConfiguration changes,
         // regardless of whether the grid was re-synced — the new config is the new baseline
         if (isConfigChanged) {
-          const variableId = props.content?.viewEditedVariableId;
+          const variableId = cfg.value?.viewEditedVariableId;
           if (variableId) {
             try {
               wwLib.wwVariable.updateValue(variableId, false);
@@ -2311,7 +2328,7 @@ export default {
 
     // Determine if infinite scrolling is enabled
     const isInfiniteScrollEnabled = computed(() => {
-      return props.content?.dataSource === 'supabase' && props.content?.enableInfiniteScroll === true;
+      return cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll === true;
     });
 
     // Row model type - 'infinite' if enabled, otherwise undefined (defaults to client-side)
@@ -2335,7 +2352,7 @@ export default {
     // Cache block size for infinite scrolling
     const cacheBlockSize = computed(() => {
       if (isInfiniteScrollEnabled.value) {
-        return props.content?.infiniteBlockSize || 200;
+        return cfg.value?.infiniteBlockSize || 200;
       }
       return undefined;
     });
@@ -2910,14 +2927,14 @@ export default {
     // Note: rowModelType and cacheBlockSize are initial properties and cannot be changed after grid init
     // Users must reload the page to switch between row model types
     watch(
-      () => [props.content?.enableInfiniteScroll, props.content?.infiniteBlockSize],
+      () => [cfg.value?.enableInfiniteScroll, cfg.value?.infiniteBlockSize],
       (newValues, oldValues) => {
         // Only update if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
           return;
         }
-        
-        if (props.content?.dataSource === 'supabase' && props.content?.enableInfiniteScroll && gridApi.value) {
+
+        if (cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll && gridApi.value) {
           // Refresh the datasource when infinite scrolling settings change
           // Note: cacheBlockSize is an initial property and cannot be changed dynamically
           // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
@@ -3070,7 +3087,7 @@ export default {
       gridApiQueue, // Expose grid API queue for methods
       gridApiUtils, // Expose grid API utilities for methods
       localeText: computed(() => {
-        switch (props.content.lang) {
+        switch (cfg.value?.lang) {
           case "fr":
             return AG_GRID_LOCALE_FR;
           case "de":
@@ -3082,7 +3099,7 @@ export default {
           case "custom":
             return {
               ...AG_GRID_LOCALE_EN,
-              ...(props.content.localeText || {}),
+              ...(cfg.value?.localeText || {}),
             };
           default:
             return AG_GRID_LOCALE_EN;
@@ -3385,7 +3402,7 @@ export default {
                       selectOptions: selectParams,
                       closeOnApply: true,
                       translations: (() => {
-                        const lang = this.content?.lang || 'en';
+                        const lang = this.cfg?.lang || 'en';
                         const translations = {
                           en: { reset: 'Reset', apply: 'Apply' },
                           fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
@@ -3489,7 +3506,7 @@ export default {
                       isLoading: userParams.isLoading,
                       closeOnApply: true,
                       translations: (() => {
-                        const lang = this.content?.lang || 'en';
+                        const lang = this.cfg?.lang || 'en';
                         const translations = {
                           en: { reset: 'Reset', apply: 'Apply' },
                           fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
@@ -3828,6 +3845,9 @@ export default {
             ? this.cfg.headerHeight
             : undefined,
         borderColor: this.cfg.borderColor,
+        wrapperBorder: this.cfg.outerBorderColor
+          ? { style: "solid", width: 1, color: this.cfg.outerBorderColor }
+          : undefined,
         cellTextColor: this.cfg.cellColor,
         cellFontFamily: this.cfg.cellFontFamily,
         dataFontSize: this.cfg.cellFontSize,
@@ -4477,7 +4497,7 @@ export default {
       if (!rowNode) {
         console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
         // Debug: log available row IDs to help troubleshoot
-        if (this.content?.enableDebugLogs) {
+        if (this.cfg?.enableDebugLogs) {
           const availableIds = getAvailableRowIds(this.gridApi, this.resolveMappingFormula, this.content);
           console.log('[Datagrid] Available row IDs:', availableIds);
         }
@@ -4726,8 +4746,8 @@ export default {
           // Row not found in grid but was fetched from DB - add it to the grid
           this.debugLog(`[Datagrid] Row with id "${rowId}" not found in grid, adding it from database`);
           
-          const isInfiniteScroll = this.content?.enableInfiniteScroll === true;
-          
+          const isInfiniteScroll = this.cfg?.enableInfiniteScroll === true;
+
           // CRITICAL: Set flag to prevent watchers from triggering a full grid re-render
           // When we update supabaseDataRef, the rowData computed will change, which would
           // normally cause AG Grid to see a new array reference and re-render everything.
@@ -5033,7 +5053,7 @@ export default {
       
       // Remove the row from the grid
       try {
-        const isInfiniteScroll = this.content?.dataSource === 'supabase' && this.content?.enableInfiniteScroll === true;
+        const isInfiniteScroll = this.cfg?.dataSource === 'supabase' && this.cfg?.enableInfiniteScroll === true;
         
         if (isInfiniteScroll) {
           // For infinite scroll mode, applyTransaction doesn't work properly
