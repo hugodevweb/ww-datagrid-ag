@@ -1,0 +1,611 @@
+// Column definition factories to prevent unnecessary AG Grid re-renders
+// by memoizing function closures and avoiding recreation on every computed evaluation
+
+// Cache for memoized formatters and other closures
+const memoCache = new Map();
+
+// Helper to create a stable memoized function
+function memoize(key, factory) {
+  if (!memoCache.has(key)) {
+    memoCache.set(key, factory());
+  }
+  return memoCache.get(key);
+}
+
+// ---------------------------------------------------------------------------
+// Cell display value cache
+// ---------------------------------------------------------------------------
+// Stores the *output* of value formatters keyed by a compound string of
+// (columnId, rawValue, formatConfig).  When AG Grid virtualises rows and a
+// previously-visible row re-enters the viewport, the formatter result is
+// served from cache instead of being recomputed.
+//
+// Map is used instead of WeakMap because keys are primitive strings.
+// Size is bounded to CELL_CACHE_MAX to prevent unbounded memory growth.
+const cellDisplayCache = new Map();
+const CELL_CACHE_MAX = 2000;
+
+/**
+ * Get or compute a formatted display value with caching.
+ *
+ * @param {string} colId     - Column identifier (field name or action name)
+ * @param {string} configKey - Stable string that captures the formatter config
+ *                             (e.g. currency code + locale, or date format)
+ * @param {*}      rawValue  - The raw cell value (used as part of the cache key
+ *                             and passed to factory when there is a cache miss)
+ * @param {Function} factory - () => string  – computes the formatted display string
+ * @returns {string}
+ */
+export function getCachedDisplayValue(colId, configKey, rawValue, factory) {
+  const key = `${colId}::${configKey}::${rawValue}`;
+  if (cellDisplayCache.has(key)) {
+    return cellDisplayCache.get(key);
+  }
+  const result = factory();
+  // Evict oldest entries when the cache is full
+  if (cellDisplayCache.size >= CELL_CACHE_MAX) {
+    cellDisplayCache.delete(cellDisplayCache.keys().next().value);
+  }
+  cellDisplayCache.set(key, result);
+  return result;
+}
+
+/**
+ * Clear the cell display cache (called alongside clearColumnCache when
+ * column configuration changes).
+ */
+export function clearCellDisplayCache() {
+  cellDisplayCache.clear();
+}
+
+// Clear cache when dependencies change (called from component)
+export function clearColumnCache() {
+  memoCache.clear();
+}
+
+// Cache for Intl.NumberFormat instances
+const intlFormatters = new Map();
+
+function getCachedNumberFormatter(locale, currency) {
+  const key = `${locale}-${currency}`;
+  if (!intlFormatters.has(key)) {
+    try {
+      intlFormatters.set(key, new Intl.NumberFormat(locale || navigator.language || 'en-US', {
+        style: 'currency',
+        currency: currency || 'EUR',
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }));
+    } catch (e) {
+      // Fallback for invalid currency codes
+      intlFormatters.set(key, null);
+    }
+  }
+  return intlFormatters.get(key);
+}
+
+// Shared validation function factory
+export function createValidationFunction(col, resolveMappingFormula) {
+  const cacheKey = `validation-${col.field}-${JSON.stringify(col.validation)}`;
+  
+  return memoize(cacheKey, () => {
+    return (newValue, rowData) => {
+      if (!col?.validation || !Array.isArray(col.validation)) {
+        return null;
+      }
+
+      const errors = [];
+
+      for (const rule of col.validation) {
+        if (!rule?.type) {
+          continue;
+        }
+
+        let isValid = true;
+        let errorMessage = null;
+
+        switch (rule.type) {
+          case 'required':
+            isValid = newValue !== null && newValue !== undefined && newValue !== '';
+            errorMessage = rule.message || 'This field is required.';
+            break;
+
+          case 'minLength':
+            if (newValue !== null && newValue !== undefined && newValue !== '') {
+              const minLength = parseInt(rule.value);
+              if (!isNaN(minLength) && String(newValue).length < minLength) {
+                isValid = false;
+                errorMessage = rule.message || `Value must be at least ${minLength} characters long.`;
+              }
+            }
+            break;
+
+          case 'maxLength':
+            if (newValue !== null && newValue !== undefined && newValue !== '') {
+              const maxLength = parseInt(rule.value);
+              if (!isNaN(maxLength) && String(newValue).length > maxLength) {
+                isValid = false;
+                errorMessage = rule.message || `Value must be at most ${maxLength} characters long.`;
+              }
+            }
+            break;
+
+          case 'min':
+            if (newValue !== null && newValue !== undefined && newValue !== '') {
+              const min = Number(rule.value);
+              const numValue = Number(newValue);
+              if (!isNaN(min) && !isNaN(numValue) && numValue < min) {
+                isValid = false;
+                errorMessage = rule.message || `Value must be at least ${min}.`;
+              }
+            }
+            break;
+
+          case 'max':
+            if (newValue !== null && newValue !== undefined && newValue !== '') {
+              const max = Number(rule.value);
+              const numValue = Number(newValue);
+              if (!isNaN(max) && !isNaN(numValue) && numValue > max) {
+                isValid = false;
+                errorMessage = rule.message || `Value must be at most ${max}.`;
+              }
+            }
+            break;
+
+          case 'pattern':
+            if (newValue !== null && newValue !== undefined && newValue !== '' && rule.value) {
+              try {
+                const regex = new RegExp(rule.value);
+                const matches = regex.test(String(newValue));
+                if (!matches) {
+                  isValid = false;
+                  errorMessage = rule.message || 'Value does not match the required pattern.';
+                }
+              } catch (e) {
+                // If pattern is invalid, don't fail validation
+              }
+            }
+            break;
+
+          case 'custom':
+            if (rule.custom) {
+              const validationContext = { ...rowData, ...(col?.field ? { [col.field]: newValue } : {}) };
+              const result = resolveMappingFormula(rule.custom, validationContext);
+              isValid = Boolean(result);
+              errorMessage = rule.message || 'Custom validation failed.';
+            }
+            break;
+        }
+
+        if (!isValid && errorMessage) {
+          errors.push(errorMessage);
+        }
+      }
+
+      return errors.length > 0 ? errors : null;
+    };
+  });
+}
+
+// Date formatter factory
+export function createDateFormatter(col) {
+  const cacheKey = `date-formatter-${col.field}-${col.dateFormat}-${col.timeFormat}-${col.cellDataType}`;
+  const configKey = `${col.dateFormat || 'auto'}-${col.timeFormat || 'HH:mm'}-${col.cellDataType || 'date'}`;
+  
+  return memoize(cacheKey, () => {
+    return (value) => {
+      if (!value) return '';
+
+      // Serve from display cache first — date parsing + string manipulation is skipped
+      // for every previously-seen value that re-enters the viewport during scroll.
+      return getCachedDisplayValue(col.field, configKey, value, () => {
+        const date = new Date(value);
+        if (isNaN(date.getTime())) return value;
+
+        const dateFormat = col?.dateFormat || 'auto';
+        const timeFormat = col?.timeFormat || 'HH:mm';
+
+        // Format date part
+        let formattedDate;
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthName = monthNames[date.getMonth()];
+
+        switch (dateFormat) {
+          case 'DD/MM/YYYY':
+            formattedDate = `${day}/${month}/${year}`;
+            break;
+          case 'MM/DD/YYYY':
+            formattedDate = `${month}/${day}/${year}`;
+            break;
+          case 'YYYY-MM-DD':
+            formattedDate = `${year}-${month}-${day}`;
+            break;
+          case 'DD MMM YYYY':
+            formattedDate = `${day} ${monthName} ${year}`;
+            break;
+          case 'auto':
+          default:
+            formattedDate = date.toLocaleDateString();
+            break;
+        }
+
+        // Add time part for dateTime type
+        if (col?.cellDataType === 'dateTime') {
+          const hours24 = date.getHours();
+          const hours12 = hours24 % 12 || 12;
+          const minutes = String(date.getMinutes()).padStart(2, '0');
+          const seconds = String(date.getSeconds()).padStart(2, '0');
+          const ampm = hours24 >= 12 ? 'PM' : 'AM';
+          const hours24Str = String(hours24).padStart(2, '0');
+          const hours12Str = String(hours12).padStart(2, '0');
+
+          let formattedTime;
+          switch (timeFormat) {
+            case 'HH:mm:ss':
+              formattedTime = `${hours24Str}:${minutes}:${seconds}`;
+              break;
+            case 'hh:mm A':
+              formattedTime = `${hours12Str}:${minutes} ${ampm}`;
+              break;
+            case 'HH:mm':
+            default:
+              formattedTime = `${hours24Str}:${minutes}`;
+              break;
+          }
+
+          return `${formattedDate} ${formattedTime}`;
+        }
+
+        return formattedDate;
+      });
+    };
+  });
+}
+
+// Currency formatter factory
+export function createCurrencyFormatter(col) {
+  const cacheKey = `currency-formatter-${col.field}-${col.currencyMode}-${col.currencyCode}-${col.currencyLocale}`;
+  
+  return memoize(cacheKey, () => {
+    return (params, resolveMappingFormula) => {
+      const rawValue = params.data?.[col?.field];
+      if (rawValue == null || rawValue === '') return '';
+
+      // Get currency code from row data or column config
+      const getCurrencyCode = (rowData, colDef) => {
+        if (colDef?.currencyMode === 'perRow' && colDef?.currencyCodeField) {
+          return resolveMappingFormula(colDef.currencyCodeField, rowData) || 'EUR';
+        }
+        return colDef?.currencyCode || 'EUR';
+      };
+
+      // Get locale for currency formatting
+      const getLocale = (colDef) => {
+        const locale = colDef?.currencyLocale;
+        if (!locale || locale === 'auto') return navigator.language || 'en-US';
+        return locale;
+      };
+
+      const currencyCode = getCurrencyCode(params.data, col);
+      const locale = getLocale(col);
+
+      // Convert cents to currency units
+      const currencyValue = typeof rawValue === 'number' ? rawValue / 100 : parseFloat(rawValue) / 100;
+      if (isNaN(currencyValue)) return '';
+
+      // For per-row currency mode the currency code varies by row so cache per (value, code, locale).
+      // For static mode the currency code is constant so any rawValue hit is valid.
+      const configKey = `${locale}-${currencyCode}`;
+      return getCachedDisplayValue(col.field, configKey, rawValue, () => {
+        const formatter = getCachedNumberFormatter(locale, currencyCode);
+        if (formatter) {
+          try {
+            return formatter.format(currencyValue);
+          } catch (e) {
+            return `${currencyValue.toFixed(2)} ${currencyCode}`;
+          }
+        }
+        return `${currencyValue.toFixed(2)} ${currencyCode}`;
+      });
+    };
+  });
+}
+
+// Date comparator factory
+export function createDateComparator() {
+  const cacheKey = 'date-comparator';
+  
+  return memoize(cacheKey, () => {
+    return (valueA, valueB) => {
+      const dateA = valueA ? new Date(valueA).getTime() : 0;
+      const dateB = valueB ? new Date(valueB).getTime() : 0;
+      return dateA - dateB;
+    };
+  });
+}
+
+// Currency comparator factory
+export function createCurrencyComparator(col) {
+  const cacheKey = `currency-comparator-${col.field}`;
+  
+  return memoize(cacheKey, () => {
+    return (valueA, valueB, nodeA, nodeB) => {
+      // Helper to get display value (cents / 100) for comparison
+      const getDisplayValue = (value) => {
+        if (value == null || value === '') return null;
+        const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
+        return isNaN(currencyValue) ? null : currencyValue;
+      };
+
+      const rawValueA = nodeA?.data?.[col?.field];
+      const rawValueB = nodeB?.data?.[col?.field];
+      const displayValueA = getDisplayValue(rawValueA);
+      const displayValueB = getDisplayValue(rawValueB);
+      
+      // Handle null/undefined values
+      if (displayValueA == null && displayValueB == null) return 0;
+      if (displayValueA == null) return 1;
+      if (displayValueB == null) return -1;
+      
+      // Numeric comparison
+      return displayValueA - displayValueB;
+    };
+  });
+}
+
+// Currency value getter factory
+export function createCurrencyValueGetter(col) {
+  const cacheKey = `currency-value-getter-${col.field}`;
+  
+  return memoize(cacheKey, () => {
+    return (params) => {
+      const rawValue = params.data?.[col?.field];
+      if (rawValue == null || rawValue === '') return null;
+      const currencyValue = typeof rawValue === 'number' ? rawValue / 100 : parseFloat(rawValue) / 100;
+      return isNaN(currencyValue) ? null : currencyValue;
+    };
+  });
+}
+
+// Currency value parser factory  
+export function createCurrencyValueParser() {
+  const cacheKey = 'currency-value-parser';
+  
+  return memoize(cacheKey, () => {
+    return (params) => {
+      const input = params.newValue;
+      if (input == null || input === '') return null;
+      
+      // Remove currency symbols and whitespace
+      const cleaned = String(input).replace(/[€$£¥,\s]/g, '');
+      const parsed = parseFloat(cleaned);
+      
+      if (isNaN(parsed)) return null;
+      
+      // Convert to cents (multiply by 100)
+      return Math.round(parsed * 100);
+    };
+  });
+}
+
+// Generic value setter factory
+export function createValueSetter(col, customSetter) {
+  const cacheKey = `value-setter-${col.field}-${!!customSetter}`;
+  
+  return memoize(cacheKey, () => {
+    return (params) => {
+      const { newValue, oldValue, data } = params;
+
+      // If custom setter provided, use it
+      if (customSetter) {
+        return customSetter(params);
+      }
+      
+      // Default behavior
+      if (newValue !== oldValue && col?.field) {
+         data[col.field] = newValue;
+         return true;
+      }
+      return false;
+    };
+  });
+}
+
+// Action column factory
+export function createActionColumnDef(col, commonProperties, onActionTrigger, content) {
+  return {
+    ...commonProperties,
+    headerName: col?.headerName,
+    cellRenderer: "ActionCellRenderer",
+    cellRendererParams: {
+      name: col?.actionName,
+      label: col?.actionLabel,
+      trigger: onActionTrigger,
+      withFont: !!content.actionFont,
+    },
+    sortable: false,
+    filter: false,
+    colId: col?.actionName,
+  };
+}
+
+// Custom column factory  
+export function createCustomColumnDef(col, commonProperties, onCustomCellEdit, resolveMappingFormula) {
+  const validationFn = createValidationFunction(col, resolveMappingFormula);
+  
+  const customColumn = {
+    ...commonProperties,
+    headerName: col?.headerName,
+    field: col?.field,
+    cellRenderer: "WewebCellRenderer",
+    cellRendererParams: {
+      containerId: col?.containerId,
+      trigger: onCustomCellEdit,
+      suppressRowInteraction: col?.suppressRowInteraction,
+    },
+    cellEditor: "WewebCellRenderer", 
+    cellEditorParams: {
+      containerId: col?.containerId,
+      trigger: onCustomCellEdit,
+      suppressRowInteraction: col?.suppressRowInteraction,
+      getValidationErrors: (params) => {
+        return validationFn(params.value, params.data);
+      },
+    },
+    editable: col?.editable !== false,
+    sortable: col?.sortable,
+    filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
+  };
+  
+  // Use display value for filtering and sorting if enabled
+  if (col?.useDisplayValueForFilterSort && col?.displayLabelFormula) {
+    // Helper function to get display value from raw value
+    const getDisplayValue = memoize(`display-value-${col.field}`, () => {
+      return (rawValue) => {
+        return resolveMappingFormula(col?.displayLabelFormula, rawValue);
+      };
+    });
+    
+    // Use display value for filtering
+    customColumn.filterValueGetter = (params) => {
+      const rawValue = params.data?.[col?.field];
+      return getDisplayValue(rawValue);
+    };
+    
+    // Use display value for sorting with custom comparator
+    if (col?.sortable) {
+      customColumn.comparator = memoize(`custom-comparator-${col.field}`, () => {
+        return (valueA, valueB, nodeA, nodeB) => {
+          const rawValueA = nodeA?.data?.[col?.field];
+          const rawValueB = nodeB?.data?.[col?.field];
+          const displayValueA = getDisplayValue(rawValueA);
+          const displayValueB = getDisplayValue(rawValueB);
+          
+          // Handle null/undefined values
+          if (displayValueA == null && displayValueB == null) return 0;
+          if (displayValueA == null) return 1;
+          if (displayValueB == null) return -1;
+          
+          // Use filter type to determine comparison method
+          if (col?.customFilterType === "agDateColumnFilter") {
+            const dateA = displayValueA ? new Date(displayValueA).getTime() : 0;
+            const dateB = displayValueB ? new Date(displayValueB).getTime() : 0;
+            return dateA - dateB;
+          } else if (col?.customFilterType === "agNumberColumnFilter") {
+            const numA = displayValueA != null ? parseFloat(displayValueA) : 0;
+            const numB = displayValueB != null ? parseFloat(displayValueB) : 0;
+            if (isNaN(numA) && isNaN(numB)) return 0;
+            if (isNaN(numA)) return 1;
+            if (isNaN(numB)) return -1;
+            return numA - numB;
+          } else {
+            // Text comparison
+            return String(displayValueA).localeCompare(String(displayValueB));
+          }
+        };
+      });
+    }
+  } else {
+    // Add custom comparator based on filter type for proper sorting (when not using display value)
+    if (col?.sortable && col?.customFilterType) {
+      if (col.customFilterType === "agDateColumnFilter") {
+        customColumn.comparator = createDateComparator();
+      } else if (col.customFilterType === "agNumberColumnFilter") {
+        customColumn.comparator = memoize(`number-comparator-${col.field}`, () => {
+          return (valueA, valueB) => {
+            const numA = valueA != null ? parseFloat(valueA) : 0;
+            const numB = valueB != null ? parseFloat(valueB) : 0;
+            if (isNaN(numA) && isNaN(numB)) return 0;
+            if (isNaN(numA)) return 1;
+            if (isNaN(numB)) return -1;
+            return numA - numB;
+          };
+        });
+      }
+    }
+  }
+  
+  return customColumn;
+}
+
+// Date column factory
+export function createDateColumnDef(col, commonProperties, resolveMappingFormula) {
+  const validationFn = createValidationFunction(col, resolveMappingFormula);
+  const formatter = createDateFormatter(col);
+  const comparator = createDateComparator();
+  
+  return {
+    ...commonProperties,
+    headerName: col?.headerName,
+    field: col?.field,
+    sortable: col?.sortable,
+    filter: col?.filter ? 'agDateColumnFilter' : false,
+    editable: col?.editable,
+    cellEditor: 'DateCellEditor',
+    cellEditorParams: {
+      isDateTime: col?.cellDataType === 'dateTime',
+      getValidationErrors: (params) => {
+        return validationFn(params.value, params.data);
+      },
+    },
+    valueFormatter: (params) => formatter(params.value),
+    comparator: comparator,
+  };
+}
+
+// Currency column factory
+export function createCurrencyColumnDef(col, commonProperties, resolveMappingFormula) {
+  const validationFn = createValidationFunction(col, resolveMappingFormula);
+  const formatter = createCurrencyFormatter(col);
+  const comparator = createCurrencyComparator(col);
+  const valueGetter = createCurrencyValueGetter(col);
+  const valueParser = createCurrencyValueParser();
+  
+  return {
+    ...commonProperties,
+    headerName: col?.headerName,
+    field: col?.field,
+    sortable: col?.sortable,
+    filter: col?.filter ? 'agNumberColumnFilter' : false,
+    editable: col?.editable,
+    cellEditorParams: {
+      getValidationErrors: (params) => {
+        return validationFn(params.value, params.data);
+      },
+    },
+    // Format display: convert cents to formatted currency
+    valueFormatter: (params) => formatter(params, resolveMappingFormula),
+    // Get display value for sorting (cents / 100)
+    valueGetter: valueGetter,
+    // Get display value for filtering (user types 12, not 1200)
+    filterValueGetter: valueGetter,
+    // Parse user input: convert display value (e.g., "12") back to cents (1200)
+    valueParser: valueParser,
+    // Custom comparator for proper numeric sorting using display values
+    comparator: comparator,
+  };
+}
+
+// Image column factory
+export function createImageColumnDef(col, commonProperties) {
+  return {
+    ...commonProperties,
+    headerName: col?.headerName,
+    field: col?.field,
+    cellRenderer: "ImageCellRenderer",
+    cellRendererParams: {
+      width: col?.imageWidth,
+      height: col?.imageHeight,
+    },
+  };
+}
+
+// Clear all caches (call when major dependencies change)
+export function clearAllCaches() {
+  clearColumnCache();
+  intlFormatters.clear();
+  clearCellDisplayCache();
+}

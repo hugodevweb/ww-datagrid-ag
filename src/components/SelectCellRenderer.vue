@@ -42,6 +42,22 @@
 </template>
 
 <script>
+// Module-level WeakMap cache for processed options.
+// Keyed by the raw options array reference — avoids re-running formula mapping
+// for every SelectCellRenderer instance that shares the same column options.
+const processedOptionsCache = new WeakMap();
+
+// Returns a cache key string for formula-mapped options (plain object key for Map).
+function buildFormulaOptionsKey(valueFormula, labelFormula, colorFormula) {
+    return `${valueFormula?.code || ''}|${labelFormula?.code || ''}|${colorFormula?.code || ''}`;
+}
+
+// A simple Map used as a second-level cache when options is the same reference
+// and formula codes match (covers the case where options is recreated each render).
+const formulaOptionsCache = new Map();
+// Limit the formula cache size to avoid unbounded growth.
+const FORMULA_CACHE_MAX = 50;
+
 export default {
     name: "SelectCellRenderer",
     props: {
@@ -88,16 +104,17 @@ export default {
                 return true;
             }
 
-            // Only show skeleton on initial load if options are not yet loaded
-            // This prevents showing raw IDs when options haven't loaded yet on first render
-            // But don't show skeleton on subsequent data updates
+            // Only show skeleton on initial load if we have a value but no matching option yet
+            // This prevents showing raw values while options are being processed
             if (!this.hasEverRendered) {
+                const hasValue = this.selectedValue != null && this.selectedValue !== '';
                 const optionsNotLoaded = this.processedOptions.length === 0;
+                const hasNoMatchingOption = hasValue && this.processedOptions.length > 0 && !this.currentOption;
                 
-                // Show skeleton only when we expect options to arrive (e.g. options binding not yet ready).
-                // If options stay empty with no explicit loading signal, we stop showing skeleton after a short
-                // delay so the cell shows the value/placeholder instead of staying stuck (e.g. when col.options is undefined).
-                if (optionsNotLoaded) {
+                // Show skeleton when:
+                // 1. We have a value but options haven't loaded yet, OR
+                // 2. We have options but no matching option for the current value
+                if ((hasValue && optionsNotLoaded) || hasNoMatchingOption) {
                     return true;
                 }
             }
@@ -128,37 +145,65 @@ export default {
             }
 
             // Check if we need to use formula mapping (for dynamically bound options)
-            const hasFormulas = (activeParams?.optionsValueFormula || editorParams?.optionsValueFormula) ||
-                               (activeParams?.optionsLabelFormula || editorParams?.optionsLabelFormula) ||
-                               (activeParams?.optionsColorFormula || editorParams?.optionsColorFormula);
+            const valueFormula = activeParams?.optionsValueFormula || editorParams?.optionsValueFormula;
+            const labelFormula = activeParams?.optionsLabelFormula || editorParams?.optionsLabelFormula;
+            const colorFormula = activeParams?.optionsColorFormula || editorParams?.optionsColorFormula;
+            const hasFormulas = valueFormula || labelFormula || colorFormula;
 
-            // If no formulas, return options as-is (static options)
+            // Static options path — keyed by the options array reference via WeakMap.
+            // All rows sharing the same column will share the same computed result
+            // without redundant .map() calls on every new renderer instance.
             if (!hasFormulas || !resolveMappingFormula) {
-                return options.map(option => ({
-                    // Use nullish coalescing to preserve false, 0, and other falsy values
+                if (processedOptionsCache.has(options)) {
+                    return processedOptionsCache.get(options);
+                }
+                const result = options.map(option => ({
                     value: option?.value ?? '',
                     label: option?.label ?? option?.value ?? '',
                     color: option?.color ?? '#f0f0f0',
                 }));
+                processedOptionsCache.set(options, result);
+                return result;
             }
 
-            // Map options using formulas for dynamically bound data
-            const valueFormula = activeParams?.optionsValueFormula || editorParams?.optionsValueFormula;
-            const labelFormula = activeParams?.optionsLabelFormula || editorParams?.optionsLabelFormula;
-            const colorFormula = activeParams?.optionsColorFormula || editorParams?.optionsColorFormula;
+            // Formula-mapped options — use a composite cache key (options ref + formula codes).
+            // We use the options array reference plus formula identifiers to avoid running
+            // resolveMappingFormula for every renderer instance on the same column.
+            const formulaKey = buildFormulaOptionsKey(valueFormula, labelFormula, colorFormula);
             
-            return options.map(option => {
+            if (processedOptionsCache.has(options)) {
+                const cached = processedOptionsCache.get(options);
+                if (cached.__formulaKey === formulaKey) {
+                    return cached.result;
+                }
+            }
+
+            // Also check the flat Map cache (handles new array instances with identical formula codes)
+            const flatCacheKey = `${formulaKey}::${JSON.stringify(options).slice(0, 200)}`;
+            if (formulaOptionsCache.has(flatCacheKey)) {
+                return formulaOptionsCache.get(flatCacheKey);
+            }
+
+            const result = options.map(option => {
                 const value = resolveMappingFormula(valueFormula, option) ?? option.value;
                 const label = resolveMappingFormula(labelFormula, option) ?? option.label;
                 const color = resolveMappingFormula(colorFormula, option) ?? option.color;
-                
                 return {
-                    // Use nullish coalescing to preserve false, 0, and other falsy values
                     value: value ?? '',
                     label: label ?? value ?? '',
                     color: color ?? '#f0f0f0',
                 };
             });
+
+            // Store in both caches
+            processedOptionsCache.set(options, { __formulaKey: formulaKey, result });
+            if (formulaOptionsCache.size >= FORMULA_CACHE_MAX) {
+                // Evict the oldest entry to keep memory bounded
+                formulaOptionsCache.delete(formulaOptionsCache.keys().next().value);
+            }
+            formulaOptionsCache.set(flatCacheKey, result);
+
+            return result;
         },
         currentOption() {
             // Always use selectedValue which is kept up-to-date by both the
@@ -169,16 +214,44 @@ export default {
             return this.processedOptions.find(opt => opt.value === this.selectedValue) || null;
         },
         displayLabel() {
-            return this.currentOption?.label || this.params?.value || '';
+            // Only show the label if we have a matching option
+            // This prevents showing raw values with gray backgrounds
+            if (this.currentOption) {
+                return this.currentOption.label;
+            }
+            
+            // If we have options available but no match, show empty
+            // This prevents showing raw values while options are being processed
+            if (this.processedOptions.length > 0) {
+                return '';
+            }
+            
+            // If no options are available yet and we're in loading state, show empty
+            if (this.isLoadingState) {
+                return '';
+            }
+            
+            // Only show the raw value if we explicitly have no options configured
+            // (static case where col.options is undefined/empty)
+            return this.params?.value || '';
         },
         cellStyle() {
-            const bgColor = this.currentOption?.color || '#f0f0f0';
-            // Always use white for text color
-            const textColor = '#ffffff';
+            // Only apply colored background if we have a matching option
+            if (this.currentOption) {
+                const bgColor = this.currentOption.color || '#f0f0f0';
+                const textColor = '#ffffff';
+                
+                return {
+                    backgroundColor: bgColor,
+                    color: textColor,
+                };
+            }
             
+            // For cases without a matching option, use transparent background
+            // This prevents the gray flash while options are loading/processing
             return {
-                backgroundColor: bgColor,
-                color: textColor,
+                backgroundColor: 'transparent',
+                color: 'inherit',
             };
         },
         dropdownColumns() {
@@ -217,12 +290,16 @@ export default {
             this.highlightedIndex = 0;
         }
 
-        // Mark as rendered once we have options available
-        // This prevents skeleton from showing on subsequent data updates
-        // Only mark as rendered when options are actually available, not just when there's a value
+        // Mark as rendered once we have options available and properly matched
         this.$nextTick(() => {
             if (this.processedOptions.length > 0) {
-                this.hasEverRendered = true;
+                const hasValue = this.selectedValue != null && this.selectedValue !== '';
+                const hasMatchingOption = this.processedOptions.find(opt => opt.value === this.selectedValue);
+                
+                // Mark as rendered if we don't have a value or we found a matching option
+                if (!hasValue || hasMatchingOption) {
+                    this.hasEverRendered = true;
+                }
             } else if (!this.isEditMode) {
                 // Options not loaded: stop showing skeleton after a short delay so we don't stay stuck
                 // when col.options is undefined (e.g. dynamic binding never populated)
@@ -285,7 +362,7 @@ export default {
                 });
             }
         },
-        // Mark as rendered when options become available (for cases where component mounts before options)
+        // Mark as rendered when options become available and we have a matching option
         processedOptions: {
             handler(newOptions) {
                 if (!this.hasEverRendered && newOptions.length > 0) {
@@ -293,7 +370,16 @@ export default {
                         clearTimeout(this._skeletonFallbackTimer);
                         this._skeletonFallbackTimer = null;
                     }
-                    this.hasEverRendered = true;
+                    
+                    // Only mark as rendered if:
+                    // 1. We don't have a value (empty cell), OR
+                    // 2. We have a value and found a matching option
+                    const hasValue = this.selectedValue != null && this.selectedValue !== '';
+                    const hasMatchingOption = newOptions.find(opt => opt.value === this.selectedValue);
+                    
+                    if (!hasValue || hasMatchingOption) {
+                        this.hasEverRendered = true;
+                    }
                 }
             },
             immediate: true,
@@ -449,12 +535,14 @@ export default {
     justify-content: center;
     padding: 4px 8px;
     cursor: pointer;
-    transition: all 0.2s ease;
+    // No base transition — avoids triggering an animation on every scroll-in.
+    // Transitions are declared only on :hover states so they fire on interaction, not mount.
     user-select: none; // Prevent text selection on double-click
     -webkit-user-select: none;
     -moz-user-select: none;
     -ms-user-select: none;
     position: relative;
+    contain: layout style; // Isolate layout/style recalculations to within this cell
 }
 
 .select-label {
@@ -473,11 +561,13 @@ export default {
     width: 100%;
     max-width: 100%;
     box-sizing: border-box;
-    transition: all 0.15s ease;
+    // No base transition — declaring transitions only on :hover prevents them
+    // from firing when new rows enter the viewport during scrolling.
     
     &:hover {
         filter: brightness(0.95);
         box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+        transition: filter 0.15s ease, box-shadow 0.15s ease;
     }
 }
 

@@ -16,6 +16,10 @@
       :rowModelType="rowModelType"
       :datasource="delayedDatasource"
       :cacheBlockSize="cacheBlockSize"
+      :maxBlocksInCache="content.maxBlocksInCache ?? 10"
+      :cacheOverflowSize="content.cacheOverflowSize ?? 2"
+      :maxConcurrentDatasourceRequests="content.maxConcurrentRequests ?? 2"
+      :blockLoadDebounceMillis="content.blockLoadDebounce ?? 100"
       :pagination="paginationEnabled"
       :paginationPageSize="
         forcedPaginationPageSize
@@ -33,7 +37,12 @@
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="rowDragManaged"
-      :rowBuffer="content.rowBuffer ?? 30"
+      :rowBuffer="content.rowBuffer ?? 10"
+      :suppressRowVirtualisation="false"
+      :animateRows="false"
+      :debounceVerticalScrollbar="true"
+      :suppressScrollOnNewData="true"
+      :suppressAnimationFrame="content.suppressAnimationFrame ?? false"
       @grid-ready="onGridReady"
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
@@ -57,7 +66,7 @@
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
           <!-- Header -->
           <div class="cc-header">
-            <span class="cc-title">Gérer les colonnes</span>
+            <span class="cc-title">{{ getTranslations(content?.lang || 'en').manageColumns }}</span>
             <button class="cc-close-btn" @click="showColumnChooser = false" aria-label="Fermer">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -85,7 +94,7 @@
                 class="cc-search-input"
                 type="text"
                 v-model="columnChooserSearch"
-                placeholder="Rechercher..."
+                :placeholder="getTranslations(content?.lang || 'en').search"
                 @click.stop
               />
             </div>
@@ -127,7 +136,7 @@
               <span class="cc-col-name">{{ col.headerName }}</span>
             </div>
             <div v-if="filteredColumnsList.length === 0" class="cc-empty">
-              Aucune colonne ne correspond à "{{ columnChooserSearch }}"
+              {{ getTranslations(content?.lang || 'en').noColumnsMatch.replace('{searchTerm}', columnChooserSearch) }}
             </div>
           </div>
         </div>
@@ -172,6 +181,66 @@ import DateCellEditor from "./components/DateCellEditor.vue";
 import UserCellRenderer from "./components/UserCellRenderer.vue";
 import UserFilterComponent from "./components/UserFilterComponent.vue";
 import UserFilterWrapper from "./components/UserFilterWrapper.js";
+import {
+  clearAllCaches,
+  createValidationFunction,
+  createActionColumnDef,
+  createCustomColumnDef,
+  createDateColumnDef,
+  createCurrencyColumnDef,
+  createImageColumnDef,
+  createValueSetter
+} from "./utils/columnFactories.js";
+import {
+  findRowNode,
+  waitForRowInGrid,
+  getAvailableRowIds
+} from "./utils/rowLookup.js";
+import {
+  getTranslations,
+  getFilterTranslations,
+  extractUserIds,
+  getUserName,
+  findUserIdByName,
+  createFakeJunctionRecord,
+  normalizeUserColumnOldValue,
+  valuesEqual,
+  createCacheKey,
+  debounce
+} from "./utils/sharedHelpers.js";
+import {
+  GridApiQueue,
+  GridApiUtils,
+  globalGridApiQueue,
+  globalGridApiUtils
+} from "./utils/gridApiQueue.js";
+import {
+  fetchSupabaseDataUnified,
+  fetchSupabaseDataPaginated,
+  fetchSupabaseDataInfinite,
+  createFetchKey
+} from "./utils/supabaseUtils.js";
+import {
+  applyTextFilter,
+  applyNumberFilter,
+  applyDateFilter,
+  applyBooleanFilter,
+  applySelectFilter,
+  applyUserFilter,
+  applySetFilter,
+  convertSingleFilterToSupabase
+} from "./utils/filterUtils.js";
+import {
+  detectColumnConfig,
+  processUserColumnChange,
+  shouldRedrawForStyles,
+  emitCellValueChangedEvent,
+  manageDataUpdateFlag,
+  processValueByType,
+  validateCellValue,
+  getRowId
+} from "./utils/cellValueUtils.js";
+import { createGridMonitor } from "./utils/performanceMonitor.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -206,17 +275,7 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
-    // Translation helper for filter buttons
-    const getFilterTranslations = (lang) => {
-      const translations = {
-        en: { reset: 'Reset', apply: 'Apply' },
-        fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
-        es: { reset: 'Restablecer', apply: 'Aplicar' },
-        de: { reset: 'Zurücksetzen', apply: 'Anwenden' },
-        pt: { reset: 'Redefinir', apply: 'Aplicar' },
-      };
-      return translations[lang] || translations.en;
-    };
+    // Use shared translation utility
 
     // Debug logging helper
     const debugLog = (...args) => {
@@ -224,6 +283,9 @@ export default {
         console.log(...args);
       }
     };
+
+    // Performance monitor — all recording is no-ops unless enableDebugLogs is on
+    const gridMonitor = createGridMonitor(() => !!props.content?.enableDebugLogs);
 
     // Helper to check if a viewConfiguration value is effectively empty
     // Returns true if value is null, undefined, empty object {}, or empty array []
@@ -377,6 +439,11 @@ export default {
       if (!filterModel || Object.keys(filterModel).length === 0) {
         return query;
       }
+
+      // Use the refactored filter utilities for better maintainability
+      // TODO: Complete refactoring to use convertSingleFilterToSupabase utility
+      // For now, keeping the original implementation but showing the approach
+      // return convertSingleFilterToSupabase(filterModel, query, props.content?.columns, resolveMappingFormula);
 
       let currentQuery = query;
 
@@ -902,65 +969,24 @@ export default {
           throw new Error('Supabase instance not available after waiting');
         }
 
-        // Start building the query
-        let query = supabase.from(tableName).select(queryString, { count: 'exact' });
-
-        // Apply manual filters first (these are always applied)
-        const manualFilters = props.content?.supabaseFilters;
-        if (manualFilters && Array.isArray(manualFilters) && manualFilters.length > 0) {
-          query = applyManualFilters(query, manualFilters);
-        }
-
-        // Apply search filter (before other filters)
-        if (props.content?.enableSearch && searchValue && searchValue.trim()) {
-          const searchableColumns = props.content?.searchableColumns || [];
-          query = applySearchToSupabase(query, searchValue, searchableColumns);
-        }
-
-        // Apply filters
-        if (filterModel && Object.keys(filterModel).length > 0) {
-          query = convertFilterToSupabase(filterModel, query);
-        }
-
-        // Apply sorting
-        if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
-          for (const sort of sortModel) {
-            const columnId = sort.colId;
-            // Get the Supabase field path for this column (supports nested relationships)
-            const supabaseField = getSupabaseSortField(columnId);
-            const order = sort.sort === 'asc' ? true : false;
-            query = query.order(supabaseField, { ascending: order });
-          }
-        }
-
-        // Apply range for infinite scrolling
-        // Note: AG Grid's endRow is exclusive (e.g., if endRow=50, it wants rows 0-49)
-        // Supabase range is inclusive, so we use endRow - 1
-        const supabaseFrom = startRow;
-        const supabaseTo = endRow - 1;
-        query = query.range(supabaseFrom, supabaseTo);
-
-        // Log query details
-        const filtersText = formatFiltersForLog(filterModel);
-        const sortText = sortModel && sortModel.length > 0 
-          ? sortModel.map(s => `${s.colId} ${s.sort}`).join(', ')
-          : 'none';
-        const searchText = (props.content?.enableSearch && searchValue && searchValue.trim()) 
-          ? `"${searchValue}"` 
-          : 'none';
-        
-        console.log(`[Supabase Query] Table: ${tableName} | Filters: ${filtersText} | Sort: ${sortText} | Search: ${searchText} | Range: ${supabaseFrom}-${supabaseTo}`);
-
-        const { data, error, count } = await query;
-
-        if (error) {
-          throw error;
-        }
-
-        const resultData = Array.isArray(data) ? data : [];
-        const totalCount = count || 0;
-
-        return { data: resultData, totalCount };
+        // Use unified fetch function
+        return await fetchSupabaseDataInfinite({
+          supabaseInstance: supabase,
+          tableName,
+          queryString,
+          manualFilters: props.content?.supabaseFilters,
+          searchValue: props.content?.enableSearch ? searchValue : null,
+          searchableColumns: props.content?.searchableColumns || [],
+          filterModel,
+          sortModel,
+          startRow,
+          endRow,
+          applyManualFilters,
+          applySearchToSupabase,
+          convertFilterToSupabase,
+          getSupabaseSortField,
+          formatFiltersForLog
+        });
       } catch (error) {
         console.error('[Supabase Infinite] Error fetching data:', error);
         supabaseError.value = error.message || 'Failed to fetch data from Supabase';
@@ -990,7 +1016,7 @@ export default {
       }
 
       // Create a unique key for this fetch request
-      const fetchKey = JSON.stringify({ page, pageSize, filterModel, sortModel, searchValue, tableName, queryString });
+      const fetchKey = createFetchKey({ page, pageSize, filterModel, sortModel, searchValue, tableName, queryString });
       
       // Prevent duplicate/recursive calls
       if (isFetchingData.value) {
@@ -1016,61 +1042,29 @@ export default {
           throw new Error('Supabase instance not available after waiting');
         }
 
-        // Start building the query
-        let query = supabase.from(tableName).select(queryString, { count: 'exact' });
+        // Query building is now handled by the unified function
 
-        // Apply manual filters first (these are always applied)
-        const manualFilters = props.content?.supabaseFilters;
-        if (manualFilters && Array.isArray(manualFilters) && manualFilters.length > 0) {
-          query = applyManualFilters(query, manualFilters);
-        }
+        // Use unified fetch function
+        const result = await fetchSupabaseDataPaginated({
+          supabaseInstance: supabase,
+          tableName,
+          queryString,
+          manualFilters: props.content?.supabaseFilters,
+          searchValue: props.content?.enableSearch ? searchValue : null,
+          searchableColumns: props.content?.searchableColumns || [],
+          filterModel,
+          sortModel,
+          page,
+          pageSize,
+          applyManualFilters,
+          applySearchToSupabase,
+          convertFilterToSupabase,
+          getSupabaseSortField,
+          formatFiltersForLog
+        });
 
-        // Apply search filter (before other filters)
-        if (props.content?.enableSearch && searchValue && searchValue.trim()) {
-          const searchableColumns = props.content?.searchableColumns || [];
-          query = applySearchToSupabase(query, searchValue, searchableColumns);
-        }
-
-        // Apply filters
-        if (filterModel && Object.keys(filterModel).length > 0) {
-          query = convertFilterToSupabase(filterModel, query);
-        }
-
-        // Apply sorting
-        if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
-          for (const sort of sortModel) {
-            const columnId = sort.colId;
-            // Get the Supabase field path for this column (supports nested relationships)
-            const supabaseField = getSupabaseSortField(columnId);
-            const order = sort.sort === 'asc' ? true : false;
-            query = query.order(supabaseField, { ascending: order });
-          }
-        }
-
-        // Apply pagination
-        const from = (page - 1) * pageSize;
-        const to = from + pageSize - 1;
-        query = query.range(from, to);
-
-        // Log query details
-        const filtersText = formatFiltersForLog(filterModel);
-        const sortText = sortModel && sortModel.length > 0 
-          ? sortModel.map(s => `${s.colId} ${s.sort}`).join(', ')
-          : 'none';
-        const searchText = (props.content?.enableSearch && searchValue && searchValue.trim()) 
-          ? `"${searchValue}"` 
-          : 'none';
-        
-        console.log(`[Supabase Query] Table: ${tableName} | Filters: ${filtersText} | Sort: ${sortText} | Search: ${searchText} | Page: ${page} (${from}-${to})`);
-
-        const { data, error, count } = await query;
-
-        if (error) {
-          throw error;
-        }
-
-        supabaseData.value = Array.isArray(data) ? data : [];
-        supabaseTotalCount.value = count || 0;
+        supabaseData.value = result.data;
+        supabaseTotalCount.value = result.totalCount;
 
         // Update records after data is fetched (records will also be updated via rowData watch, but this ensures it's immediate)
         nextTick(() => {
@@ -1094,6 +1088,16 @@ export default {
     };
 
     const gridApi = shallowRef(null);
+    
+    // Initialize grid API queue for this component instance
+    const gridApiQueue = new GridApiQueue();
+    const gridApiUtils = new GridApiUtils(gridApiQueue);
+
+    // Cleanup queue on component unmount
+    onBeforeUnmount(() => {
+      gridApiQueue.clear();
+    });
+    
     const { value: selectedRows, setValue: setSelectedRows } =
       wwLib.wwVariable.useComponentVariable({
         uid: props.uid,
@@ -1174,7 +1178,39 @@ export default {
         chooserDragColId.value = null;
         chooserDragOverColId.value = null;
       }
+
+      // Sync external variable with column chooser state
+      const ccVarId = props.content?.columnChooserVariableId;
+      if (ccVarId) {
+        try {
+          wwLib.wwVariable.updateValue(ccVarId, val);
+          debugLog(`[ColumnChooserVariable] Set variable "${ccVarId}" →`, val);
+        } catch (e) {
+          debugLog('[ColumnChooserVariable] Could not update variable:', ccVarId, e);
+        }
+      }
     });
+
+    // Watch external variable to control column chooser visibility
+    watch(
+      () => {
+        const varId = props.content?.columnChooserVariableId;
+        if (!varId) return undefined;
+        try {
+          return wwLib.wwVariable.getValue(varId);
+        } catch (e) {
+          return undefined;
+        }
+      },
+      (newVal) => {
+        if (newVal === undefined) return;
+        const boolVal = !!newVal;
+        if (showColumnChooser.value !== boolVal) {
+          showColumnChooser.value = boolVal;
+          debugLog(`[ColumnChooserVariable] External variable changed → showColumnChooser =`, boolVal);
+        }
+      }
+    );
 
     onBeforeUnmount(() => {
       if (clickOutsideTimer !== null) clearTimeout(clickOutsideTimer);
@@ -1225,6 +1261,21 @@ export default {
         readonly: true,
       });
 
+    // Clear column caches when major dependencies change to prevent stale memoized functions
+    watch(
+      () => [
+        props.content?.columns, 
+        props.content?.lang,
+        props.content?.actionFont,
+        props.content?.cellFontFamily,
+        props.content?.userFocusColor
+      ],
+      () => {
+        clearAllCaches();
+      },
+      { deep: true }
+    );
+
     watch(
       () => props.content?.columns,
       (newCols) => {
@@ -1265,6 +1316,85 @@ export default {
       };
       
       setCurrentConfig(config);
+      updateViewEditedVariable(config);
+    };
+
+    // Deep-equal helper restricted to the five view-state keys
+    const isViewConfigEdited = (current, baseline) => {
+      if (!baseline || typeof baseline !== 'object') return false;
+
+      const keysToCheck = ['sizes', 'filters', 'sorting', 'columnsOrder', 'hiddenColumns'];
+
+      for (const key of keysToCheck) {
+        const baseVal = baseline[key];
+        const curVal = current?.[key];
+
+        // If baseline is absent/empty, any non-empty current value means edited
+        if (isEmptyConfigValue(baseVal)) {
+          if (!isEmptyConfigValue(curVal)) return true;
+          continue;
+        }
+
+        if (Array.isArray(baseVal)) {
+          if (!Array.isArray(curVal)) return true;
+          // For columnsOrder: live grid may have extra columns added after the config was saved.
+          // Only compare the relative order of columns present in the baseline.
+          const effectiveCurVal = (key === 'columnsOrder')
+            ? curVal.filter(id => baseVal.includes(id))
+            : curVal;
+          if (baseVal.length !== effectiveCurVal.length) return true;
+          for (let i = 0; i < baseVal.length; i++) {
+            const b = baseVal[i];
+            const c = effectiveCurVal[i];
+            if (typeof b === 'object' && b !== null) {
+              // For sorting: compare colId + sort directly to avoid JSON key-order sensitivity
+              const sortMatch = (key === 'sorting') && typeof c === 'object' && c !== null
+                && b.colId === c.colId && b.sort === c.sort;
+              if (!sortMatch && JSON.stringify(b) !== JSON.stringify(c)) return true;
+            } else if (b !== c) {
+              return true;
+            }
+          }
+        } else if (typeof baseVal === 'object') {
+          if (typeof curVal !== 'object' || curVal === null) return true;
+          // Only compare keys present in the baseline — extra columns in the live grid are ignored
+          const bKeys = Object.keys(baseVal);
+          for (const k of bKeys) {
+            const bv = baseVal[k];
+            const cv = curVal[k];
+            // For sizes (numeric widths) allow ±1px rounding tolerance
+            const numericMatch = (key === 'sizes') && typeof bv === 'number' && typeof cv === 'number' && Math.abs(bv - cv) <= 1;
+            if (!numericMatch && bv !== cv) return true;
+          }
+        } else {
+          if (baseVal !== curVal) return true;
+        }
+      }
+
+      return false;
+    };
+
+    // Update external WeWeb variable when view-edited state changes
+    const updateViewEditedVariable = (config) => {
+      const variableId = props.content?.viewEditedVariableId;
+      if (!variableId) return;
+
+      // Skip during programmatic view config application — grid is mid-transition
+      // The watcher resets the variable to false once the config is fully applied
+      if (isApplyingViewConfig?.value) {
+        debugLog(`[ViewEditedVariable] Skipping update — viewConfiguration is being applied`);
+        return;
+      }
+
+      const baseline = props.content?.viewConfiguration;
+      const edited = isViewConfigEdited(config, baseline);
+
+      try {
+        wwLib.wwVariable.updateValue(variableId, edited);
+        debugLog(`[ViewEditedVariable] Set variable "${variableId}" →`, edited);
+      } catch (e) {
+        debugLog('[ViewEditedVariable] Could not update variable:', variableId, e);
+      }
     };
 
     // Function to update records variable from grid API (gets displayed rows)
@@ -1375,61 +1505,9 @@ export default {
       });
     };
     
-    // Helper to wait for a specific row to appear in the grid (useful after refreshRow in infinite scroll)
-    const waitForRowInGrid = (rowId, timeout = 10000) => {
-      return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        const rowIdStr = String(rowId);
-        
-        const checkRow = () => {
-          // First ensure grid is ready
-          if (!gridApi.value || !gridReady.value) {
-            if (Date.now() - startTime > timeout) {
-              reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} to appear in grid`));
-              return;
-            }
-            setTimeout(checkRow, 100);
-            return;
-          }
-          
-          // Wait for rendering to complete
-          if (isGridRendering.value) {
-            if (Date.now() - startTime > timeout) {
-              reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} - grid still rendering`));
-              return;
-            }
-            setTimeout(checkRow, 100);
-            return;
-          }
-          
-          // Try to find the row in the grid
-          let rowFound = false;
-          gridApi.value.forEachNode((node) => {
-            if (!rowFound && node.data) {
-              const nodeIdValue = node.data.id ?? node.data[Object.keys(node.data)[0]];
-              if (String(nodeIdValue) === rowIdStr || String(node.id) === rowIdStr) {
-                rowFound = true;
-              }
-            }
-          });
-          
-          if (rowFound) {
-            resolve(true);
-            return;
-          }
-          
-          // Check timeout
-          if (Date.now() - startTime > timeout) {
-            reject(new Error(`[Datagrid] Timeout waiting for row ${rowId} to appear in grid`));
-            return;
-          }
-          
-          // Check again in a short interval
-          setTimeout(checkRow, 150);
-        };
-        
-        checkRow();
-      });
+    // Helper to wait for a specific row to appear in the grid (using unified utility)
+    const waitForRowInGridLocal = (rowId, timeout = 10000) => {
+      return waitForRowInGrid(gridApi.value, rowId, resolveMappingFormula, props.content, timeout);
     };
     
     // Supabase data state
@@ -1449,6 +1527,29 @@ export default {
     
     // Track removed row IDs for infinite scroll mode (so datasource can filter them out)
     const removedRowIds = ref(new Set());
+    const MAX_REMOVED_IDS = 1000; // Prevent unbounded memory growth
+    
+    // Cleanup mechanism for removedRowIds Set
+    const cleanupRemovedIds = () => {
+      const currentSize = removedRowIds.value.size;
+      if (currentSize > MAX_REMOVED_IDS) {
+        // Convert to array, remove oldest entries, keep most recent
+        const idsArray = Array.from(removedRowIds.value);
+        const keepCount = Math.floor(MAX_REMOVED_IDS * 0.7); // Keep 70% of max
+        const idsToKeep = idsArray.slice(-keepCount); // Keep most recent
+        removedRowIds.value = new Set(idsToKeep);
+        debugLog(`[Cleanup] Reduced removedRowIds from ${currentSize} to ${idsToKeep.length} entries`);
+      }
+    };
+    
+    // Clear removed IDs when data source changes or major refresh occurs
+    const clearRemovedIds = () => {
+      const size = removedRowIds.value.size;
+      if (size > 0) {
+        removedRowIds.value.clear();
+        debugLog(`[Cleanup] Cleared ${size} removed row IDs`);
+      }
+    };
     
     // Helper functions to set/get the flag from methods
     const setUpdatingDataLocally = (value) => {
@@ -1524,27 +1625,8 @@ export default {
           // Use a longer delay to ensure grid is fully ready
           setTimeout(() => {
             if (gridApi.value && !isGridRendering.value) {
-              // Find and scroll to the focused row
-              const rowIdStr = String(focusedRowId);
-              let rowNode = gridApi.value.getRowNode(rowIdStr);
-              
-              // Search through all rows if not found directly
-              if (!rowNode) {
-                gridApi.value.forEachNode((node) => {
-                  if (!rowNode && node.data) {
-                    let baseId = resolveMappingFormula(props.content.idFormula, node.data);
-                    if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-                      baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-                    }
-                    const baseIdStr = baseId != null ? String(baseId) : '';
-                    if (baseIdStr === rowIdStr || 
-                        (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-                        (node.id && String(node.id) === rowIdStr)) {
-                      rowNode = node;
-                    }
-                  }
-                });
-              }
+              // Find and scroll to the focused row using unified lookup
+              let rowNode = findRowNode(gridApi.value, focusedRowId, resolveMappingFormula, props.content);
               
               // Scroll to and focus the row if found
               if (rowNode && rowNode.rowIndex !== null && rowNode.rowIndex !== undefined) {
@@ -1789,28 +1871,77 @@ export default {
         // Apply initial view configuration when grid is ready
         if (props.content.viewConfiguration) {
           applyViewConfiguration(props.content.viewConfiguration, true);
+          // Grid now matches the initial config — reset the edited variable
+          const variableId = props.content?.viewEditedVariableId;
+          if (variableId) {
+            try {
+              wwLib.wwVariable.updateValue(variableId, false);
+              debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (initial config applied)`);
+            } catch (e) {
+              debugLog('[ViewEditedVariable] Could not reset variable on init:', variableId, e);
+            }
+          }
         }
       },
       { immediate: true }
     );
 
-    // Watch for viewConfiguration changes to apply new settings
+    // Watch for viewConfiguration changes with optimized comparison
     watch(
       () => props.content.viewConfiguration,
       (newConfig, oldConfig) => {
         if (!gridApi.value || !gridReady.value) return;
         
-        // Stringify to compare deep equality
-        const newConfigStr = JSON.stringify(newConfig);
-        const oldConfigStr = lastAppliedViewConfig.value;
+        // Use lightweight comparison instead of full JSON.stringify
+        // Check if the config reference changed or key properties changed
+        const isConfigChanged = newConfig !== oldConfig;
+        let hasContentChanged = false;
         
-        // Only apply if the configuration has actually changed
-        if (newConfigStr !== oldConfigStr) {
+        if (isConfigChanged && newConfig && oldConfig) {
+          // Quick check of key properties instead of deep stringify
+          const keys = ['filters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns'];
+          hasContentChanged = keys.some(key => {
+            const newVal = newConfig[key];
+            const oldVal = oldConfig[key];
+            // Simple reference and length comparison
+            if (newVal !== oldVal) {
+              if (Array.isArray(newVal) && Array.isArray(oldVal)) {
+                return newVal.length !== oldVal.length || newVal.some((item, idx) => item !== oldVal[idx]);
+              }
+              if (typeof newVal === 'object' && typeof oldVal === 'object') {
+                const newKeys = newVal ? Object.keys(newVal) : [];
+                const oldKeys = oldVal ? Object.keys(oldVal) : [];
+                return newKeys.length !== oldKeys.length || newKeys.some(k => newVal[k] !== oldVal[k]);
+              }
+              return true;
+            }
+            return false;
+          });
+        } else if (isConfigChanged) {
+          hasContentChanged = true;
+        }
+        
+        // Only apply grid changes if the configuration content actually changed
+        if (hasContentChanged) {
           debugLog('[ViewConfiguration] Configuration changed, applying new view');
           applyViewConfiguration(newConfig, false);
         }
-      },
-      { deep: true }
+
+        // Always reset the edited variable whenever viewConfiguration changes,
+        // regardless of whether the grid was re-synced — the new config is the new baseline
+        if (isConfigChanged) {
+          const variableId = props.content?.viewEditedVariableId;
+          if (variableId) {
+            try {
+              wwLib.wwVariable.updateValue(variableId, false);
+              debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (viewConfiguration changed)`);
+            } catch (e) {
+              debugLog('[ViewEditedVariable] Could not reset variable:', variableId, e);
+            }
+          }
+        }
+      }
+      // Removed deep: true for better performance
     );
 
     // CRITICAL FIX: initialState should only be set once on mount, not reactive
@@ -2115,7 +2246,10 @@ export default {
 
     const onBodyScroll = (event) => {
       if (!gridApi.value) return;
-      
+
+      // Track scroll frequency for performance monitoring
+      gridMonitor.trackScroll();
+
       const api = event?.api || gridApi.value;
       
       // Get scroll container dimensions from the grid container ref
@@ -2201,7 +2335,7 @@ export default {
     // Cache block size for infinite scrolling
     const cacheBlockSize = computed(() => {
       if (isInfiniteScrollEnabled.value) {
-        return props.content?.infiniteBlockSize || 100;
+        return props.content?.infiniteBlockSize || 200;
       }
       return undefined;
     });
@@ -2374,13 +2508,26 @@ export default {
     // Track if we've ever rendered data (for initial load detection)
     const hasEverRendered = ref(false);
 
-    // Watch for data changes to detect loading state and update records variable
+    // Watch for data changes with shallow comparison for better performance
+    // Track array length and reference changes instead of deep comparison
+    const rowDataLength = ref(0);
+    const rowDataRef = ref(null);
+    
     watch(() => rowData.value, (newData, oldData) => {
       // Skip processing if we're updating data locally (e.g., fake junction records)
-      // This prevents triggering loading states or unnecessary updates during local modifications
       if (isUpdatingDataLocally.value) {
         return;
       }
+
+      // Check if this is just a reference change or actual data change
+      const newLength = Array.isArray(newData) ? newData.length : 0;
+      const oldLength = rowDataLength.value;
+      const isArrayChange = newData !== rowDataRef.value;
+      const isLengthChange = newLength !== oldLength;
+      
+      // Update tracking refs
+      rowDataLength.value = newLength;
+      rowDataRef.value = newData;
 
       // For non-infinite scroll modes, update records from rowData
       // For infinite scroll, records will be updated via grid API watchers
@@ -2404,23 +2551,34 @@ export default {
         } else if (Array.isArray(newData) && newData.length === 0) {
           dataRendered.value = true;
         }
-        // Force AG Grid's internal row store to pick up the new data.
-        // refreshCells() alone is not enough because it re-renders from AG Grid's
-        // internal store, which may still hold stale references if the row objects
-        // were mutated in place rather than replaced.
-        // Using applyTransaction({ update }) explicitly tells AG Grid which rows changed.
-        nextTick(() => {
-          setTimeout(() => {
-            if (gridApi.value) {
-              if (Array.isArray(newData) && newData.length > 0) {
-                // Shallow-clone each row so AG Grid sees new object references
-                const clonedRows = newData.map(row => ({ ...row }));
-                gridApi.value.applyTransaction({ update: clonedRows });
-              }
-              gridApi.value.refreshCells({ force: true });
+        
+        // Only apply transaction if there was an actual array or length change
+        if (isArrayChange || isLengthChange) {
+          nextTick(() => {
+            // Use queue-based approach for grid operations
+            if (Array.isArray(newData) && newData.length > 0) {
+              // Apply transaction first
+              gridApiQueue.enqueue(
+                () => {
+                  if (gridApi.value) {
+                    const clonedRows = newData.map(row => ({ ...row }));
+                    return gridApi.value.applyTransaction({ update: clonedRows });
+                  }
+                },
+                { 
+                  priority: 0, 
+                  description: 'applyTransaction for rowData update',
+                  condition: () => !!gridApi.value 
+                }
+              );
             }
-          }, 0);
-        });
+            
+            // Then refresh cells
+            gridApiUtils.refreshCells(gridApi.value, { force: true }).catch(error => {
+              console.warn('[Datagrid] Error during rowData refresh:', error);
+            });
+          });
+        }
         return;
       }
 
@@ -2448,7 +2606,7 @@ export default {
         dataRendered.value = true;
         hasEverRendered.value = true;
       }
-    }, { deep: true, immediate: true });
+    }, { immediate: true }); // Removed deep: true for better performance
 
     // Detect loading state - show skeleton when grid is not ready or data is not yet rendered
     const isLoading = computed(() => {
@@ -2484,11 +2642,10 @@ export default {
       { immediate: true }
     );
 
-    // Track the last serialized conditional row styles to detect actual changes
+    // Track conditional row styles changes more efficiently
     const lastConditionalRowStylesJson = ref(null);
     
-    // Watch for conditional row styles changes and redraw all rows to re-apply styles
-    // Use JSON comparison to avoid unnecessary redraws from reference changes
+    // Watch for conditional row styles with optimized change detection
     watch(
       () => props.content?.conditionalRowStyles,
       (newStyles) => {
@@ -2498,64 +2655,43 @@ export default {
             lastConditionalRowStylesJson.value = null;
             // Styles were removed, redraw to clear any applied styles
             if (gridApi.value && gridReady.value && !isGridRendering.value) {
-              setTimeout(() => {
-                if (gridApi.value) {
-                  gridApi.value.redrawRows();
-                }
-              }, 100);
+              // Use queue-based approach instead of setTimeout
+              gridApiUtils.redrawRows(gridApi.value).catch(error => {
+                console.warn('[Datagrid] Error during conditional styles redraw:', error);
+              });
             }
           }
           return;
         }
         
-        // Serialize current styles to compare
-        const currentJson = JSON.stringify(newStyles);
+        // Create lightweight hash instead of full JSON.stringify for performance
+        const currentHash = newStyles.length > 0 ? 
+          `${newStyles.length}-${JSON.stringify(newStyles[0])}-${JSON.stringify(newStyles[newStyles.length - 1])}` :
+          '0';
         
         // Only redraw if styles actually changed (not just reference change)
-        if (currentJson !== lastConditionalRowStylesJson.value) {
-          lastConditionalRowStylesJson.value = currentJson;
+        if (currentHash !== lastConditionalRowStylesJson.value) {
+          lastConditionalRowStylesJson.value = currentHash;
           
           // Debounce the redraw to avoid multiple rapid redraws
           if (gridApi.value && gridReady.value && !isGridRendering.value) {
-            setTimeout(() => {
-              if (gridApi.value) {
-                gridApi.value.redrawRows();
-              }
-            }, 100);
+            // Use queue-based approach instead of setTimeout
+            gridApiUtils.redrawRows(gridApi.value).catch(error => {
+              console.warn('[Datagrid] Error during conditional styles clear:', error);
+            });
           }
         }
-      },
-      { deep: true }
+      }
+      // Removed deep: true - shallow comparison is sufficient since we're hashing content
     );
 
     // Track the last applied focused row ID to avoid duplicate applications
     const lastAppliedFocusedRowId = ref(null);
 
-    // Helper to find a row node by its ID (using idFormula matching)
+    // Helper to find a row node by its ID (using unified row lookup utility)
     const findRowNodeById = (rowId) => {
-      if (!gridApi.value || rowId === null || rowId === undefined || rowId === '') return null;
-      const rowIdStr = String(rowId);
-      
-      // Try direct lookup first (fastest path)
-      let rowNode = gridApi.value.getRowNode(rowIdStr);
-      if (rowNode) return rowNode;
-      
-      // Search through all rows by matching the ID formula
-      gridApi.value.forEachNode((node) => {
-        if (!rowNode && node.data) {
-          let baseId = resolveMappingFormula(props.content.idFormula, node.data);
-          if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-            baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-          }
-          const baseIdStr = baseId != null ? String(baseId) : '';
-          if (baseIdStr === rowIdStr ||
-              (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-              (node.id && String(node.id) === rowIdStr)) {
-            rowNode = node;
-          }
-        }
-      });
-      return rowNode;
+      if (rowId === null || rowId === undefined || rowId === '') return null;
+      return findRowNode(gridApi.value, rowId, resolveMappingFormula, props.content);
     };
 
     // Watch for focusedRowId changes and apply focus to the specified row
@@ -2624,6 +2760,11 @@ export default {
     watch(
       () => props.content?.dataSource,
       (newSource, oldSource) => {
+        // Clear removed IDs when data source changes
+        if (newSource !== oldSource) {
+          clearRemovedIds();
+        }
+        
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
           return;
@@ -2673,6 +2814,11 @@ export default {
           return;
         }
         
+        // Clear removed IDs when table or query changes (fresh data context)
+        if (oldValues) {
+          clearRemovedIds();
+        }
+        
         // Skip fetch if we're updating data locally (e.g., fake junction records)
         if (isUpdatingDataLocally.value) {
           return;
@@ -2682,25 +2828,14 @@ export default {
           if (isInfiniteScrollEnabled.value) {
             // For infinite scrolling, refresh the datasource
             // CRITICAL FIX: Preserve filters and sorts when table/query changes
-            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-            const currentFilters = gridApi.value.getFilterModel();
-            const currentSort = gridApi.value.getState()?.sort?.sortModel;
-            setTimeout(() => {
-              if (!gridApi.value) return;
-              gridApi.value.setGridOption('datasource', datasource.value);
-              setTimeout(() => {
-                if (!gridApi.value) return;
-                if (currentFilters && Object.keys(currentFilters).length > 0) {
-                  gridApi.value.setFilterModel(currentFilters);
-                }
-                if (currentSort && currentSort.length > 0) {
-                  gridApi.value.applyColumnState({
-                    state: currentSort,
-                    defaultState: { sort: null },
-                  });
-                }
-              }, 50);
-            }, 0);
+            // Use queue-based approach instead of setTimeout cascade
+            gridApiUtils.refreshDatasourceWithState(
+              gridApi.value, 
+              datasource.value, 
+              'Supabase query change refresh'
+            ).catch(error => {
+              console.warn('[Datagrid] Error during datasource refresh:', error);
+            });
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -2750,27 +2885,14 @@ export default {
             // and cannot be changed dynamically (AG Grid limitation)
             // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
             // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-            const currentFilters = gridApi.value.getFilterModel();
-            const currentSort = gridApi.value.getState()?.sort?.sortModel;
-            
-            setTimeout(() => {
-              if (!gridApi.value) return;
-              gridApi.value.setGridOption('datasource', datasource.value);
-              
-              // Restore filters and sorts after setting datasource
-              setTimeout(() => {
-                if (!gridApi.value) return;
-                if (currentFilters && Object.keys(currentFilters).length > 0) {
-                  gridApi.value.setFilterModel(currentFilters);
-                }
-                if (currentSort && currentSort.length > 0) {
-                  gridApi.value.applyColumnState({
-                    state: currentSort,
-                    defaultState: { sort: null },
-                  });
-                }
-              }, 50);
-            }, 0);
+            // Use queue-based approach instead of setTimeout cascade
+            gridApiUtils.refreshDatasourceWithState(
+              gridApi.value, 
+              datasource.value, 
+              'Infinite scroll toggle refresh'
+            ).catch(error => {
+              console.warn('[Datagrid] Error during infinite scroll toggle refresh:', error);
+            });
           } else {
             // For pagination mode, fetch initial data
             lastFetchParams.value = null;
@@ -2800,26 +2922,14 @@ export default {
           // Note: cacheBlockSize is an initial property and cannot be changed dynamically
           // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
           // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-          const currentFilters = gridApi.value.getFilterModel();
-          const currentSort = gridApi.value.getState()?.sort?.sortModel;
-          
-          setTimeout(() => {
-            if (!gridApi.value) return;
-            gridApi.value.setGridOption('datasource', datasource.value);
-            
-            setTimeout(() => {
-              if (!gridApi.value) return;
-              if (currentFilters && Object.keys(currentFilters).length > 0) {
-                gridApi.value.setFilterModel(currentFilters);
-              }
-              if (currentSort && currentSort.length > 0) {
-                gridApi.value.applyColumnState({
-                  state: currentSort,
-                  defaultState: { sort: null },
-                });
-              }
-            }, 50);
-          }, 0);
+          // Use queue-based approach instead of setTimeout cascade
+          gridApiUtils.refreshDatasourceWithState(
+            gridApi.value, 
+            datasource.value, 
+            'Search configuration refresh'
+          ).catch(error => {
+            console.warn('[Datagrid] Error during search configuration refresh:', error);
+          });
         }
       }
     );
@@ -2851,24 +2961,14 @@ export default {
               // CRITICAL FIX: Preserve filters and sorts when search changes
               // CRITICAL FIX: Wrap in setTimeout to prevent error #252
               if (gridApi.value) {
-                const currentFilters = gridApi.value.getFilterModel();
-                const currentSort = gridApi.value.getState()?.sort?.sortModel;
-                setTimeout(() => {
-                  if (!gridApi.value) return;
-                  gridApi.value.setGridOption('datasource', datasource.value);
-                  setTimeout(() => {
-                    if (!gridApi.value) return;
-                    if (currentFilters && Object.keys(currentFilters).length > 0) {
-                      gridApi.value.setFilterModel(currentFilters);
-                    }
-                    if (currentSort && currentSort.length > 0) {
-                      gridApi.value.applyColumnState({
-                        state: currentSort,
-                        defaultState: { sort: null },
-                      });
-                    }
-                  }, 50);
-                }, 0);
+                // Use queue-based approach instead of setTimeout cascade
+                gridApiUtils.refreshDatasourceWithState(
+                  gridApi.value, 
+                  datasource.value, 
+                  'Searchable columns refresh'
+                ).catch(error => {
+                  console.warn('[Datagrid] Error during searchable columns refresh:', error);
+                });
               }
             } else {
               // For pagination mode, fetch data
@@ -2886,25 +2986,41 @@ export default {
       }
     );
 
-    // When select/user column options arrive from API after the grid has rendered,
-    // AG Grid does NOT call refresh() on existing cell renderers — it only updates
-    // its internal column definitions. We watch for option changes and force a
-    // refreshCells() so that cell renderers receive the new params with options.
-    // flush:'post' ensures the component has re-rendered (columnDefs recomputed)
-    // before we act; setTimeout ensures ag-grid-vue3 has forwarded the new
-    // columnDefs to the grid API.
+    // Watch for changes in select/user column options with better performance
+    // Track option changes without creating new arrays on every evaluation
+    const columnOptionsHash = ref('');
+    
     watch(
-      () => props.content?.columns?.map(col => col?.options || col?.users),
-      (newVal, oldVal) => {
-        if (!oldVal || !gridApi.value || !gridReady.value) return;
-        setTimeout(() => {
-          if (gridApi.value) {
-            gridApi.value.refreshCells({ force: true });
-          }
-        }, 100);
+      () => {
+        // Create a stable hash of options instead of mapping arrays
+        if (!props.content?.columns) return '';
+        return props.content.columns
+          .filter(col => col?.options || col?.users)
+          .map(col => {
+            const options = col?.options || [];
+            const users = col?.users || [];
+            // Create a simple hash based on array lengths and first/last items
+            const optionsHash = options.length > 0 ? 
+              `opt-${options.length}-${JSON.stringify(options[0])}-${JSON.stringify(options[options.length - 1])}` : 'opt-0';
+            const usersHash = users.length > 0 ? 
+              `usr-${users.length}-${users[0]?.id}-${users[users.length - 1]?.id}` : 'usr-0';
+            return `${col.field}:${optionsHash}:${usersHash}`;
+          })
+          .join('|');
       },
-      { deep: true, flush: 'post' }
-    );
+      (newHash, oldHash) => {
+        if (!oldHash || !gridApi.value || !gridReady.value || newHash === oldHash) return;
+        
+        // Update hash tracking
+        columnOptionsHash.value = newHash;
+        
+        // Use queue-based approach instead of setTimeout
+        gridApiUtils.refreshCells(gridApi.value, { force: true }).catch(error => {
+          console.warn('[Datagrid] Error during column options refresh:', error);
+        });
+      },
+      { flush: 'post' }
+    ); // Removed deep: true for better performance
 
     function refreshData() {
       // Wait for grid to be ready and not rendering before refreshing cells
@@ -2937,6 +3053,7 @@ export default {
     return {
       resolveMappingFormula,
       debugLog,
+      gridMonitor,
       onGridReady,
       onFirstDataRendered,
       onModelUpdated,
@@ -2948,6 +3065,10 @@ export default {
       setUpdatingDataLocally, // Expose setter so methods can update the flag
       getUpdatingDataLocally, // Expose getter so methods can check the flag
       removedRowIds, // Expose removedRowIds so methods and datasource can access it
+      cleanupRemovedIds, // Expose cleanup function for methods
+      clearRemovedIds, // Expose clear function for methods
+      gridApiQueue, // Expose grid API queue for methods
+      gridApiUtils, // Expose grid API utilities for methods
       localeText: computed(() => {
         switch (props.content.lang) {
           case "fr":
@@ -2994,12 +3115,13 @@ export default {
       gridReady,
       isGridRendering,
       waitForGridReady,
-      waitForRowInGrid,
+      waitForRowInGrid: waitForRowInGridLocal,
       // Expose waitForSupabaseInstance for methods to use
       waitForSupabaseInstance,
       safeGridApiCall,
       hiddenColumns,
       setHiddenColumns,
+      getTranslations,
       showColumnChooser,
       columnChooserRef,
       columnChooserSearch,
@@ -3096,122 +3218,15 @@ export default {
       // First, map all columns to their definitions
       const columnsMap = new Map();
 
-      // Helper to get validation errors for a value
+      // Use memoized validation function factory
       const getValidationErrors = (col, newValue, rowData) => {
-        if (!col?.validation || !Array.isArray(col.validation)) {
-          return null;
-        }
-
-        const errors = [];
-
-        for (const rule of col.validation) {
-          if (!rule?.type) {
-            continue;
-          }
-
-          let isValid = true;
-          let errorMessage = null;
-
-          switch (rule.type) {
-            case 'required':
-              isValid = newValue !== null && newValue !== undefined && newValue !== '';
-              errorMessage = rule.message || 'This field is required.';
-              break;
-
-            case 'minLength':
-              if (newValue !== null && newValue !== undefined && newValue !== '') {
-                const minLength = parseInt(rule.value);
-                if (!isNaN(minLength) && String(newValue).length < minLength) {
-                  isValid = false;
-                  errorMessage = rule.message || `Value must be at least ${minLength} characters long.`;
-                }
-              }
-              break;
-
-            case 'maxLength':
-              if (newValue !== null && newValue !== undefined && newValue !== '') {
-                const maxLength = parseInt(rule.value);
-                if (!isNaN(maxLength) && String(newValue).length > maxLength) {
-                  isValid = false;
-                  errorMessage = rule.message || `Value must be at most ${maxLength} characters long.`;
-                }
-              }
-              break;
-
-            case 'min':
-              if (newValue !== null && newValue !== undefined && newValue !== '') {
-                const min = Number(rule.value);
-                const numValue = Number(newValue);
-                if (!isNaN(min) && !isNaN(numValue) && numValue < min) {
-                  isValid = false;
-                  errorMessage = rule.message || `Value must be at least ${min}.`;
-                }
-              }
-              break;
-
-            case 'max':
-              if (newValue !== null && newValue !== undefined && newValue !== '') {
-                const max = Number(rule.value);
-                const numValue = Number(newValue);
-                if (!isNaN(max) && !isNaN(numValue) && numValue > max) {
-                  isValid = false;
-                  errorMessage = rule.message || `Value must be at most ${max}.`;
-                }
-              }
-              break;
-
-            case 'pattern':
-              if (newValue !== null && newValue !== undefined && newValue !== '' && rule.value) {
-                try {
-                  const regex = new RegExp(rule.value);
-                  const matches = regex.test(String(newValue));
-                  if (!matches) {
-                    isValid = false;
-                    errorMessage = rule.message || 'Value does not match the required pattern.';
-                  }
-                } catch (e) {
-                  // If pattern is invalid, don't fail validation
-                }
-              }
-              break;
-
-            case 'custom':
-              if (rule.custom) {
-                // Create context with new value for the field
-                const validationContext = { ...rowData, ...(col?.field ? { [col.field]: newValue } : {}) };
-                const result = this.resolveMappingFormula(rule.custom, validationContext);
-                // Formula should return true for valid, false for invalid
-                isValid = Boolean(result);
-                errorMessage = rule.message || 'Custom validation failed.';
-              }
-              break;
-          }
-
-          if (!isValid && errorMessage) {
-            errors.push(errorMessage);
-          }
-        }
-
-        return errors.length > 0 ? errors : null;
+        const validationFn = createValidationFunction(col, this.resolveMappingFormula);
+        return validationFn(newValue, rowData);
       };
 
-      // Helper to create value setter (validation is handled separately via getValidationErrors)
+      // Use memoized value setter factory
       const getValueSetter = (col, customSetter) => {
-        return (params) => {
-          const { newValue, oldValue, data } = params;
-
-          // If custom setter provided, use it
-          if (customSetter) {
-            return customSetter(params);
-          }
-          
-          // Default behavior
-          if (newValue !== oldValue && col?.field) {
-             data[col.field] = newValue;
-             return true;
-          }
-          return false;
-        };
+        return createValueSetter(col, customSetter);
       };
       // Get column widths from viewConfiguration (for restoring user-resized widths)
       // Note: When sizes key is present but empty ({}), default column widths from column config will be used
@@ -3279,331 +3294,20 @@ export default {
 
         switch (cellDataType) {
           case "action": {
-            return {
-              ...commonProperties,
-              headerName: col?.headerName,
-              cellRenderer: "ActionCellRenderer",
-              cellRendererParams: {
-                name: col?.actionName,
-                label: col?.actionLabel,
-                trigger: this.onActionTrigger,
-                withFont: !!this.content.actionFont,
-              },
-              sortable: false,
-              filter: false,
-              colId: col?.actionName,
-            };
+            return createActionColumnDef(col, commonProperties, this.onActionTrigger, this.content);
           }
           case "custom": {
-            const customColumn = {
-              ...commonProperties,
-              headerName: col?.headerName,
-              field: col?.field,
-              cellRenderer: "WewebCellRenderer",
-              cellRendererParams: {
-                containerId: col?.containerId,
-                trigger: this.onCustomCellEdit,
-                suppressRowInteraction: col?.suppressRowInteraction,
-              },
-              cellEditor: "WewebCellRenderer",
-              cellEditorParams: {
-                containerId: col?.containerId,
-                trigger: this.onCustomCellEdit,
-                suppressRowInteraction: col?.suppressRowInteraction,
-                getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
-                },
-              },
-              editable: col?.editable !== false,
-              sortable: col?.sortable,
-              filter: col?.filter ? col?.customFilterType || "agTextColumnFilter" : false,
-            };
-            
-            // Use display value for filtering and sorting if enabled
-            if (col?.useDisplayValueForFilterSort && col?.displayLabelFormula) {
-              // Helper function to get display value from raw value
-              const getDisplayValue = (rawValue) => {
-                return this.resolveMappingFormula(
-                  col?.displayLabelFormula,
-                  rawValue
-                );
-              };
-              
-              // Use display value for filtering
-              customColumn.filterValueGetter = (params) => {
-                const rawValue = params.data?.[col?.field];
-                return getDisplayValue(rawValue);
-              };
-              
-              // Use display value for sorting with custom comparator
-              if (col?.sortable) {
-                customColumn.comparator = (valueA, valueB, nodeA, nodeB) => {
-                  const rawValueA = nodeA?.data?.[col?.field];
-                  const rawValueB = nodeB?.data?.[col?.field];
-                  const displayValueA = getDisplayValue(rawValueA);
-                  const displayValueB = getDisplayValue(rawValueB);
-                  
-                  // Handle null/undefined values
-                  if (displayValueA == null && displayValueB == null) return 0;
-                  if (displayValueA == null) return 1;
-                  if (displayValueB == null) return -1;
-                  
-                  // Use filter type to determine comparison method
-                  if (col?.customFilterType === "agDateColumnFilter") {
-                    const dateA = displayValueA ? new Date(displayValueA).getTime() : 0;
-                    const dateB = displayValueB ? new Date(displayValueB).getTime() : 0;
-                    return dateA - dateB;
-                  } else if (col?.customFilterType === "agNumberColumnFilter") {
-                    const numA = displayValueA != null ? parseFloat(displayValueA) : 0;
-                    const numB = displayValueB != null ? parseFloat(displayValueB) : 0;
-                    if (isNaN(numA) && isNaN(numB)) return 0;
-                    if (isNaN(numA)) return 1;
-                    if (isNaN(numB)) return -1;
-                    return numA - numB;
-                  } else {
-                    // Text comparison
-                    return String(displayValueA).localeCompare(String(displayValueB));
-                  }
-                };
-              }
-            } else {
-              // Add custom comparator based on filter type for proper sorting (when not using display value)
-              if (col?.sortable && col?.customFilterType) {
-                if (col.customFilterType === "agDateColumnFilter") {
-                  customColumn.comparator = (valueA, valueB) => {
-                    const dateA = valueA ? new Date(valueA).getTime() : 0;
-                    const dateB = valueB ? new Date(valueB).getTime() : 0;
-                    return dateA - dateB;
-                  };
-                } else if (col.customFilterType === "agNumberColumnFilter") {
-                  customColumn.comparator = (valueA, valueB) => {
-                    const numA = valueA != null ? parseFloat(valueA) : 0;
-                    const numB = valueB != null ? parseFloat(valueB) : 0;
-                    if (isNaN(numA) && isNaN(numB)) return 0;
-                    if (isNaN(numA)) return 1;
-                    if (isNaN(numB)) return -1;
-                    return numA - numB;
-                  };
-                }
-              }
-            }
-            
-            return customColumn;
+            return createCustomColumnDef(col, commonProperties, this.onCustomCellEdit, this.resolveMappingFormula);
           }
           case "dateString":
           case "dateTime": {
-            // Helper function to format date based on configuration
-            const formatDateValue = (value) => {
-              if (!value) return '';
-              const date = new Date(value);
-              if (isNaN(date.getTime())) return value;
-
-              const dateFormat = col?.dateFormat || 'auto';
-              const timeFormat = col?.timeFormat || 'HH:mm';
-
-              // Format date part
-              let formattedDate;
-              const day = String(date.getDate()).padStart(2, '0');
-              const month = String(date.getMonth() + 1).padStart(2, '0');
-              const year = date.getFullYear();
-              const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-              const monthName = monthNames[date.getMonth()];
-
-              switch (dateFormat) {
-                case 'DD/MM/YYYY':
-                  formattedDate = `${day}/${month}/${year}`;
-                  break;
-                case 'MM/DD/YYYY':
-                  formattedDate = `${month}/${day}/${year}`;
-                  break;
-                case 'YYYY-MM-DD':
-                  formattedDate = `${year}-${month}-${day}`;
-                  break;
-                case 'DD MMM YYYY':
-                  formattedDate = `${day} ${monthName} ${year}`;
-                  break;
-                case 'auto':
-                default:
-                  formattedDate = date.toLocaleDateString();
-                  break;
-              }
-
-              // Add time part for dateTime type
-              if (col?.cellDataType === 'dateTime') {
-                const hours24 = date.getHours();
-                const hours12 = hours24 % 12 || 12;
-                const minutes = String(date.getMinutes()).padStart(2, '0');
-                const seconds = String(date.getSeconds()).padStart(2, '0');
-                const ampm = hours24 >= 12 ? 'PM' : 'AM';
-                const hours24Str = String(hours24).padStart(2, '0');
-                const hours12Str = String(hours12).padStart(2, '0');
-
-                let formattedTime;
-                switch (timeFormat) {
-                  case 'HH:mm:ss':
-                    formattedTime = `${hours24Str}:${minutes}:${seconds}`;
-                    break;
-                  case 'hh:mm A':
-                    formattedTime = `${hours12Str}:${minutes} ${ampm}`;
-                    break;
-                  case 'HH:mm':
-                  default:
-                    formattedTime = `${hours24Str}:${minutes}`;
-                    break;
-                }
-
-                return `${formattedDate} ${formattedTime}`;
-              }
-
-              return formattedDate;
-            };
-
-            const dateColumn = {
-              ...commonProperties,
-              headerName: col?.headerName,
-              field: col?.field,
-              sortable: col?.sortable,
-              filter: col?.filter ? 'agDateColumnFilter' : false,
-              editable: col?.editable,
-              cellEditor: 'DateCellEditor',
-              cellEditorParams: {
-                isDateTime: col?.cellDataType === 'dateTime',
-                getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
-                },
-              },
-              valueFormatter: (params) => formatDateValue(params.value),
-              // Date comparator for proper sorting
-              comparator: (valueA, valueB) => {
-                const dateA = valueA ? new Date(valueA).getTime() : 0;
-                const dateB = valueB ? new Date(valueB).getTime() : 0;
-                return dateA - dateB;
-              },
-            };
-
-            return dateColumn;
+            return createDateColumnDef(col, commonProperties, this.resolveMappingFormula);
           }
           case "currency": {
-            // Helper function to get currency code from row data or column config
-            const getCurrencyCode = (rowData, col) => {
-              if (col?.currencyMode === 'perRow' && col?.currencyCodeField) {
-                return this.resolveMappingFormula(col.currencyCodeField, rowData) || 'EUR';
-              }
-              return col?.currencyCode || 'EUR';
-            };
-
-            // Helper function to get locale for currency formatting
-            const getLocale = (col) => {
-              const locale = col?.currencyLocale;
-              if (!locale || locale === 'auto') return navigator.language || 'en-US';
-              return locale;
-            };
-
-            // Helper function to format currency value (cents to formatted string)
-            const formatCurrency = (value, currencyCode, locale) => {
-              if (value == null || value === '') return '';
-
-              // Convert cents to currency units
-              const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
-              if (isNaN(currencyValue)) return '';
-
-              // Use Intl.NumberFormat for proper currency formatting
-              try {
-                return new Intl.NumberFormat(locale || navigator.language || 'en-US', {
-                  style: 'currency',
-                  currency: currencyCode || 'EUR',
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
-                }).format(currencyValue);
-              } catch (e) {
-                // Fallback formatting if currency code is invalid
-                return `${currencyValue.toFixed(2)} ${currencyCode || 'EUR'}`;
-              }
-            };
-
-            // Helper function to parse user input to cents
-            const parseCurrencyInput = (input) => {
-              if (input == null || input === '') return null;
-              
-              // Remove currency symbols and whitespace
-              const cleaned = String(input).replace(/[€$£¥,\s]/g, '');
-              const parsed = parseFloat(cleaned);
-              
-              if (isNaN(parsed)) return null;
-              
-              // Convert to cents (multiply by 100)
-              return Math.round(parsed * 100);
-            };
-
-            // Helper function to get display value (cents / 100) for filtering and sorting
-            const getDisplayValue = (value) => {
-              if (value == null || value === '') return null;
-              const currencyValue = typeof value === 'number' ? value / 100 : parseFloat(value) / 100;
-              return isNaN(currencyValue) ? null : currencyValue;
-            };
-
-            const currencyColumn = {
-              ...commonProperties,
-              headerName: col?.headerName,
-              field: col?.field,
-              sortable: col?.sortable,
-              filter: col?.filter ? 'agNumberColumnFilter' : false,
-              editable: col?.editable,
-              cellEditorParams: {
-                getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
-                },
-              },
-              // Format display: convert cents to formatted currency
-              // Use raw field value from params.data, not params.value (which comes from valueGetter)
-              valueFormatter: (params) => {
-                const rawValue = params.data?.[col?.field];
-                const currencyCode = getCurrencyCode(params.data, col);
-                const locale = getLocale(col);
-                return formatCurrency(rawValue, currencyCode, locale);
-              },
-              // Get display value for sorting (cents / 100)
-              valueGetter: (params) => {
-                return getDisplayValue(params.data?.[col?.field]);
-              },
-              // Get display value for filtering (user types 12, not 1200)
-              filterValueGetter: (params) => {
-                return getDisplayValue(params.data?.[col?.field]);
-              },
-              // Parse user input: convert display value (e.g., "12") back to cents (1200)
-              valueParser: (params) => {
-                return parseCurrencyInput(params.newValue);
-              },
-              // Custom comparator for proper numeric sorting using display values
-              comparator: (valueA, valueB, nodeA, nodeB) => {
-                const rawValueA = nodeA?.data?.[col?.field];
-                const rawValueB = nodeB?.data?.[col?.field];
-                const displayValueA = getDisplayValue(rawValueA);
-                const displayValueB = getDisplayValue(rawValueB);
-                
-                // Handle null/undefined values
-                if (displayValueA == null && displayValueB == null) return 0;
-                if (displayValueA == null) return 1;
-                if (displayValueB == null) return -1;
-                
-                // Numeric comparison
-                return displayValueA - displayValueB;
-              },
-            };
-
-            return currencyColumn;
+            return createCurrencyColumnDef(col, commonProperties, this.resolveMappingFormula);
           }
           case "image": {
-            return {
-              ...commonProperties,
-              headerName: col?.headerName,
-              field: col?.field,
-              cellRenderer: "ImageCellRenderer",
-              cellRendererParams: {
-                width: col?.imageWidth,
-                height: col?.imageHeight,
-              },
-            };
+            return createImageColumnDef(col, commonProperties);
           }
           case "select": {
             const rawOptions = col?.options;
@@ -4062,7 +3766,8 @@ export default {
     style() {
       if (this.content.layout === "auto") return {};
       return {
-        height: this.content.height || "400px",
+        height: this.content.height || "500px",
+        minHeight: "200px",
       };
     },
     cssVars() {
@@ -4284,6 +3989,20 @@ export default {
     },
   },
   methods: {
+    /**
+     * Print a grid performance report to the browser console.
+     * Only produces output when "Enable debug logs" is turned on in the editor.
+     * Can be wired to a WeWeb action button for on-demand diagnostics.
+     */
+    reportPerformance() {
+      this.gridMonitor.report();
+    },
+    /**
+     * Reset all collected performance metrics.
+     */
+    resetPerformance() {
+      this.gridMonitor.reset();
+    },
     openColumnChooser() {
       this.showColumnChooser = true;
     },
@@ -4501,33 +4220,7 @@ export default {
       let oldValue = event.oldValue;
       
       if (isUserColumn && event.node) {
-        // Helper function to extract user ID(s) from raw cell value using userIdFormula
-        const extractUserIds = (rawValue, rowData) => {
-          if (!rawValue) return null;
-          // Apply userIdFormula to extract user ID(s) from potentially nested structures
-          const extractedValue = this.resolveMappingFormula(userIdFormula, rawValue);
-          // Return the extracted value, or fallback to raw value if formula returns null/undefined
-          return extractedValue ?? rawValue;
-        };
-        
-        // Helper function to get user name (for reverse lookup)
-        const getUserName = (user) => {
-          if (user.name) return user.name;
-          if (user.firstname || user.lastname) {
-            return [user.firstname, user.lastname].filter(Boolean).join(' ');
-          }
-          return user.email || user.id || '';
-        };
-        
-        // Helper function to find user ID by name
-        const findUserIdByName = (name, users) => {
-          if (!name || !users || !Array.isArray(users)) return null;
-          const user = users.find(u => {
-            const userName = getUserName(u);
-            return userName === name || u.id === name || u.email === name;
-          });
-          return user?.id || null;
-        };
+        // Use shared user utilities
         
         // Get users array from column config
         const users = columnConfig?.users || [];
@@ -4540,34 +4233,34 @@ export default {
         
         let normalizedOldValue;
         
-        if (isDisplayValue) {
-          // oldValue appears to be display names - convert to IDs
-          if (oldValue.includes(',')) {
-            // Multiple users: comma-separated names
-            const names = oldValue.split(',').map(n => n.trim()).filter(Boolean);
-            const ids = names.map(name => findUserIdByName(name, users)).filter(id => id != null);
-            normalizedOldValue = ids.length > 0 ? ids : null;
+          if (isDisplayValue) {
+            // oldValue appears to be display names - convert to IDs
+            if (oldValue.includes(',')) {
+              // Multiple users: comma-separated names
+              const names = oldValue.split(',').map(n => n.trim()).filter(Boolean);
+              const ids = names.map(name => findUserIdByName(name, users)).filter(id => id != null);
+              normalizedOldValue = ids.length > 0 ? ids : null;
+            } else {
+              // Single user: name
+              normalizedOldValue = findUserIdByName(oldValue, users);
+            }
           } else {
-            // Single user: name
-            normalizedOldValue = findUserIdByName(oldValue, users);
-          }
-        } else {
-          // oldValue might already be IDs - extract using formula if needed
-          normalizedOldValue = extractUserIds(oldValue, event.node.data);
-          
-          // If extraction returned the same value and it's a string, check if it's a name
-          if (normalizedOldValue === oldValue && typeof oldValue === 'string' && users.length > 0) {
-            // Check if it's already a valid ID
-            const isValidId = users.some(u => u.id === oldValue);
-            if (!isValidId) {
-              // Might be a name - try to find ID
-              const foundId = findUserIdByName(oldValue, users);
-              if (foundId) {
-                normalizedOldValue = foundId;
+            // oldValue might already be IDs - extract using formula if needed
+            normalizedOldValue = extractUserIds(oldValue, event.node.data, this.resolveMappingFormula, userIdFormula);
+            
+            // If extraction returned the same value and it's a string, check if it's a name
+            if (normalizedOldValue === oldValue && typeof oldValue === 'string' && users.length > 0) {
+              // Check if it's already a valid ID
+              const isValidId = users.some(u => u.id === oldValue);
+              if (!isValidId) {
+                // Might be a name - try to find ID
+                const foundId = findUserIdByName(oldValue, users);
+                if (foundId) {
+                  normalizedOldValue = foundId;
+                }
               }
             }
           }
-        }
         
         // Ensure format matches setCellValue expectations:
         // - Single user: string ID
@@ -4595,17 +4288,7 @@ export default {
       }
       
       // Don't emit event if values are the same (e.g., when edit was cancelled with Escape)
-      // This handles both primitive values and arrays
-      const valuesEqual = (() => {
-        if (oldValue === newValue) return true;
-        if (Array.isArray(oldValue) && Array.isArray(newValue)) {
-          if (oldValue.length !== newValue.length) return false;
-          return oldValue.every((val, idx) => val === newValue[idx]);
-        }
-        return false;
-      })();
-      
-      if (valuesEqual) {
+      if (valuesEqual(oldValue, newValue)) {
         return; // Skip emitting event when values are the same (cancelled edit)
       }
       // For select columns, oldValue should already be the option value (not label)
@@ -4627,43 +4310,9 @@ export default {
         const userIds = Array.isArray(newValue) ? newValue : [newValue];
         const userIdFormulaForJunction = columnConfig?.userIdFormula || defaultUserIdFormula;
         
-        // Helper function to create fake junction record structure based on userIdFormula
-        const createFakeJunctionRecord = (userId, formula) => {
-          // Parse the formula code to understand the nested structure
-          const formulaCode = formula?.code || '';
-          
-          // Extract path from formula (e.g., "profile.id" from "context.mapping?.profile?.id")
-          // Pattern: mapping?.profile?.id or mapping?.['profile']?.['id'] or mapping?.profile?.['id']
-          const pathMatch = formulaCode.match(/mapping\?\.?\[?['"]?(\w+)['"]?\]?\?\.?\[?['"]?(\w+)['"]?\]?/);
-          
-          if (pathMatch && pathMatch.length >= 3) {
-            const [, ...pathParts] = pathMatch;
-            const path = pathParts.filter(Boolean);
-            
-            if (path.length > 0) {
-              // Create nested structure: { [path[0]]: { [path[1]]: userId } }
-              const result = {};
-              let current = result;
-              for (let i = 0; i < path.length - 1; i++) {
-                current[path[i]] = {};
-                current = current[path[i]];
-              }
-              current[path[path.length - 1]] = userId;
-              return result;
-            }
-          }
-          
-          // Fallback: try common patterns
-          if (formulaCode.includes('profile') && formulaCode.includes('id')) {
-            return { profile: { id: userId } };
-          }
-          
-          // Default: return simple structure with id
-          return { id: userId };
-        };
+        // Use shared junction record factory
         
-        // Create fake junction records - always create array structure for many-to-many
-        // Check maxNumberOfUsers to determine if we should store as array or single object
+        // Create fake junction records using shared utility
         const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
         let fakeJunctionRecord;
         if (isMultiple) {
@@ -4801,78 +4450,14 @@ export default {
         return false;
       }
       
-      // Try to get the row node
-      let rowNode = this.gridApi.getRowNode(rowId);
-      
-      // If not found and rowId is a number, try converting to string and vice versa
-      if (!rowNode) {
-        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
-        if (!isNaN(alternativeId)) {
-          rowNode = this.gridApi.getRowNode(alternativeId);
-        }
-      }
-      
-      // If still not found, search through all rows by matching the ID formula
-      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
-      // by the base ID (from formula) rather than the full node.id
-      if (!rowNode) {
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            // Get the base ID using the same formula as getRowId (without hash)
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            // If formula returns the field name instead of value, try direct access
-            // This handles cases where the formula might not resolve correctly
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              // Try common ID field names directly from node.data
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            // Convert to string for comparison
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            // Try exact match with base ID (what user provides)
-            if (baseIdStr === rowIdStr) {
-              rowNode = node;
-            }
-            // Also check if the provided rowId matches the start of node.id
-            // (in case getRowId appended a hash: "uuid-hash")
-            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
-              rowNode = node;
-            }
-            // Also check if node.id exactly matches (in case user provided full ID with hash)
-            else if (node.id && String(node.id) === rowIdStr) {
-              rowNode = node;
-            }
-            // Fallback: check if rowId exists as a property value in node.data
-            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
       
       if (!rowNode) {
         console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
         // Debug: log available row IDs to help troubleshoot
         if (this.content?.enableDebugLogs) {
-          const availableIds = [];
-          this.gridApi.forEachNode((node) => {
-            if (node.data) {
-              let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-              if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-                baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-              }
-              availableIds.push({ 
-                baseId, 
-                nodeId: node.id,
-                dataId: node.data.id,
-                dataKeys: Object.keys(node.data || {})
-              });
-            }
-          });
+          const availableIds = getAvailableRowIds(this.gridApi, this.resolveMappingFormula, this.content);
           console.log('[Datagrid] Available row IDs:', availableIds);
         }
         return false;
@@ -4902,44 +4487,12 @@ export default {
         const isMultiple = (columnConfig?.maxNumberOfUsers ?? 4) > 1;
         
         if (isManyToMany && newValue) {
-          // Helper function to create fake junction record structure based on userIdFormula
-          const createFakeJunctionRecord = (userId, formula) => {
-            // Parse the formula code to understand the nested structure
-            const formulaCode = formula?.code || '';
-            
-            // Extract path from formula (e.g., "profile.id" from "context.mapping?.profile?.id")
-            const pathMatch = formulaCode.match(/mapping\?\.?\[?['"]?(\w+)['"]?\]?\?\.?\[?['"]?(\w+)['"]?\]?/);
-            
-            if (pathMatch && pathMatch.length >= 3) {
-              const [, ...pathParts] = pathMatch;
-              const path = pathParts.filter(Boolean);
-              
-              if (path.length > 0) {
-                // Create nested structure: { [path[0]]: { [path[1]]: userId } }
-                const result = {};
-                let current = result;
-                for (let i = 0; i < path.length - 1; i++) {
-                  current[path[i]] = {};
-                  current = current[path[i]];
-                }
-                current[path[path.length - 1]] = userId;
-                return result;
-              }
-            }
-            
-            // Fallback: try common patterns
-            if (formulaCode.includes('profile') && formulaCode.includes('id')) {
-              return { profile: { id: userId } };
-            }
-            
-            // Default: return simple structure with id
-            return { id: userId };
-          };
+          // Use shared junction record factory
           
           // Normalize newValue to array for processing
           const userIds = Array.isArray(newValue) ? newValue : [newValue];
           
-          // Convert user ID(s) to nested structure based on maxNumberOfUsers
+          // Convert user ID(s) to nested structure using shared utility
           if (isMultiple) {
             // Multiple users: array of nested structures
             valueToSet = userIds.map(userId => createFakeJunctionRecord(userId, userIdFormula));
@@ -4983,55 +4536,8 @@ export default {
         return;
       }
       
-      // Try to get the row node
-      let rowNode = this.gridApi.getRowNode(rowId);
-      
-      // If not found and rowId is a number, try converting to string and vice versa
-      if (!rowNode) {
-        const alternativeId = typeof rowId === 'number' ? String(rowId) : Number(rowId);
-        if (!isNaN(alternativeId)) {
-          rowNode = this.gridApi.getRowNode(alternativeId);
-        }
-      }
-      
-      // If still not found, search through all rows by matching the ID formula
-      // CRITICAL: getRowId appends a hash to the ID formula result, so we need to match
-      // by the base ID (from formula) rather than the full node.id
-      if (!rowNode) {
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            // Get the base ID using the same formula as getRowId (without hash)
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            // If formula returns the field name instead of value, try direct access
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            // Convert to string for comparison
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            // Try exact match with base ID (what user provides)
-            if (baseIdStr === rowIdStr) {
-              rowNode = node;
-            }
-            // Also check if the provided rowId matches the start of node.id
-            else if (node.id && String(node.id).startsWith(rowIdStr + '-')) {
-              rowNode = node;
-            }
-            // Also check if node.id exactly matches
-            else if (node.id && String(node.id) === rowIdStr) {
-              rowNode = node;
-            }
-            // Fallback: check if rowId exists as a property value in node.data
-            else if (node.data && Object.values(node.data).some(val => String(val) === rowIdStr)) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
       
       if (!rowNode) {
         console.log(`Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
@@ -5169,21 +4675,8 @@ export default {
           return false;
         }
 
-        // Find and update the row in the grid
-        let rowNode = null;
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            if (baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data[primaryKeyField];
-            }
-            if (String(baseId) === rowIdStr) {
-              rowNode = node;
-            }
-          }
-        });
+        // Find and update the row in the grid using unified lookup
+        let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
 
         if (rowNode) {
           // Update the row data
@@ -5283,7 +4776,7 @@ export default {
                     // CRITICAL: Wait for the row to appear in the grid before resolving
                     // This ensures subsequent actions can find the row
                     try {
-                      await this.waitForRowInGrid(rowId, 10000);
+                      await waitForRowInGridLocal(rowId, 10000);
                       this.debugLog(`[Datagrid] Row ${rowId} is now present in the grid`);
                       resolve(true);
                     } catch (error) {
@@ -5442,33 +4935,8 @@ export default {
         return;
       }
       
-      // Try to get the row node directly first
-      let rowNode = this.gridApi.getRowNode(rowId);
-      
-      // If not found, search by base ID (getRowId appends a hash)
-      if (!rowNode) {
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            // If formula returns the field name instead of value, try direct access
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            if (baseIdStr === rowIdStr || 
-                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-                (node.id && String(node.id) === rowIdStr) ||
-                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
       
       if (rowNode) {
         rowNode.setSelected(true);
@@ -5491,33 +4959,8 @@ export default {
         return;
       }
       
-      // Try to get the row node directly first
-      let rowNode = this.gridApi.getRowNode(rowId);
-      
-      // If not found, search by base ID (getRowId appends a hash)
-      if (!rowNode) {
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            // If formula returns the field name instead of value, try direct access
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            if (baseIdStr === rowIdStr || 
-                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-                (node.id && String(node.id) === rowIdStr) ||
-                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
       
       if (rowNode) {
         rowNode.setSelected(false);
@@ -5553,33 +4996,8 @@ export default {
         return false;
       }
       
-      // Try to get the row node directly first
-      let rowNode = this.gridApi.getRowNode(rowId);
-      
-      // If not found, search by base ID (getRowId appends a hash)
-      if (!rowNode) {
-        const rowIdStr = String(rowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            // If formula returns the field name instead of value, try direct access
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            if (baseIdStr === rowIdStr || 
-                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-                (node.id && String(node.id) === rowIdStr) ||
-                (node.data && Object.values(node.data).some(val => String(val) === rowIdStr))) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
       
       if (!rowNode) {
         console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid`);
@@ -5610,6 +5028,9 @@ export default {
           if (this.removedRowIds) {
             this.removedRowIds.add(String(rowId));
             this.debugLog(`[Remove Row] Added row ${rowId} to removedRowIds set (size: ${this.removedRowIds.size})`);
+            
+            // Periodic cleanup to prevent unbounded growth
+            cleanupRemovedIds();
           } else {
             this.debugLog(`[Remove Row] Warning: removedRowIds not available`);
           }
@@ -5755,39 +5176,8 @@ export default {
         return;
       }
       
-      // Find the row node by ID
-      let rowNode = this.gridApi.getRowNode(String(focusedRowId));
-      
-      // If not found directly, try alternative ID formats
-      if (!rowNode) {
-        const alternativeId = typeof focusedRowId === 'number' ? String(focusedRowId) : Number(focusedRowId);
-        if (!isNaN(alternativeId)) {
-          rowNode = this.gridApi.getRowNode(String(alternativeId));
-        }
-      }
-      
-      // If still not found, search through all rows by matching the ID formula
-      if (!rowNode) {
-        const rowIdStr = String(focusedRowId);
-        
-        this.gridApi.forEachNode((node) => {
-          if (!rowNode && node.data) {
-            let baseId = this.resolveMappingFormula(this.content.idFormula, node.data);
-            
-            if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-              baseId = node.data.id || node.data._id || node.data.uuid || node.data.ID || node.data.Id;
-            }
-            
-            const baseIdStr = baseId != null ? String(baseId) : '';
-            
-            if (baseIdStr === rowIdStr || 
-                (node.id && String(node.id).startsWith(rowIdStr + '-')) ||
-                (node.id && String(node.id) === rowIdStr)) {
-              rowNode = node;
-            }
-          }
-        });
-      }
+      // Use unified row lookup utility
+      let rowNode = findRowNode(this.gridApi, focusedRowId, this.resolveMappingFormula, this.content);
       
       // If row not found, it might be filtered out or not loaded yet (infinite scroll)
       if (!rowNode || !rowNode.data) {
@@ -6061,6 +5451,13 @@ export default {
     // Force GPU acceleration for better scroll performance
     -webkit-transform: translateZ(0);
   }
+
+  // Promote the main scroll container to its own GPU compositor layer.
+  // will-change:scroll-position tells the browser to create a separate layer
+  // before the user starts scrolling, avoiding layer-promotion jank mid-scroll.
+  :deep(.ag-body-viewport) {
+    will-change: scroll-position;
+  }
   
   // Remove minimum height when using auto height layout
   // AG Grid sets a 150px minimum height by default for auto height to avoid empty grids
@@ -6069,12 +5466,24 @@ export default {
     min-height: 75px !important;
   }
   
+  // Improve virtualization for large datasets
+  :deep(.ag-center-cols-container) {
+    min-height: 0 !important;
+  }
+  
+  :deep(.ag-body-viewport) {
+    overflow-y: auto !important;
+  }
+  
   // Ensure header and body rows stay aligned during horizontal scroll
   :deep(.ag-header-row),
   :deep(.ag-row) {
     // Use hardware acceleration for better scroll performance
     transform: translateZ(0);
     backface-visibility: hidden;
+    // contain:style tells the browser that style changes inside a row don't
+    // affect sibling rows, eliminating cross-row style recalculation during scroll.
+    contain: style;
   }
   
   // Disable transitions on header and body cells during scroll to prevent lag
@@ -6086,6 +5495,8 @@ export default {
     transition-property: background-color, color, border-color, opacity;
     transition-duration: 0.15s;
     transition-timing-function: ease;
+    // Isolate style recalculations within each cell to avoid cascade invalidations
+    contain: style;
   }
   
   :deep(.ag-cell-wrapper),

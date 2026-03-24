@@ -158,12 +158,15 @@ export default {
       "invalidEditValueMode",
       "cellEditMode",
       "rowBuffer",
+      "suppressAnimationFrame",
       "movableColumns",
       "resizableColumns",
       "allowColumnHiding",
       "rowReorder",
       "reorderInfoBox",
       "viewConfiguration",
+      "viewEditedVariableId",
+      "columnChooserVariableId",
       ["lang", "localeText"],
       "enableDebugLogs",
     ],
@@ -2515,11 +2518,27 @@ export default {
       type: "Number",
       section: "settings",
       bindable: true,
-      defaultValue: 30,
+      defaultValue: 10,
       /* wwEditor:start */
       bindingValidation: {
         type: "number",
-        tooltip: "Number of rows rendered outside the visible viewport. Higher values reduce flickering during fast scrolling at the cost of more DOM nodes. Default is 30.",
+        tooltip: "Number of rows rendered outside the visible viewport. Keep this low (10–20) for best scroll performance — a large buffer increases DOM weight and slows row creation. Only raise it if rows still flash during very fast scrolling.",
+      },
+      /* wwEditor:end */
+    },
+    suppressAnimationFrame: {
+      label: { en: "Sync Row Rendering" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "When enabled, new rows entering the viewport are rendered synchronously inside the scroll handler instead of waiting for the next animation frame. This eliminates blank-row flashes during fast scrolling but may reduce scroll smoothness on low-end devices. Enable only if rows still flash after reducing the Row Buffer.",
+      },
+      propertyHelp: {
+        tooltip: "Synchronous row rendering (suppressAnimationFrame). Eliminates visible row pop-in during scroll at the cost of slightly less fluid scrolling on slow hardware.",
       },
       /* wwEditor:end */
     },
@@ -2678,6 +2697,38 @@ export default {
       },
       propertyHelp: {
         tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [] }. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
+      },
+      /* wwEditor:end */
+    },
+    viewEditedVariableId: {
+      label: { en: "View Edited — Variable ID" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      defaultValue: "",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "The UUID of the WeWeb boolean variable to update. Example: '6fe05736-6920-46d3-8240-8227dcc814a2'.",
+      },
+      propertyHelp: {
+        tooltip: "ID of a WeWeb boolean variable to set to true when the current grid state (hidden columns, column order, sorting, column widths, filters) differs from the View Configuration, and false when they match. Example: '6fe05736-6920-46d3-8240-8227dcc814a2'.",
+      },
+      /* wwEditor:end */
+    },
+    columnChooserVariableId: {
+      label: { en: "Column Chooser — Variable ID" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      defaultValue: "",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "The UUID of the WeWeb boolean variable to control the column chooser panel visibility.",
+      },
+      propertyHelp: {
+        tooltip: "ID of a WeWeb boolean variable that controls the column chooser panel. Set the variable to true to open the panel, false to close it. The variable is also updated when the panel is closed from within the component.",
       },
       /* wwEditor:end */
     },
