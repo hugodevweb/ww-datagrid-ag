@@ -103,6 +103,11 @@ export default {
       },
     ],
     customSettingsPropertiesOrder: [
+      {
+        label: "Base Configuration",
+        isCollapsible: true,
+        properties: ["baseConfig", "baseConfigExcludes"],
+      },
       "dataSource",
       "rowData",
       "supabaseTable",
@@ -2819,6 +2824,48 @@ export default {
       },
       propertyHelp: {
         tooltip: "When enabled, detailed debug information will be logged to the browser console. Useful for troubleshooting validation issues and understanding component behavior.",
+      },
+      /* wwEditor:end */
+    },
+    baseConfig: {
+      label: { en: "Base Config" },
+      type: "RawObject",
+      section: "settings",
+      bindable: true,
+      defaultValue: null,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "object",
+        tooltip: "An object variable containing default grid settings shared across all instances. Keys match property names (e.g., { pagination: true, headerBackgroundColor: '#1a1a2e' }).",
+      },
+      propertyHelp: {
+        tooltip: "Bind a WeWeb object variable containing default settings for this grid. Base config values override local instance values. Use Base Config Excludes to opt out specific properties on a per-instance basis.",
+      },
+      /* wwEditor:end */
+    },
+    baseConfigExcludes: {
+      label: { en: "Base Config Excludes" },
+      type: "Array",
+      section: "settings",
+      bindable: true,
+      defaultValue: [],
+      hidden: (content) => !content.baseConfig,
+      options: {
+        expandable: true,
+        getItemLabel(item) {
+          return item || "Property name";
+        },
+        item: {
+          type: "Text",
+        },
+      },
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "array",
+        tooltip: "Array of property name strings to exclude from baseConfig for this instance (e.g., ['pagination', 'headerBackgroundColor']).",
+      },
+      propertyHelp: {
+        tooltip: "List property names that this grid instance should ignore from baseConfig. For these properties, the local instance value will be used instead.",
       },
       /* wwEditor:end */
     },

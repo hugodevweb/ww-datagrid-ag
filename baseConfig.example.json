@@ -1,0 +1,79 @@
+{
+  "_comment": "Bind this object to the 'Base Config' property on each grid instance. Remove keys you don't want standardized. Use 'Base Config Excludes' on a specific grid to opt out of individual keys.",
+
+  "layout": "fixed",
+  "height": "500px",
+
+  "pagination": true,
+  "paginationPageSize": 25,
+  "hasPaginationSelector": "multiple",
+  "paginationPageSizeSelector": [10, 25, 50, 100],
+
+  "rowSelection": "multiple",
+  "enableClickSelection": false,
+  "disableCheckboxes": false,
+  "selectAll": "filtered",
+
+  "resizableColumns": true,
+  "movableColumns": true,
+  "columnHoverHighlight": false,
+  "allowColumnHiding": true,
+  "rowReorder": false,
+
+  "cellEditMode": "doubleClick",
+  "cellAlignmentMode": "default",
+  "invalidEditValueMode": "revert",
+
+  "rowBuffer": 10,
+  "suppressAnimationFrame": false,
+
+  "textColor": "#111827",
+  "borderColor": "#E5E7EB",
+  "wrapperBorderRadius": "8px",
+
+  "headerBackgroundColor": "#F9FAFB",
+  "headerTextColor": "#374151",
+  "headerFontSize": "13px",
+  "headerFontFamily": "Inter, sans-serif",
+  "headerFontWeight": "600",
+  "headerHeightMode": "fixed",
+  "headerHeight": 44,
+
+  "rowBackgroundColor": "#FFFFFF",
+  "rowAlternateColor": "#F9FAFB",
+  "rowHoverColor": "#F3F4F6",
+  "rowVerticalPaddingScale": 1,
+
+  "cellColor": "#111827",
+  "cellFontFamily": "Inter, sans-serif",
+  "cellFontSize": "14px",
+  "cellSelectionBorderColor": "#6366F1",
+
+  "selectedRowBackgroundColor": "#EEF2FF",
+  "selectionCheckboxColor": "#6366F1",
+  "checkboxUncheckedBorderColor": "#D1D5DB",
+  "focusShadow": "0 0 0 3px rgba(99, 102, 241, 0.2)",
+  "userFocusColor": "#6366F1",
+
+  "menuBackgroundColor": "#FFFFFF",
+  "menuTextColor": "#111827",
+  "columnHoverColor": "#F3F4F6",
+
+  "columnChooserBackground": "#FFFFFF",
+  "columnChooserBorderColor": "#E5E7EB",
+  "columnChooserBorderRadius": "8px",
+  "columnChooserTextColor": "#111827",
+  "columnChooserAccentColor": "#6366F1",
+  "columnChooserWidth": "260px",
+
+  "actionBackgroundColor": "transparent",
+  "actionColor": "#6366F1",
+  "actionPadding": "4px 8px",
+  "actionBorder": "1px solid #6366F1",
+  "actionBorderRadius": "4px",
+  "actionFontSize": "13px",
+  "actionFontFamily": "Inter, sans-serif",
+  "actionFontWeight": "500",
+  "actionFontStyle": "normal",
+  "actionLineHeight": "1.5"
+}

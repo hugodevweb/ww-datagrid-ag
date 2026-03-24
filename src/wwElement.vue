@@ -7,7 +7,7 @@
       :initial-state="initialState"
       :defaultColDef="defaultColDef"
       :dataTypeDefinitions="dataTypeDefinitions"
-      :domLayout="content.layout === 'auto' ? 'autoHeight' : 'normal'"
+      :domLayout="cfg.layout === 'auto' ? 'autoHeight' : 'normal'"
       :style="style"
       :rowSelection="rowSelection"
       :selection-column-def="{ pinned: true }"
@@ -16,33 +16,33 @@
       :rowModelType="rowModelType"
       :datasource="delayedDatasource"
       :cacheBlockSize="cacheBlockSize"
-      :maxBlocksInCache="content.maxBlocksInCache ?? 10"
-      :cacheOverflowSize="content.cacheOverflowSize ?? 2"
-      :maxConcurrentDatasourceRequests="content.maxConcurrentRequests ?? 2"
-      :blockLoadDebounceMillis="content.blockLoadDebounce ?? 100"
+      :maxBlocksInCache="cfg.maxBlocksInCache ?? 10"
+      :cacheOverflowSize="cfg.cacheOverflowSize ?? 2"
+      :maxConcurrentDatasourceRequests="cfg.maxConcurrentRequests ?? 2"
+      :blockLoadDebounceMillis="cfg.blockLoadDebounce ?? 100"
       :pagination="paginationEnabled"
       :paginationPageSize="
         forcedPaginationPageSize
           ? 0
           : paginationPageSizeSelector
           ? paginationPageSizeSelector[0]
-          : content.paginationPageSize
+          : cfg.paginationPageSize
       "
       :paginationPageSizeSelector="paginationPageSizeSelector"
-      :suppressMovableColumns="!content.movableColumns"
-      :columnHoverHighlight="content.columnHoverHighlight"
+      :suppressMovableColumns="!cfg.movableColumns"
+      :columnHoverHighlight="cfg.columnHoverHighlight"
       :locale-text="localeText"
       :invalidEditValueMode="invalidEditValueMode"
       :getRowStyle="rowStyle"
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="rowDragManaged"
-      :rowBuffer="content.rowBuffer ?? 10"
+      :rowBuffer="cfg.rowBuffer ?? 10"
       :suppressRowVirtualisation="false"
       :animateRows="false"
       :debounceVerticalScrollbar="true"
       :suppressScrollOnNewData="true"
-      :suppressAnimationFrame="content.suppressAnimationFrame ?? false"
+      :suppressAnimationFrame="cfg.suppressAnimationFrame ?? false"
       @grid-ready="onGridReady"
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
@@ -61,12 +61,12 @@
       @model-updated="onModelUpdated"
     >
     </ag-grid-vue>
-    <div v-if="content.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
+    <div v-if="cfg.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
       <Transition name="cc-fade">
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
           <!-- Header -->
           <div class="cc-header">
-            <span class="cc-title">{{ getTranslations(content?.lang || 'en').manageColumns }}</span>
+            <span class="cc-title">{{ getTranslations(cfg?.lang || 'en').manageColumns }}</span>
             <button class="cc-close-btn" @click="showColumnChooser = false" aria-label="Fermer">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -94,7 +94,7 @@
                 class="cc-search-input"
                 type="text"
                 v-model="columnChooserSearch"
-                :placeholder="getTranslations(content?.lang || 'en').search"
+                :placeholder="getTranslations(cfg?.lang || 'en').search"
                 @click.stop
               />
             </div>
@@ -136,7 +136,7 @@
               <span class="cc-col-name">{{ col.headerName }}</span>
             </div>
             <div v-if="filteredColumnsList.length === 0" class="cc-empty">
-              {{ getTranslations(content?.lang || 'en').noColumnsMatch.replace('{searchTerm}', columnChooserSearch) }}
+              {{ getTranslations(cfg?.lang || 'en').noColumnsMatch.replace('{searchTerm}', columnChooserSearch) }}
             </div>
           </div>
         </div>
@@ -3138,16 +3138,37 @@ export default {
     };
   },
   computed: {
+    cfg() {
+      if (!this.content || typeof this.content !== 'object') return this.content ?? {};
+      const base = this.content.baseConfig;
+      const excludes = this.content.baseConfigExcludes;
+      if (!base || typeof base !== 'object') return this.content;
+
+      const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
+      excludeSet.add('baseConfig');
+      excludeSet.add('baseConfigExcludes');
+
+      const merged = {};
+      for (const key of Object.keys(this.content)) {
+        merged[key] = this.content[key];
+      }
+      for (const key of Object.keys(base)) {
+        if (!excludeSet.has(key)) {
+          merged[key] = base[key];
+        }
+      }
+      return merged;
+    },
     defaultColDef() {
       return {
         editable: false,
-        resizable: this.content.resizableColumns,
-        autoHeaderHeight: this.content.headerHeightMode === "auto",
-        wrapHeaderText: this.content.headerHeightMode === "auto",
-        singleClickEdit: this.content.cellEditMode !== "doubleClick",
+        resizable: this.cfg.resizableColumns,
+        autoHeaderHeight: this.cfg.headerHeightMode === "auto",
+        wrapHeaderText: this.cfg.headerHeightMode === "auto",
+        singleClickEdit: this.cfg.cellEditMode !== "doubleClick",
         cellClass:
-          this.content.cellAlignmentMode === "custom"
-            ? `-${this.content.cellAlignment || "left"} ||`
+          this.cfg.cellAlignmentMode === "custom"
+            ? `-${this.cfg.cellAlignment || "left"} ||`
             : null,
         filterParams: {
           buttons: ['reset', 'apply'],
@@ -3166,7 +3187,7 @@ export default {
     allColumnsList() {
       // Build a map of colId → column meta from content.columns (exclude design-time hidden)
       const colMap = new Map();
-      for (const col of (this.content.columns || [])) {
+      for (const col of (this.cfg.columns || [])) {
         if (!col || (!col.field && !col.actionName) || col.hide) continue;
         const colId = col.actionName || col.field;
         colMap.set(colId, {
@@ -3203,7 +3224,7 @@ export default {
     // Cheap count of runtime-toggleable columns (design-time hidden are excluded).
     // Used by someColumnsHidden to avoid pulling in the heavier allColumnsList computation.
     visibleColumnCount() {
-      return (this.content.columns || []).filter(
+      return (this.cfg.columns || []).filter(
         col => col && (col.field || col.actionName) && !col.hide
       ).length;
     },
@@ -3231,11 +3252,11 @@ export default {
       // Get column widths from viewConfiguration (for restoring user-resized widths)
       // Note: When sizes key is present but empty ({}), default column widths from column config will be used
       // When sizes key is absent (undefined), the current user-resized widths are preserved
-      const viewConfig = this.content.viewConfiguration;
+      const viewConfig = this.cfg.viewConfiguration;
       const hasSizesKey = viewConfig && typeof viewConfig === 'object' && 'sizes' in viewConfig;
       const viewColumnSizes = hasSizesKey ? viewConfig.sizes : null;
       
-      const allColumnDefs = this.content.columns
+      const allColumnDefs = this.cfg.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
         .map((col, index) => {
 
@@ -3271,7 +3292,7 @@ export default {
 
         // Build cellClass array for column-specific styling
         const cellClasses = [];
-        if (this.content.cellAlignmentMode !== "custom" && col?.cellAlignment) {
+        if (this.cfg.cellAlignmentMode !== "custom" && col?.cellAlignment) {
           cellClasses.push(`-${col?.cellAlignment}`);
         }
         if (col?.suppressRowInteraction) {
@@ -3401,8 +3422,8 @@ export default {
             const userParams = {
               users: Array.isArray(rawUsers) ? rawUsers : [],
               maxNumberOfUsers: col?.maxNumberOfUsers ?? 4,
-              userFocusColor: this.content.userFocusColor,
-              cellFontFamily: this.content.cellFontFamily,
+              userFocusColor: this.cfg.userFocusColor,
+              cellFontFamily: this.cfg.cellFontFamily,
               resolveMappingFormula: this.resolveMappingFormula,
               userIdFormula: userIdFormula,
               // Use a getter to avoid isLoading being a reactive dependency of columnDefs.
@@ -3703,7 +3724,7 @@ export default {
       // The distinction between "key absent" vs "key present but empty" is handled
       // by applyViewConfiguration at runtime for resetting column order
       let columns;
-      const viewColumnsOrder = this.content.viewConfiguration?.columnsOrder;
+      const viewColumnsOrder = this.cfg.viewConfiguration?.columnsOrder;
       const hasValidColumnsOrder = viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0;
       if (hasValidColumnsOrder) {
         const orderedColumns = [];
@@ -3733,99 +3754,99 @@ export default {
 
       // Enable row drag only if rowReorder is enabled AND infinite scroll is NOT enabled
       // (row dragging is not supported with infinite row model)
-      if (this.content.rowReorder && columns[0] && !this.isInfiniteScrollEnabled) {
+      if (this.cfg.rowReorder && columns[0] && !this.isInfiniteScrollEnabled) {
         columns[0].rowDrag = true;
       }
 
       return columns;
     },
     rowSelection() {
-      if (this.content.rowSelection === "multiple") {
+      if (this.cfg.rowSelection === "multiple") {
         return {
           mode: "multiRow",
-          checkboxes: !this.content.disableCheckboxes,
-          headerCheckbox: !this.content.disableCheckboxes,
-          selectAll: this.content.selectAll || "all",
-          enableClickSelection: this.content.enableClickSelection,
+          checkboxes: !this.cfg.disableCheckboxes,
+          headerCheckbox: !this.cfg.disableCheckboxes,
+          selectAll: this.cfg.selectAll || "all",
+          enableClickSelection: this.cfg.enableClickSelection,
         };
-      } else if (this.content.rowSelection === "single") {
+      } else if (this.cfg.rowSelection === "single") {
         return {
           mode: "singleRow",
-          checkboxes: !this.content.disableCheckboxes,
-          enableClickSelection: this.content.enableClickSelection,
+          checkboxes: !this.cfg.disableCheckboxes,
+          enableClickSelection: this.cfg.enableClickSelection,
         };
       } else {
         return {
           mode: "singleRow",
           checkboxes: false,
           isRowSelectable: () => false,
-          enableClickSelection: this.content.enableClickSelection,
+          enableClickSelection: this.cfg.enableClickSelection,
         };
       }
     },
     style() {
-      if (this.content.layout === "auto") return {};
+      if (this.cfg.layout === "auto") return {};
       return {
-        height: this.content.height || "500px",
+        height: this.cfg.height || "500px",
         minHeight: "200px",
       };
     },
     cssVars() {
       return {
-        "--ww-data-grid_cc-background": this.content.columnChooserBackground,
-        "--ww-data-grid_cc-border-color": this.content.columnChooserBorderColor,
-        "--ww-data-grid_cc-border-radius": this.content.columnChooserBorderRadius,
-        "--ww-data-grid_cc-text-color": this.content.columnChooserTextColor,
-        "--ww-data-grid_cc-accent-color": this.content.columnChooserAccentColor,
-        "--ww-data-grid_cc-width": this.content.columnChooserWidth,
+        "--ww-data-grid_cc-background": this.cfg.columnChooserBackground,
+        "--ww-data-grid_cc-border-color": this.cfg.columnChooserBorderColor,
+        "--ww-data-grid_cc-border-radius": this.cfg.columnChooserBorderRadius,
+        "--ww-data-grid_cc-text-color": this.cfg.columnChooserTextColor,
+        "--ww-data-grid_cc-accent-color": this.cfg.columnChooserAccentColor,
+        "--ww-data-grid_cc-width": this.cfg.columnChooserWidth,
         "--ww-data-grid_action-backgroundColor":
-          this.content.actionBackgroundColor,
-        "--ww-data-grid_action-color": this.content.actionColor,
-        "--ww-data-grid_action-padding": this.content.actionPadding,
-        "--ww-data-grid_action-border": this.content.actionBorder,
-        "--ww-data-grid_action-borderRadius": this.content.actionBorderRadius,
-        ...(this.content.actionFont
-          ? { "--ww-data-grid_action-font": this.content.actionFont }
+          this.cfg.actionBackgroundColor,
+        "--ww-data-grid_action-color": this.cfg.actionColor,
+        "--ww-data-grid_action-padding": this.cfg.actionPadding,
+        "--ww-data-grid_action-border": this.cfg.actionBorder,
+        "--ww-data-grid_action-borderRadius": this.cfg.actionBorderRadius,
+        ...(this.cfg.actionFont
+          ? { "--ww-data-grid_action-font": this.cfg.actionFont }
           : {
-              "--ww-data-grid_action-fontSize": this.content.actionFontSize,
-              "--ww-data-grid_action-fontFamily": this.content.actionFontFamily,
-              "--ww-data-grid_action-fontWeight": this.content.actionFontWeight,
-              "--ww-data-grid_action-fontStyle": this.content.actionFontStyle,
-              "--ww-data-grid_action-lineHeight": this.content.actionLineHeight,
+              "--ww-data-grid_action-fontSize": this.cfg.actionFontSize,
+              "--ww-data-grid_action-fontFamily": this.cfg.actionFontFamily,
+              "--ww-data-grid_action-fontWeight": this.cfg.actionFontWeight,
+              "--ww-data-grid_action-fontStyle": this.cfg.actionFontStyle,
+              "--ww-data-grid_action-lineHeight": this.cfg.actionLineHeight,
             }),
       };
     },
     theme() {
       return themeQuartz.withParams({
-        headerBackgroundColor: this.content.headerBackgroundColor,
-        headerTextColor: this.content.headerTextColor,
-        headerFontSize: this.content.headerFontSize,
-        headerFontFamily: this.content.headerFontFamily,
-        headerFontWeight: this.content.headerFontWeight,
+        headerBackgroundColor: this.cfg.headerBackgroundColor,
+        headerTextColor: this.cfg.headerTextColor,
+        headerFontSize: this.cfg.headerFontSize,
+        headerFontFamily: this.cfg.headerFontFamily,
+        headerFontWeight: this.cfg.headerFontWeight,
         headerHeight:
-          this.content.headerHeightMode !== "auto"
-            ? this.content.headerHeight
+          this.cfg.headerHeightMode !== "auto"
+            ? this.cfg.headerHeight
             : undefined,
-        borderColor: this.content.borderColor,
-        cellTextColor: this.content.cellColor,
-        cellFontFamily: this.content.cellFontFamily,
-        dataFontSize: this.content.cellFontSize,
-        oddRowBackgroundColor: this.content.rowAlternateColor,
-        backgroundColor: this.content.rowBackgroundColor,
-        rowHoverColor: this.content.rowHoverColor,
-        selectedRowBackgroundColor: this.content.selectedRowBackgroundColor,
-        rowVerticalPaddingScale: this.content.rowVerticalPaddingScale || 1,
-        menuBackgroundColor: this.content.menuBackgroundColor,
-        menuTextColor: this.content.menuTextColor,
-        columnHoverColor: this.content.columnHoverColor,
-        foregroundColor: this.content.textColor,
-        checkboxCheckedBackgroundColor: this.content.selectionCheckboxColor,
-        rangeSelectionBorderColor: this.content.cellSelectionBorderColor,
-        checkboxUncheckedBorderColor: this.content.checkboxUncheckedBorderColor,
-        focusShadow: this.content.focusShadow?.length
-          ? this.content.focusShadow
+        borderColor: this.cfg.borderColor,
+        cellTextColor: this.cfg.cellColor,
+        cellFontFamily: this.cfg.cellFontFamily,
+        dataFontSize: this.cfg.cellFontSize,
+        oddRowBackgroundColor: this.cfg.rowAlternateColor,
+        backgroundColor: this.cfg.rowBackgroundColor,
+        rowHoverColor: this.cfg.rowHoverColor,
+        selectedRowBackgroundColor: this.cfg.selectedRowBackgroundColor,
+        rowVerticalPaddingScale: this.cfg.rowVerticalPaddingScale || 1,
+        menuBackgroundColor: this.cfg.menuBackgroundColor,
+        menuTextColor: this.cfg.menuTextColor,
+        columnHoverColor: this.cfg.columnHoverColor,
+        foregroundColor: this.cfg.textColor,
+        checkboxCheckedBackgroundColor: this.cfg.selectionCheckboxColor,
+        rangeSelectionBorderColor: this.cfg.cellSelectionBorderColor,
+        checkboxUncheckedBorderColor: this.cfg.checkboxUncheckedBorderColor,
+        focusShadow: this.cfg.focusShadow?.length
+          ? this.cfg.focusShadow
           : undefined,
-        wrapperBorderRadius: this.content.wrapperBorderRadius,
+        wrapperBorderRadius: this.cfg.wrapperBorderRadius,
       });
     },
     rowStyle() {
@@ -3877,7 +3898,7 @@ export default {
         let isFocusedRow = false;
         if (hasFocusedRow) {
           // Get the row's ID using the idFormula
-          let baseId = self.resolveMappingFormula(self.content.idFormula, rowData);
+          let baseId = self.resolveMappingFormula(self.cfg.idFormula, rowData);
           
           // Fallback to common ID fields if formula doesn't return a valid ID
           if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
@@ -3974,18 +3995,18 @@ export default {
     },
     paginationPageSizeSelector() {
       if (
-        !this.content.pagination ||
-        this.content.hasPaginationSelector !== "multiple"
+        !this.cfg.pagination ||
+        this.cfg.hasPaginationSelector !== "multiple"
       ) {
         return false;
       }
       if (
-        !Array.isArray(this.content.paginationPageSizeSelector) ||
-        this.content.paginationPageSizeSelector.length === 0
+        !Array.isArray(this.cfg.paginationPageSizeSelector) ||
+        this.cfg.paginationPageSizeSelector.length === 0
       ) {
         return false;
       }
-      return this.content.paginationPageSizeSelector;
+      return this.cfg.paginationPageSizeSelector;
     },
   },
   methods: {
@@ -4161,7 +4182,7 @@ export default {
     /* wwEditor:end */
     getRowId(params) {
       // Get ID from formula
-      let rowId = this.resolveMappingFormula(this.content.idFormula, params.data);
+      let rowId = this.resolveMappingFormula(this.cfg.idFormula, params.data);
       
       // If formula returns a valid ID, use it directly (stable across re-renders)
       // IMPORTANT: Do NOT append data hashes - that causes row IDs to change whenever
@@ -4200,7 +4221,7 @@ export default {
     onCellValueChanged(event) {
       // Find the column configuration to get isDirectUpdate
       const columnId = event.column.getColId();
-      const columnConfig = this.content.columns.find(
+      const columnConfig = this.cfg.columns.find(
         (col) => col?.field === columnId || col?.actionName === columnId
       );
       
@@ -4469,7 +4490,7 @@ export default {
       }
       
       // Find the column configuration
-      const columnConfig = this.content.columns?.find(
+      const columnConfig = this.cfg.columns?.find(
         (col) => col?.field === columnId || col?.actionName === columnId
       );
       
@@ -4552,7 +4573,7 @@ export default {
       const oldValue = rowNode.data?.[columnId];
       
       // Find the column configuration to get isDirectUpdate
-      const columnConfig = this.content.columns.find(
+      const columnConfig = this.cfg.columns.find(
         (col) => col?.field === columnId || col?.actionName === columnId
       );
       
@@ -4907,7 +4928,7 @@ export default {
         return;
       }
       if (!this.gridApi) return;
-      if (this.content.rowSelection !== "multiple") {
+      if (this.cfg.rowSelection !== "multiple") {
         wwLib.logStore.warning(
           "Select all will have no effect, as row selection is not set to multiple"
         );
@@ -4915,7 +4936,7 @@ export default {
       }
       // Defer to avoid error #252
       setTimeout(() => {
-        if (this.gridApi) this.gridApi.selectAll(mode || this.content.selectAll || "all");
+        if (this.gridApi) this.gridApi.selectAll(mode || this.cfg.selectAll || "all");
       }, 0);
     },
     async selectRow(rowId) {
@@ -5039,7 +5060,7 @@ export default {
           if (this.supabaseDataRef && Array.isArray(this.supabaseDataRef.value)) {
             const currentData = [...this.supabaseDataRef.value];
             const filteredData = currentData.filter(row => {
-              const rowIdFromData = this.resolveMappingFormula(this.content.idFormula, row);
+              const rowIdFromData = this.resolveMappingFormula(this.cfg.idFormula, row);
               return String(rowIdFromData) !== String(rowId);
             });
             
@@ -5251,7 +5272,7 @@ export default {
     getOnCellValueChangedTestEvent() {
       const data = this.rowData;
       if (!data || !data[0]) throw new Error("No data found");
-      const columns = this.content.columns || [];
+      const columns = this.cfg.columns || [];
       const firstEditableColumn = columns.find(
         (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
       );
