@@ -1,0 +1,30 @@
+{
+  "layout": "fixed",
+  "height": "100%",
+  "enableInfiniteScroll": true,
+  "infiniteBlockSize": 100,
+  "pagination": false,
+  "rowSelection": "none",
+  "resizableColumns": true,
+  "movableColumns": true,
+  "allowColumnHiding": true,
+  "rowReorder": false,
+  "cellEditMode": "singleClick",
+  "cellAlignment": "left",
+  "invalidEditValueMode": "revert",
+  "rowBuffer": 15,
+  "suppressAnimationFrame": false,
+  "dataSource": "supabase",
+  "supabaseTable": "users",
+  "supabaseQuery": "SELECT * FROM users",
+  "lang": "fr",
+  "viewEditedVariableId":"6fe05736-6920-46d3-8240-8227dcc814a2",
+  "columnChooserVariableId": "26e77735-5006-4bf6-b2aa-8d9c511815a8",
+  "viewConfiguration": "return variables['23742aed-c957-4a20-b9ac-df6642c96015']?.['config']",
+  "enableDebugLogs": false,
+"focusedRowId": "return globalContext.pageParameters['id']"
+
+
+
+
+}

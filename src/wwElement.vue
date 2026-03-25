@@ -1403,7 +1403,7 @@ export default {
         return;
       }
 
-      const baseline = props.content?.viewConfiguration;
+      const baseline = cfg.value?.viewConfiguration;
       const edited = isViewConfigEdited(config, baseline);
 
       try {
@@ -1587,7 +1587,7 @@ export default {
       // Set initial column order from viewConfiguration if provided with values
       // At grid initialization, we use viewConfiguration.columnsOrder if it has values
       // Otherwise, use the default order from grid (from column definitions)
-      const viewConfig = props.content.viewConfiguration;
+      const viewConfig = cfg.value?.viewConfiguration;
       const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
       const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
       
@@ -1637,7 +1637,7 @@ export default {
         dataRendered.value = true;
         
         // Apply focused row if focusedRowId is set (scroll to row on first render)
-        const focusedRowId = props.content?.focusedRowId;
+        const focusedRowId = cfg.value?.focusedRowId;
         if (focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '') {
           // Use a longer delay to ensure grid is fully ready
           setTimeout(() => {
@@ -1665,7 +1665,7 @@ export default {
         
         // Re-apply focused row styling after model update (e.g., after filter/sort/pagination)
         // This ensures the focused row remains visually highlighted even after data changes
-        const focusedRowId = props.content?.focusedRowId;
+        const focusedRowId = cfg.value?.focusedRowId;
         if (focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '') {
           // Redraw rows to ensure rowStyle is re-applied with current focusedRowId
           if (gridApi.value && !isGridRendering.value) {
@@ -1886,8 +1886,8 @@ export default {
         if (!ready || !gridApi.value) return;
         
         // Apply initial view configuration when grid is ready
-        if (props.content.viewConfiguration) {
-          applyViewConfiguration(props.content.viewConfiguration, true);
+        if (cfg.value?.viewConfiguration) {
+          applyViewConfiguration(cfg.value.viewConfiguration, true);
           // Grid now matches the initial config — reset the edited variable
           const variableId = cfg.value?.viewEditedVariableId;
           if (variableId) {
@@ -1905,7 +1905,7 @@ export default {
 
     // Watch for viewConfiguration changes with optimized comparison
     watch(
-      () => props.content.viewConfiguration,
+      () => cfg.value?.viewConfiguration,
       (newConfig, oldConfig) => {
         if (!gridApi.value || !gridReady.value) return;
         
@@ -1977,7 +1977,7 @@ export default {
       // We only set column order in initialState for AG Grid's initial render
       // At initialization, both "key absent" and "empty array []" use default column order
       // The distinction between absent vs empty matters for runtime changes (handled by applyViewConfiguration)
-      const viewConfig = props.content.viewConfiguration;
+      const viewConfig = cfg.value?.viewConfiguration;
       const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
       const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
       
@@ -2715,7 +2715,7 @@ export default {
     // This provides a declarative way to keep a row in focus (persists across data changes)
     // PERFORMANCE: Only redraws the old and new focused rows, not the entire grid
     watch(
-      () => props.content?.focusedRowId,
+      () => cfg.value?.focusedRowId,
       async (newRowId, oldRowId) => {
         // Skip if grid is not ready or value hasn't changed
         if (!gridApi.value || !gridReady.value) return;
@@ -3902,7 +3902,7 @@ export default {
         
         // Read focusedRowId at call time (not at computed evaluation time)
         // This prevents the computed from re-evaluating when focusedRowId changes
-        const focusedRowId = self.content?.focusedRowId;
+        const focusedRowId = self.cfg?.focusedRowId;
         const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
         
         // If no conditional styles and no focused row, return null early
@@ -5200,7 +5200,7 @@ export default {
      * @param {boolean} scrollToRow - Whether to scroll the row into view (default: false for re-renders)
      */
     async applyFocusedRow(scrollToRow = false) {
-      const focusedRowId = this.content?.focusedRowId;
+      const focusedRowId = this.cfg?.focusedRowId;
       
       // If no focused row ID is set, clear any existing focus styling
       if (focusedRowId === null || focusedRowId === undefined || focusedRowId === '') {
