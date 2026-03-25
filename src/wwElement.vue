@@ -1174,7 +1174,7 @@ export default {
       if (val) {
         // Initialize chooser order and hidden state from current grid state
         if (gridApi.value) {
-          const gridCols = gridApi.value.getAllGridColumns();
+          const gridCols = gridApi.value.getAllGridColumns()?.filter(c => !isVirtualColumn(c));
           chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
           chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
         }
@@ -1302,28 +1302,35 @@ export default {
     );
 
     // Helper function to get current column widths from the grid
+    // Helper to check if a column is a virtual (sort/filter-only) column
+    const isVirtualColumn = (col) => {
+      const colDef = col.getColDef?.();
+      return colDef?.__virtualColumn === true;
+    };
+
     const getCurrentColumnWidths = () => {
       if (!gridApi.value) return {};
-      
+
       const columns = gridApi.value.getAllGridColumns();
       const widths = {};
-      
+
       columns?.forEach((col) => {
+        if (isVirtualColumn(col)) return; // Skip virtual columns
         const colId = col.getColId();
         const actualWidth = col.getActualWidth();
         if (colId && actualWidth) {
           widths[colId] = actualWidth;
         }
       });
-      
+
       return widths;
     };
-    
+
     // Helper function to update the currentConfig exposed variable
     const updateCurrentConfig = () => {
       if (!gridApi.value) return;
-      
-      const columns = gridApi.value.getAllGridColumns();
+
+      const columns = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col));
       const config = {
         sizes: getCurrentColumnWidths(),
         filters: filterValue.value || {},
@@ -1595,7 +1602,8 @@ export default {
         setColumnOrder([...viewColumnsOrder]);
       } else {
         // Use default order from grid (no explicit order in viewConfiguration)
-        setColumnOrder(columns.map((col) => col.getColId()));
+        // Filter out virtual columns (sort/filter-only) from the default order
+        setColumnOrder(columns.filter(col => !isVirtualColumn(col)).map((col) => col.getColId()));
       }
       
       // Update records from grid after grid is ready
@@ -1737,7 +1745,7 @@ export default {
             const columnsOrder = viewConfig.columnsOrder;
             if (isEmptyConfigValue(columnsOrder) || !Array.isArray(columnsOrder)) {
               // Reset to default column order (from column definitions)
-              const defaultOrder = gridApi.value.getAllGridColumns()?.map(col => col.getColId()) || [];
+              const defaultOrder = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col)).map(col => col.getColId()) || [];
               setColumnOrder([...defaultOrder]);
               debugLog('[ViewConfiguration] Reset columns order to default:', defaultOrder);
             } else {
@@ -1812,11 +1820,11 @@ export default {
           if (viewConfig && 'hiddenColumns' in viewConfig) {
             const hidden = viewConfig.hiddenColumns;
             if (isEmptyConfigValue(hidden)) {
-              // Show all columns (clear hidden state)
+              // Show all columns (clear hidden state), but keep virtual columns hidden
               setHiddenColumns([]);
               chooserHiddenState.value = [];
               const allCols = gridApi.value.getAllGridColumns();
-              const colIds = allCols?.map(c => c.getColId()).filter(Boolean) || [];
+              const colIds = allCols?.filter(c => !isVirtualColumn(c)).map(c => c.getColId()).filter(Boolean) || [];
               if (colIds.length > 0) {
                 gridApi.value.setColumnsVisible(colIds, true);
               }
@@ -1831,6 +1839,11 @@ export default {
               allCols?.forEach(col => {
                 const cid = col.getColId();
                 if (!cid) return;
+                // Virtual columns (sort/filter-only) must always stay hidden
+                if (isVirtualColumn(col)) {
+                  toHide.push(cid);
+                  return;
+                }
                 (hiddenSet.has(cid) ? toHide : toShow).push(cid);
               });
               if (toShow.length) gridApi.value.setColumnsVisible(toShow, true);
@@ -1854,15 +1867,20 @@ export default {
           // Reset flag after a short delay to allow AG Grid events to settle
           // AG Grid events are triggered asynchronously after API calls
           setTimeout(() => {
-            isApplyingViewConfig.value = false;
-            // Update currentConfig to reflect the applied view configuration
+            // Update currentConfig while flag is still true so that
+            // updateViewEditedVariable() is skipped — the grid may report
+            // minor differences (e.g. pixel rounding) that don't represent
+            // a real user edit.
             updateCurrentConfig();
             // Sync chooser order and hidden state so the column management menu is up to date
             if (gridApi.value) {
-              const gridCols = gridApi.value.getAllGridColumns();
+              const gridCols = gridApi.value.getAllGridColumns()?.filter(c => !isVirtualColumn(c));
               chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
               chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
             }
+            // Re-enable events AFTER config sync so the edited variable isn't
+            // falsely set to true by the post-application snapshot
+            isApplyingViewConfig.value = false;
             debugLog('[ViewConfiguration] View config application complete, events re-enabled');
           }, 100);
           
@@ -2189,7 +2207,7 @@ export default {
 
     const onColumnMoved = (event) => {
       if (!event.finished || event.source !== "uiColumnMoved") return;
-      const columns = event.api.getAllGridColumns();
+      const columns = event.api.getAllGridColumns().filter(col => !isVirtualColumn(col));
       const newOrder = columns.map((col) => col.getColId());
       setColumnOrder(newOrder);
 
@@ -2200,7 +2218,7 @@ export default {
 
       // Update currentConfig to reflect the new column order
       updateCurrentConfig();
-      
+
       ctx.emit("trigger-event", {
         name: "columnMoved",
         event: {
@@ -3228,7 +3246,11 @@ export default {
       for (const [colId, meta] of colMap) {
         if (!seen.has(colId)) ordered.push(meta);
       }
-      return ordered;
+
+      // Move locked columns to the top, preserving their relative order
+      const locked = ordered.filter(c => c.isLocked);
+      const unlocked = ordered.filter(c => !c.isLocked);
+      return [...locked, ...unlocked];
     },
     filteredColumnsList() {
       const q = (this.columnChooserSearch || '').toLowerCase().trim();
@@ -3773,6 +3795,43 @@ export default {
         columns = orderedColumns;
       } else {
         columns = allColumnDefs;
+      }
+
+      // Inject hidden virtual columns for fields referenced in sorting/filters
+      // but not present in column definitions (e.g., sort by created_at without showing it)
+      const existingColIds = new Set(columns.map(c => c.colId || c.field));
+      const virtualColIds = new Set();
+
+      // Collect colIds from sorting config
+      const sortingConfig = this.cfg.viewConfiguration?.sorting;
+      if (Array.isArray(sortingConfig)) {
+        for (const s of sortingConfig) {
+          if (s?.colId && !existingColIds.has(s.colId)) {
+            virtualColIds.add(s.colId);
+          }
+        }
+      }
+
+      // Collect colIds from filters config
+      const filtersConfig = this.cfg.viewConfiguration?.filters;
+      if (filtersConfig && typeof filtersConfig === 'object') {
+        for (const colId of Object.keys(filtersConfig)) {
+          if (!existingColIds.has(colId)) {
+            virtualColIds.add(colId);
+          }
+        }
+      }
+
+      // Add hidden column defs for virtual columns so ag-grid can sort/filter by them
+      for (const colId of virtualColIds) {
+        columns.push({
+          colId,
+          field: colId,
+          hide: true,
+          suppressHeaderMenuButton: true,
+          lockVisible: true,
+          __virtualColumn: true,
+        });
       }
 
       // Enable row drag only if rowReorder is enabled AND infinite scroll is NOT enabled

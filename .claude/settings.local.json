@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(find C:VS_codevueJsww-datagrid-agsrc -type f -name *.vue -o -name *.js)",
-      "Bash(find /c/VS_code/vueJs/ww-datagrid-ag/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.vue -o -name *.js \\\\\\))"
+      "Bash(find /c/VS_code/vueJs/ww-datagrid-ag/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.vue -o -name *.js \\\\\\))",
+      "Bash(npx vue-tsc:*)"
     ]
   }
 }
