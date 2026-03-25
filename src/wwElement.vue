@@ -3272,6 +3272,12 @@ export default {
       const viewConfig = this.cfg.viewConfiguration;
       const hasSizesKey = viewConfig && typeof viewConfig === 'object' && 'sizes' in viewConfig;
       const viewColumnSizes = hasSizesKey ? viewConfig.sizes : null;
+
+      // Get hidden columns from viewConfiguration for setting hide property in column defs
+      const hasHiddenColumnsKey = viewConfig && typeof viewConfig === 'object' && 'hiddenColumns' in viewConfig;
+      const viewHiddenColumns = hasHiddenColumnsKey && Array.isArray(viewConfig.hiddenColumns)
+        ? new Set(viewConfig.hiddenColumns)
+        : null;
       
       const allColumnDefs = this.cfg.columns
         .filter((col) => col != null && (col.field || col.actionName)) // Filter out null/undefined columns and columns without field/actionName
@@ -3322,7 +3328,7 @@ export default {
           pinned: col?.pinned === "none" ? false : col?.pinned,
           width,
           flex,
-          hide: !!col?.hide,
+          hide: !!col?.hide || (viewHiddenColumns !== null && viewHiddenColumns.has(colId)),
           headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
           ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
           valueSetter: getValueSetter(col),
