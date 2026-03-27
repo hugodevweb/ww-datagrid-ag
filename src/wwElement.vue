@@ -1690,20 +1690,27 @@ export default {
     // Flag to track when view configuration is being applied programmatically
     // This prevents filter/sort changed events from being triggered during view config changes
     const isApplyingViewConfig = ref(false);
+    // Generation counter to handle concurrent applyViewConfiguration calls.
+    // Only the last apply's cleanup timeout should clear the flag.
+    let applyViewConfigGeneration = 0;
 
     // Helper function to apply view configuration to the grid
     const applyViewConfiguration = (viewConfig, isInitial = false) => {
       if (!gridApi.value) return;
       
       debugLog('[ViewConfiguration] Applying view configuration:', viewConfig, 'isInitial:', isInitial);
-      
+
       // Set flag to indicate we're applying view config programmatically
       isApplyingViewConfig.value = true;
-      
+      // Increment generation so previous apply's cleanup timeout won't clear the flag
+      const myGeneration = ++applyViewConfigGeneration;
+
       // Defer API calls to prevent error #252 during render cycle
       setTimeout(() => {
         if (!gridApi.value) {
-          isApplyingViewConfig.value = false;
+          if (myGeneration === applyViewConfigGeneration) {
+            isApplyingViewConfig.value = false;
+          }
           return;
         }
         
@@ -1867,6 +1874,12 @@ export default {
           // Reset flag after a short delay to allow AG Grid events to settle
           // AG Grid events are triggered asynchronously after API calls
           setTimeout(() => {
+            // Only the latest applyViewConfiguration call should clear the flag.
+            // If a newer call was made, let that one handle cleanup.
+            if (myGeneration !== applyViewConfigGeneration) {
+              debugLog('[ViewConfiguration] Skipping cleanup for superseded apply (generation', myGeneration, 'vs', applyViewConfigGeneration + ')');
+              return;
+            }
             // Update currentConfig while flag is still true so that
             // updateViewEditedVariable() is skipped — the grid may report
             // minor differences (e.g. pixel rounding) that don't represent
@@ -1886,7 +1899,9 @@ export default {
           
         } catch (e) {
           debugLog('[ViewConfiguration] Error applying view configuration:', e);
-          isApplyingViewConfig.value = false;
+          if (myGeneration === applyViewConfigGeneration) {
+            isApplyingViewConfig.value = false;
+          }
           // Retry after a short delay if it's an AG Grid timing issue
           if (e.message && e.message.includes('#252')) {
             setTimeout(() => {
