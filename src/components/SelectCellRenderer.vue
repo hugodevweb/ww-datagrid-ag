@@ -82,6 +82,7 @@ export default {
             teleportTarget: null,
             highlightedIndex: -1,
             hasEverRendered: optionsAlreadyAvailable, // Skip skeleton if options already loaded
+            optionsTimedOut: false, // true after fallback timer — only then do we give up on skeleton
             _skeletonFallbackTimer: null, // timeout to stop skeleton when options never arrive
             _refreshedParams: null, // ag-grid-vue3 does not update the params prop after refresh(); cache manually
         };
@@ -104,17 +105,20 @@ export default {
                 return true;
             }
 
-            // Only show skeleton on initial load if we have a value but no matching option yet
-            // This prevents showing raw values while options are being processed
+            const hasValue = this.selectedValue != null && this.selectedValue !== '';
+            const optionsNotLoaded = this.processedOptions.length === 0;
+
+            // Always show skeleton when we have a value but options haven't loaded yet.
+            // This prevents showing raw UUIDs while options are being fetched.
+            // Only give up after the fallback timer sets optionsTimedOut.
+            if (hasValue && optionsNotLoaded && !this.optionsTimedOut) {
+                return true;
+            }
+
+            // On initial load, also show skeleton if options loaded but no match found
             if (!this.hasEverRendered) {
-                const hasValue = this.selectedValue != null && this.selectedValue !== '';
-                const optionsNotLoaded = this.processedOptions.length === 0;
                 const hasNoMatchingOption = hasValue && this.processedOptions.length > 0 && !this.currentOption;
-                
-                // Show skeleton when:
-                // 1. We have a value but options haven't loaded yet, OR
-                // 2. We have options but no matching option for the current value
-                if ((hasValue && optionsNotLoaded) || hasNoMatchingOption) {
+                if (hasNoMatchingOption) {
                     return true;
                 }
             }
@@ -305,10 +309,11 @@ export default {
                 // when col.options is undefined (e.g. dynamic binding never populated)
                 this._skeletonFallbackTimer = setTimeout(() => {
                     this._skeletonFallbackTimer = null;
-                    if (!this.hasEverRendered && this.processedOptions.length === 0) {
+                    if (this.processedOptions.length === 0) {
+                        this.optionsTimedOut = true;
                         this.hasEverRendered = true;
                     }
-                }, 2000);
+                }, 5000);
             }
         });
         
@@ -365,20 +370,24 @@ export default {
         // Mark as rendered when options become available and we have a matching option
         processedOptions: {
             handler(newOptions) {
-                if (!this.hasEverRendered && newOptions.length > 0) {
+                if (newOptions.length > 0) {
+                    // Options arrived — clear the fallback timer and reset timeout flag
                     if (this._skeletonFallbackTimer) {
                         clearTimeout(this._skeletonFallbackTimer);
                         this._skeletonFallbackTimer = null;
                     }
-                    
-                    // Only mark as rendered if:
-                    // 1. We don't have a value (empty cell), OR
-                    // 2. We have a value and found a matching option
-                    const hasValue = this.selectedValue != null && this.selectedValue !== '';
-                    const hasMatchingOption = newOptions.find(opt => opt.value === this.selectedValue);
-                    
-                    if (!hasValue || hasMatchingOption) {
-                        this.hasEverRendered = true;
+                    this.optionsTimedOut = false;
+
+                    if (!this.hasEverRendered) {
+                        // Only mark as rendered if:
+                        // 1. We don't have a value (empty cell), OR
+                        // 2. We have a value and found a matching option
+                        const hasValue = this.selectedValue != null && this.selectedValue !== '';
+                        const hasMatchingOption = newOptions.find(opt => opt.value === this.selectedValue);
+
+                        if (!hasValue || hasMatchingOption) {
+                            this.hasEverRendered = true;
+                        }
                     }
                 }
             },
