@@ -91,6 +91,19 @@ export default {
         ],
       },
       {
+        label: "Record Pill",
+        isCollapsible: true,
+        properties: [
+          "recordPillAccentColor",
+          "recordPillBackgroundColor",
+          "recordPillBorderColor",
+          "recordPillTextPrimaryColor",
+          "recordPillTextSecondaryColor",
+          "recordPillAccentWidth",
+          "recordPillHoverShadow",
+        ],
+      },
+      {
         label: "Column Chooser",
         isCollapsible: true,
         properties: [
@@ -324,6 +337,11 @@ export default {
         totalRows: 0,
       },
       getTestEvent: "getScrollTestEvent",
+    },
+    {
+      name: "onRecordNavigation",
+      label: { en: "On Record Navigation" },
+      event: { record: null, row: null, columnId: "" },
     },
   ],
   actions: [
@@ -1144,6 +1162,120 @@ export default {
         cssSupports: "line-height",
       },
     },
+    recordPillAccentColor: {
+      label: "Accent Color",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "#2563eb",
+      bindingValidation: {
+        markdown: "color",
+        type: "string",
+        cssSupports: "color",
+      },
+    },
+    recordPillBackgroundColor: {
+      label: "Background Color",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "#f8fafc",
+      bindingValidation: {
+        markdown: "background-color",
+        type: "string",
+        cssSupports: "background-color",
+      },
+    },
+    recordPillBorderColor: {
+      label: "Border Color",
+      type: "Color",
+      options: { nullable: true },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "#e2e8f0",
+      bindingValidation: {
+        markdown: "color",
+        type: "string",
+        cssSupports: "color",
+      },
+    },
+    recordPillTextPrimaryColor: {
+      label: "Primary Text Color",
+      type: "Color",
+      category: "text",
+      options: { nullable: true },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "#0f172a",
+      bindingValidation: {
+        markdown: "color",
+        type: "string",
+        cssSupports: "color",
+      },
+    },
+    recordPillTextSecondaryColor: {
+      label: "Secondary Text Color",
+      type: "Color",
+      category: "text",
+      options: { nullable: true },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "#64748b",
+      bindingValidation: {
+        markdown: "color",
+        type: "string",
+        cssSupports: "color",
+      },
+    },
+    recordPillAccentWidth: {
+      label: "Accent Width",
+      type: "Length",
+      options: {
+        noRange: true,
+        unitChoices: [
+          { value: "px", label: "px", min: 1, max: 24, default: true },
+          { value: "rem", label: "rem", min: 0, max: 2, digits: 3, step: 0.05 },
+        ],
+      },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "4px",
+      bindingValidation: {
+        type: "string",
+        tooltip: "Width of the left accent bar",
+      },
+    },
+    recordPillHoverShadow: {
+      type: "Shadows",
+      label: "Hover Shadow",
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue:
+        "0 10px 24px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.08)",
+      bindingValidation: {
+        markdown: "shadow",
+        type: "string",
+        cssSupports: "shadow",
+      },
+    },
     dataSource: {
       label: { en: "Data Source" },
       type: "TextSelect",
@@ -1498,6 +1630,7 @@ export default {
                     { value: "action", label: "Action" },
                     { value: "select", label: "Select" },
                     { value: "user", label: "User" },
+                    { value: "record", label: "Record" },
                     { value: "custom", label: "Custom" },
                   ],
                 },
@@ -2300,6 +2433,137 @@ export default {
                 },
                 /* wwEditor:end */
               },
+              recordTable: {
+                label: "Record Table",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "record",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "The Supabase table name to fetch records from.",
+                },
+                propertyHelp: {
+                  tooltip: "Supabase table name containing the related records (e.g. 'companies', 'projects').",
+                },
+                /* wwEditor:end */
+              },
+              recordValueField: {
+                label: "Value Field",
+                type: "Text",
+                hidden: array?.item?.cellDataType !== "record",
+                defaultValue: "id",
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: "Primary key field name of the related table (default: 'id').",
+                },
+                /* wwEditor:end */
+              },
+              recordDisplayField: {
+                label: "Display Field",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "record",
+                defaultValue: "name",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "The field to display as the chip label (e.g. 'name', 'title').",
+                },
+                propertyHelp: {
+                  tooltip: "Field name shown as the record chip label. Supports dot notation for nested relations (e.g. 'profile.name'). If the FK name differs from the table, use the hint syntax: 'table!fk_column.field' (e.g. 'app!default_app_id.name').",
+                },
+                /* wwEditor:end */
+              },
+              recordContextField: {
+                label: "Context Field",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "record",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Optional field shown as the secondary context label inside the record pill.",
+                },
+                propertyHelp: {
+                  tooltip: "Optional field path for the secondary text shown in the pill. Supports dot notation (e.g. 'profile.email'). For FK hint syntax: 'table!fk_column.field' (e.g. 'app!default_app_id.city'). If empty, the table name is used.",
+                },
+                /* wwEditor:end */
+              },
+              recordPreviewFields: {
+                label: "Preview Fields",
+                type: "Array",
+                hidden: array?.item?.cellDataType !== "record",
+                options: {
+                  item: {
+                    type: "Object",
+                    options: {
+                      item: {
+                        field: {
+                          label: "Field Path",
+                          type: "Text",
+                        },
+                        label: {
+                          label: "Label",
+                          type: "Text",
+                        },
+                      },
+                    },
+                  },
+                },
+                defaultValue: [],
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: "Fields shown in the hover preview popup. Use dot notation for relations (e.g. 'user.name'). For FK hint syntax: 'table!fk_column.field' (e.g. 'app!default_app_id.name').",
+                },
+                /* wwEditor:end */
+              },
+              allowCreateRecord: {
+                label: "Allow Create Record",
+                type: "OnOff",
+                hidden: array?.item?.cellDataType !== "record",
+                defaultValue: false,
+              },
+              createRecordFields: {
+                label: "Create Record Fields",
+                type: "Array",
+                hidden: (content, sidePanelContent, boundProperties, wwProps, array) =>
+                  array?.item?.cellDataType !== "record" || !array?.item?.allowCreateRecord,
+                options: {
+                  item: {
+                    type: "Object",
+                    options: {
+                      item: {
+                        field: {
+                          label: "Field Name",
+                          type: "Text",
+                        },
+                        label: {
+                          label: "Label",
+                          type: "Text",
+                        },
+                        type: {
+                          label: "Type",
+                          type: "TextSelect",
+                          options: {
+                            options: [
+                              { value: "text", label: "Text", default: true },
+                              { value: "number", label: "Number" },
+                              { value: "boolean", label: "Boolean" },
+                            ],
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+                defaultValue: [],
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: "Form fields shown in the inline creation form. Each field defines its name, display label, and input type.",
+                },
+                /* wwEditor:end */
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -2325,6 +2589,13 @@ export default {
               "maxNumberOfUsers",
               "userColumnType",
               "userIdFormula",
+              "recordTable",
+              "recordValueField",
+              "recordDisplayField",
+              "recordContextField",
+              "recordPreviewFields",
+              "allowCreateRecord",
+              "createRecordFields",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",

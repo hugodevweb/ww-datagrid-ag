@@ -179,8 +179,10 @@ import SelectFilterComponent from "./components/SelectFilterComponent.vue";
 import SelectFilterWrapper from "./components/SelectFilterWrapper.js";
 import DateCellEditor from "./components/DateCellEditor.vue";
 import UserCellRenderer from "./components/UserCellRenderer.vue";
+import RecordCellRenderer from "./components/RecordCellRenderer.vue";
 import UserFilterComponent from "./components/UserFilterComponent.vue";
 import UserFilterWrapper from "./components/UserFilterWrapper.js";
+import RecordFilterWrapper from "./components/RecordFilterWrapper.js";
 import {
   clearAllCaches,
   createValidationFunction,
@@ -256,6 +258,7 @@ export default {
     SelectCellRenderer,
     SelectFilterComponent,
     UserCellRenderer,
+    RecordCellRenderer,
     UserFilterComponent,
   },
   props: {
@@ -779,6 +782,27 @@ export default {
               currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
             } else {
               currentQuery = currentQuery.in(supabaseField, optionValues);
+            }
+          }
+        } else if (filter.type === 'recordFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
+          const wantsEmpty = filter.values.includes('__empty__');
+          const recordValues = filter.values.filter(val => val != null && val !== '__empty__');
+
+          if (wantsEmpty && recordValues.length === 0) {
+            currentQuery = currentQuery.is(supabaseField, null);
+          } else if (wantsEmpty && recordValues.length > 0) {
+            const orConditions = [`${supabaseField}.is.null`];
+            if (recordValues.length === 1) {
+              orConditions.push(`${supabaseField}.eq.${recordValues[0]}`);
+            } else {
+              orConditions.push(`${supabaseField}.in.(${recordValues.join(',')})`);
+            }
+            currentQuery = currentQuery.or(orConditions.join(','));
+          } else if (recordValues.length > 0) {
+            if (recordValues.length === 1) {
+              currentQuery = currentQuery.eq(supabaseField, recordValues[0]);
+            } else {
+              currentQuery = currentQuery.in(supabaseField, recordValues);
             }
           }
         } else if (filter.filterType === 'set') {
@@ -3597,6 +3621,73 @@ export default {
               },
             };
           }
+          case "record": {
+            const recordParams = {
+              tableName: col?.recordTable,
+              valueField: col?.recordValueField || 'id',
+              displayField: col?.recordDisplayField || 'name',
+              contextField: col?.recordContextField || '',
+              previewFields: col?.recordPreviewFields || [],
+              allowCreate: col?.allowCreateRecord || false,
+              createFields: col?.createRecordFields || [],
+              enableDebugLogs: !!this.cfg?.enableDebugLogs,
+              getSupabaseInstance: () => wwLib.wwPlugins.supabase?.instance,
+              onRecordNavigate: (eventData) => {
+                this.$emit("trigger-event", {
+                  name: "onRecordNavigation",
+                  event: eventData,
+                });
+              },
+              get isLoading() { return false; },
+            };
+
+            return {
+              ...commonProperties,
+              headerName: col?.headerName,
+              field: col?.field,
+              cellRenderer: "RecordCellRenderer",
+              cellRendererParams: recordParams,
+              cellEditor: "RecordCellRenderer",
+              cellEditorParams: {
+                ...recordParams,
+                getValidationErrors: (params) => {
+                  return getValidationErrors(col, params.value, params.data);
+                },
+              },
+              editable: col?.editable !== false,
+              sortable: col?.sortable,
+              filter: col?.filter ? RecordFilterWrapper : false,
+              ...(col?.filter
+                ? {
+                    filterParams: {
+                      recordOptions: recordParams,
+                      closeOnApply: true,
+                      translations: (() => {
+                        const lang = this.cfg?.lang || 'en';
+                        const translations = {
+                          en: { reset: 'Reset', apply: 'Apply' },
+                          fr: { reset: 'Réinitialiser', apply: 'Appliquer' },
+                          es: { reset: 'Restablecer', apply: 'Aplicar' },
+                          de: { reset: 'Zurücksetzen', apply: 'Anwenden' },
+                          pt: { reset: 'Redefinir', apply: 'Aplicar' },
+                        };
+                        return translations[lang] || translations.en;
+                      })(),
+                    },
+                  }
+                : {}),
+              valueGetter: (params) => {
+                return params.data?.[col?.field];
+              },
+              valueSetter: (params) => {
+                // Read old value directly from data (not from AG Grid's oldValue
+                // which may be stale when a valueGetter is defined)
+                const oldVal = params.data?.[col?.field];
+                params.data[col.field] = params.newValue;
+                return oldVal !== params.newValue;
+              },
+            };
+          }
           default: {
             // Determine the correct filter type based on cellDataType
             let filterType = false;
@@ -3911,6 +4002,17 @@ export default {
               "--ww-data-grid_action-fontStyle": this.cfg.actionFontStyle,
               "--ww-data-grid_action-lineHeight": this.cfg.actionLineHeight,
             }),
+        "--ww-data-grid_record-pill-accent-color": this.cfg.recordPillAccentColor,
+        "--ww-data-grid_record-pill-background": this.cfg.recordPillBackgroundColor,
+        "--ww-data-grid_record-pill-border-color": this.cfg.recordPillBorderColor,
+        "--ww-data-grid_record-pill-text-primary":
+          this.cfg.recordPillTextPrimaryColor,
+        "--ww-data-grid_record-pill-text-secondary":
+          this.cfg.recordPillTextSecondaryColor,
+        "--ww-data-grid_record-pill-accent-width":
+          this.cfg.recordPillAccentWidth,
+        "--ww-data-grid_record-pill-hover-shadow":
+          this.cfg.recordPillHoverShadow,
       };
     },
     theme() {
