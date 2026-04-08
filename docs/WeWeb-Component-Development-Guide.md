@@ -1,4 +1,4 @@
-# CLAUDE.md - WeWeb Component Development Guide
+# WeWeb Component Development Guide
 
 This file provides comprehensive guidance for developing WeWeb custom components in this repository.
 

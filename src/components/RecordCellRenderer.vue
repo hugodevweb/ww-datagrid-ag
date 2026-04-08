@@ -557,16 +557,10 @@ export default {
             if (this.isEditMode) {
                 this.stopEditing();
             } else {
-                // Called from preview popup — use valueSetter via AG Grid API
-                const api = this.params?.api;
-                const rowNode = api?.getRowNode(this.params?.data?.[this.params?.colDef?.field]);
-                const colDef = this.params?.colDef;
-                if (api && colDef) {
-                    const field = colDef.field;
-                    if (this.params?.data) {
-                        this.params.data[field] = null;
-                    }
-                    api.refreshCells({ rowNodes: [this.params?.node], columns: [colDef.field], force: true });
+                // Called from preview popup — use setDataValue to properly trigger onCellValueChanged
+                const field = this.params?.colDef?.field;
+                if (this.params?.node && field) {
+                    this.params.node.setDataValue(field, null);
                 }
                 this.showPreview = false;
             }
