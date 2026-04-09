@@ -1164,7 +1164,7 @@ export default {
     max-height: 260px;
     overflow-y: auto;
     flex: 1 1 auto;
-    min-height: 0;
+    min-height: 44px;
     padding: 4px 8px 8px;
 
     &::-webkit-scrollbar {
@@ -1241,7 +1241,7 @@ export default {
     color: #1a56db;
     border-top: 1px solid #f3f4f6;
     margin: 0 8px;
-    padding: 10px 8px 8px;
+    padding: 10px 8px 12px;
     flex-shrink: 0;
 
     &:hover,
