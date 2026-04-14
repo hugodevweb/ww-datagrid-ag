@@ -1473,6 +1473,14 @@ export default {
       return false;
     };
 
+    // Suppression window for the edited variable. Any time the viewConfiguration
+    // prop changes (e.g. navigating between pages/tables), the grid and the new
+    // baseline can be briefly out of sync as AG Grid rebuilds columns/data and
+    // emits late events. While this window is active, we refuse to flip the
+    // edited variable to `true` — we only allow `false`. Extended on each
+    // viewConfiguration change.
+    const suppressEditedUntil = ref(0);
+
     // Update external WeWeb variable when view-edited state changes
     const updateViewEditedVariable = (config) => {
       const variableId = cfg.value?.viewEditedVariableId;
@@ -1487,6 +1495,14 @@ export default {
 
       const baseline = cfg.value?.viewConfiguration;
       const edited = isViewConfigEdited(config, baseline);
+
+      // During the suppression window after a viewConfiguration change, do not
+      // let late grid events mark the view as edited. Allow `false` through so
+      // state converges correctly once the grid settles.
+      if (edited && Date.now() < suppressEditedUntil.value) {
+        debugLog(`[ViewEditedVariable] Suppressed true → view just changed, ignoring late grid event`);
+        return;
+      }
 
       try {
         wwLib.wwVariable.updateValue(variableId, edited);
@@ -2062,6 +2078,13 @@ export default {
           }
         };
 
+        // Open a suppression window so late grid events (from columns/data
+        // rebuilding on page/table change) can't flip the edited variable to
+        // true before the grid has settled on the new baseline.
+        if (isConfigChanged) {
+          suppressEditedUntil.value = Date.now() + 2000;
+        }
+
         // Only apply grid changes if the configuration content actually changed
         if (hasContentChanged) {
           debugLog('[ViewConfiguration] Configuration changed, applying new view');
@@ -2072,6 +2095,7 @@ export default {
           if (isConfigChanged) {
             setTimeout(() => resetEditedVariable('viewConfiguration changed'), 150);
             setTimeout(() => resetEditedVariable('viewConfiguration changed — late settle'), 400);
+            setTimeout(() => resetEditedVariable('viewConfiguration changed — final settle'), 1000);
           }
         } else if (isConfigChanged) {
           // No grid apply needed — safe to reset immediately; no events will fire.
