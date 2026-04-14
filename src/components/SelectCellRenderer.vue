@@ -8,8 +8,9 @@
         <span v-else class="select-label" :style="cellStyle">{{ displayLabel }}</span>
         
         <Teleport :to="teleportTarget" v-if="isEditMode && teleportTarget">
-            <div 
-                class="select-dropdown-wrapper" 
+            <div
+                ref="dropdownWrapper"
+                class="select-dropdown-wrapper"
                 :style="dropdownStyle"
             >
                 <div
@@ -25,7 +26,7 @@
                         v-for="(option, index) in processedOptions" 
                         :key="option.value"
                         class="select-option"
-                        :class="{ 
+                        :class="{
                             'selected': option.value === selectedValue,
                             'highlighted': index === highlightedIndex
                         }"
@@ -34,6 +35,7 @@
                         @mouseenter="highlightedIndex = index"
                     >
                         {{ option.label }}
+                        <svg v-if="option.value === selectedValue" class="select-option-check" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
                     </div>
                 </div>
             </div>
@@ -79,6 +81,7 @@ export default {
             selectedValue: null,
             originalValue: null,
             dropdownPosition: { top: 100, left: 100, width: 200 }, // Better initial values
+            dropdownLeftAdjustment: 0, // Pixel shift applied after viewport clamping
             teleportTarget: null,
             highlightedIndex: -1,
             hasEverRendered: optionsAlreadyAvailable, // Skip skeleton if options already loaded
@@ -268,10 +271,12 @@ export default {
             const minWidth = Math.max(200, columns * 200); // 200px per column minimum
             const maxWidth = columns * 300; // 300px per column maximum
             
+            const centerLeft = this.dropdownPosition.left + this.dropdownLeftAdjustment;
             return {
                 position: 'fixed',
                 top: `${this.dropdownPosition.top + 8}px`, // Add gap for the arrow
-                left: `${this.dropdownPosition.left}px`,
+                left: `${centerLeft}px`,
+                transform: 'translateX(-50%)', // Center on the column
                 minWidth: `${minWidth}px`,
                 maxWidth: `${maxWidth}px`,
                 zIndex: 2000, // Above filter menus (1000) but reasonable
@@ -444,17 +449,38 @@ export default {
         updateDropdownPosition() {
             if (this.$refs.cellElement) {
                 const rect = this.$refs.cellElement.getBoundingClientRect();
-                
+
                 // Ensure we have valid dimensions
                 const width = rect.width > 0 ? rect.width : 200; // fallback to 200px
                 const top = rect.bottom > 0 ? rect.bottom : rect.top + 30;
-                const left = rect.left >= 0 ? rect.left : 0;
-                
-                this.dropdownPosition = {
-                    top: top,
-                    left: left,
-                    width: width,
-                };
+                // Center the dropdown on the cell column
+                const center = rect.left + rect.width / 2;
+
+                this.dropdownLeftAdjustment = 0;
+                this.dropdownPosition = { top, left: center, width };
+
+                // After the dropdown renders at the centered position, clamp to viewport
+                this.$nextTick(() => this.clampDropdownToViewport());
+            }
+        },
+        clampDropdownToViewport() {
+            const wrapper = this.$refs.dropdownWrapper;
+            if (!wrapper) return;
+
+            const rect = wrapper.getBoundingClientRect();
+            const viewportWidth = (wwLib?.getFrontWindow?.() || window).innerWidth
+                || document.documentElement.clientWidth;
+            const margin = 8;
+
+            let adjustment = 0;
+            if (rect.right > viewportWidth - margin) {
+                adjustment -= rect.right - (viewportWidth - margin);
+            }
+            if (rect.left < margin) {
+                adjustment += margin - rect.left;
+            }
+            if (adjustment !== 0) {
+                this.dropdownLeftAdjustment = adjustment;
             }
         },
         // AG Grid editor interface method
@@ -715,12 +741,10 @@ export default {
     }
     
     &.selected {
-        &::after {
-            content: '✓';
+        .select-option-check {
             position: absolute;
-            right: 10px;
-            font-weight: bold;
-            font-size: 16px;
+            right: 8px;
+            flex-shrink: 0;
         }
     }
     

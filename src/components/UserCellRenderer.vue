@@ -15,8 +15,8 @@
                 @mouseleave="handleAvatarMouseLeave"
                 @mousemove="updateTooltipPosition(user.id)"
             >
-                <img 
-                    :src="user.avatar_url || getDefaultAvatar(user)" 
+                <img
+                    :src="user.avatar_variants?.sm || user.avatar_url || getDefaultAvatar(user)"
                     :alt="getUserName(user)"
                     class="user-avatar"
                 />
@@ -33,8 +33,8 @@
                 @mouseleave="handleTooltipMouseLeave"
             >
                 <div class="tooltip-header">
-                    <img 
-                        :src="currentTooltipUser.avatar_url || getDefaultAvatar(currentTooltipUser)" 
+                    <img
+                        :src="currentTooltipUser.avatar_variants?.md || currentTooltipUser.avatar_url || getDefaultAvatar(currentTooltipUser)"
                         :alt="getUserName(currentTooltipUser)"
                         class="tooltip-avatar"
                     />
@@ -164,8 +164,8 @@
                             :key="user.id"
                             class="user-pill"
                         >
-                            <img 
-                                :src="user.avatar_url || getDefaultAvatar(user)" 
+                            <img
+                                :src="user.avatar_variants?.md || user.avatar_url || getDefaultAvatar(user)"
                                 :alt="getUserName(user)"
                                 class="pill-avatar"
                             />
@@ -192,8 +192,8 @@
                             @click="toggleUser(user)"
                             @mouseenter="highlightedIndex = index"
                         >
-                            <img 
-                                :src="user.avatar_url || getDefaultAvatar(user)" 
+                            <img
+                                :src="user.avatar_variants?.md || user.avatar_url || getDefaultAvatar(user)"
                                 :alt="getUserName(user)"
                                 class="option-avatar"
                             />

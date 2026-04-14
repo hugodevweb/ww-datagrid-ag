@@ -39,7 +39,7 @@
                     class="user-pill"
                 >
                     <img
-                        :src="user.avatar_url || getDefaultAvatar(user)"
+                        :src="user.avatar_variants?.md || user.avatar_url || getDefaultAvatar(user)"
                         :alt="getUserName(user)"
                         class="pill-avatar"
                     />
@@ -89,7 +89,7 @@
                     @mouseenter="highlightedIndex = index + emptyOptionOffset"
                 >
                     <img
-                        :src="user.avatar_url || getDefaultAvatar(user)"
+                        :src="user.avatar_variants?.md || user.avatar_url || getDefaultAvatar(user)"
                         :alt="getUserName(user)"
                         class="option-avatar"
                     />
