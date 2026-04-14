@@ -81,11 +81,10 @@
         <Teleport :to="teleportTarget" v-if="isEditMode && teleportTarget">
             <div
                 class="record-dropdown-wrapper"
-                :class="{ 'is-create-mode': showCreateForm }"
                 :style="dropdownStyle"
             >
                 <!-- Search -->
-                <div v-if="!showCreateForm" class="record-search-container">
+                <div class="record-search-container">
                     <input
                         ref="searchInput"
                         v-model="searchQuery"
@@ -101,7 +100,7 @@
 
                 <!-- Unlink option — outside scrollable list so it's always visible -->
                 <div
-                    v-if="currentValue != null && !showCreateForm"
+                    v-if="currentValue != null"
                     class="record-dropdown-item record-unlink-item"
                     :class="{ highlighted: highlightedIndex === -1 }"
                     @click="unlinkRecord"
@@ -119,7 +118,6 @@
                 </div>
 
                 <div
-                    v-if="!showCreateForm"
                     ref="dropdownList"
                     class="record-dropdown-list"
                 >
@@ -155,13 +153,11 @@
                     </div>
                 </div>
 
-                <!-- Create button — outside scrollable list so it's always visible -->
+                <!-- Create button — always visible below the list when allowCreate is on -->
                 <div
-                    v-if="allowCreate && !showCreateForm"
-                    class="record-dropdown-item record-create-item"
-                    :class="{ highlighted: highlightedIndex === filteredRecords.length }"
-                    @click="toggleCreateForm"
-                    @mouseenter="highlightedIndex = filteredRecords.length"
+                    v-if="allowCreate"
+                    class="record-create-item"
+                    @click="openCreateForm"
                 >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <line x1="12" y1="5" x2="12" y2="19"/>
@@ -170,35 +166,6 @@
                     Creer une fiche
                 </div>
 
-                <!-- Inline create form -->
-                <div v-if="showCreateForm" class="record-create-form">
-                    <div class="record-create-form-title">Nouvelle fiche</div>
-                    <div
-                        v-for="cf in createFieldDefs"
-                        :key="cf.field"
-                        class="record-create-field"
-                    >
-                        <label class="record-create-label">{{ cf.label || cf.field }}</label>
-                        <input
-                            v-if="cf.type !== 'boolean'"
-                            :type="cf.type === 'number' ? 'number' : 'text'"
-                            class="record-create-input"
-                            v-model="createFormData[cf.field]"
-                        />
-                        <input
-                            v-else
-                            type="checkbox"
-                            class="record-create-checkbox"
-                            v-model="createFormData[cf.field]"
-                        />
-                    </div>
-                    <div class="record-create-form-actions">
-                        <button class="record-create-cancel-btn" @click.stop="showCreateForm = false" type="button">Annuler</button>
-                        <button class="record-create-submit-btn" @click.stop="submitCreate" :disabled="isCreating" type="button">
-                            {{ isCreating ? 'Creation...' : 'Creer' }}
-                        </button>
-                    </div>
-                </div>
             </div>
         </Teleport>
     </div>
@@ -255,10 +222,6 @@ export default {
             // Edit dropdown position
             dropdownPosition: { top: 100, left: 100, width: 200 },
             teleportTarget: null,
-            // Create form
-            showCreateForm: false,
-            createFormData: {},
-            isCreating: false,
             // Params cache (ag-grid doesn't update prop after refresh)
             _refreshedParams: null,
         };
@@ -291,10 +254,6 @@ export default {
         },
         allowCreate() {
             return !!(this.activeParams?.allowCreate || this.activeParams?.colDef?.cellRendererParams?.allowCreate);
-        },
-        createFieldDefs() {
-            const cf = this.activeParams?.createFields || this.activeParams?.colDef?.cellRendererParams?.createFields || [];
-            return Array.isArray(cf) ? cf : [];
         },
         currentRecord() {
             if (this.currentValue == null) return null;
@@ -544,6 +503,16 @@ export default {
             return this.normalizeRecordMeta(this.resolveNestedValue(record, this.contextField));
         },
 
+        // ─── Create form ─────────────────────────────────────────────────────
+        openCreateForm() {
+            const field = this.params?.colDef?.field || this.activeParams?.colDef?.field;
+            const row = this.params?.data;
+            const rowId = this.params?.node?.id;
+            const onCreateClick = this.activeParams?.onCreateClick;
+            if (onCreateClick && field) onCreateClick({ columnField: field, row, rowId });
+            this.stopEditing();
+        },
+
         // ─── Selection ───────────────────────────────────────────────────────
         selectRecord(record) {
             this.debugLog('Select record', { field: this.params?.colDef?.field, value: record[this.valueField], label: this.resolveNestedValue(record, this.displayField) });
@@ -573,13 +542,11 @@ export default {
             }
             if (this.highlightedIndex >= 0 && this.highlightedIndex < this.filteredRecords.length) {
                 this.selectRecord(this.filteredRecords[this.highlightedIndex]);
-            } else if (this.allowCreate && this.highlightedIndex === this.filteredRecords.length) {
-                this.toggleCreateForm();
             }
         },
 
         highlightNext() {
-            const max = this.filteredRecords.length + (this.allowCreate ? 0 : -1);
+            const max = this.filteredRecords.length - 1;
             if (this.highlightedIndex < max) this.highlightedIndex++;
         },
 
@@ -641,50 +608,6 @@ export default {
                     top: rect.bottom + 6,
                     left,
                 };
-            }
-        },
-
-        // ─── Create form ─────────────────────────────────────────────────────
-        toggleCreateForm() {
-            this.showCreateForm = !this.showCreateForm;
-            if (this.showCreateForm) {
-                this.createFormData = {};
-                for (const cf of this.createFieldDefs) {
-                    this.createFormData[cf.field] = cf.type === 'boolean' ? false : '';
-                }
-            }
-        },
-
-        async submitCreate() {
-            if (!this.tableName) return;
-            const supabase = this.activeParams?.getSupabaseInstance?.();
-            if (!supabase) return;
-
-            this.isCreating = true;
-            try {
-                const payload = { ...this.createFormData };
-                this.debugLog('Create record', { table: this.tableName, payload });
-                const { data, error } = await supabase
-                    .from(this.tableName)
-                    .insert(payload)
-                    .select()
-                    .single();
-
-                if (error) {
-                    this.debugLog('Create record failed', { table: this.tableName, error });
-                }
-                if (!error && data) {
-                    this.debugLog('Create record success', { table: this.tableName, data });
-                    invalidateCache(this.cacheKey);
-                    this.allRecords = [...this.allRecords, data];
-                    setCachedRecords(this.cacheKey, this.allRecords);
-                    this.showCreateForm = false;
-                    this.selectRecord(data);
-                }
-            } catch (e) {
-                // silent
-            } finally {
-                this.isCreating = false;
             }
         },
 
@@ -1237,19 +1160,6 @@ export default {
     }
 }
 
-.record-create-item {
-    color: #1a56db;
-    border-top: 1px solid #f3f4f6;
-    margin: 0 8px;
-    padding: 10px 8px 12px;
-    flex-shrink: 0;
-
-    &:hover,
-    &.highlighted {
-        background: #e8f0fe;
-    }
-}
-
 .record-dropdown-empty {
     padding: 10px;
     text-align: center;
@@ -1257,121 +1167,21 @@ export default {
     font-size: 13px;
 }
 
-// ─── Create Form ─────────────────────────────────────────────────────────────
-
-.record-create-form {
-    padding: 12px;
-}
-
-.record-create-form-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: #374151;
-    margin-bottom: 10px;
-}
-
-.record-create-field {
-    margin-bottom: 8px;
-}
-
-.record-create-label {
-    display: block;
-    font-size: 11px;
-    color: #6b7280;
-    margin-bottom: 3px;
-}
-
-.record-create-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 5px 8px;
-    border: 1px solid #d1d5db;
-    border-radius: 4px;
-    font-size: 13px;
-    font-family: inherit;
-    outline: none;
-
-    &:focus {
-        border-color: #1a56db;
-        box-shadow: 0 0 0 2px rgba(26, 86, 219, 0.12);
-    }
-}
-
-.record-create-checkbox {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 16px;
-    height: 16px;
-    margin: 0;
-    border-radius: 4px;
-    border: 2px solid #cbd5e1;
-    background: white;
-    cursor: pointer;
-    position: relative;
-    transition: border-color 0.15s ease, background-color 0.15s ease;
-
-    &:checked {
-        border-color: #1a56db;
-        background: #1a56db;
-    }
-
-    &:checked::after {
-        content: '';
-        position: absolute;
-        left: 4px;
-        top: 1px;
-        width: 4px;
-        height: 8px;
-        border: solid white;
-        border-width: 0 2px 2px 0;
-        transform: rotate(45deg);
-    }
-
-    &:focus {
-        outline: none;
-        box-shadow: 0 0 0 2px rgba(26, 86, 219, 0.12);
-    }
-}
-
-.record-create-form-actions {
+.record-create-item {
     display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-    margin-top: 10px;
-}
-
-.record-create-cancel-btn {
-    padding: 5px 12px;
-    border-radius: 5px;
-    border: 1px solid #d1d5db;
-    background: white;
-    color: #374151;
-    font-size: 12px;
-    font-family: inherit;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    margin: 4px 6px 6px;
+    border-radius: 6px;
+    color: #1a56db;
+    font-size: 13px;
     cursor: pointer;
+    flex-shrink: 0;
 
     &:hover {
-        background: #f3f4f6;
+        background: #e8f0fe;
     }
 }
 
-.record-create-submit-btn {
-    padding: 5px 12px;
-    border-radius: 5px;
-    border: none;
-    background: #1a56db;
-    color: white;
-    font-size: 12px;
-    font-family: inherit;
-    cursor: pointer;
-
-    &:hover:not(:disabled) {
-        background: #1648c0;
-    }
-
-    &:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-    }
-}
 </style>

@@ -142,6 +142,35 @@
         </div>
       </Transition>
     </div>
+
+    <!-- Create record form popup — teleported to body so it covers the full page -->
+    <Teleport :to="createPopupTeleportTarget" v-if="activeCreateColumnField !== null && createPopupTeleportTarget">
+      <div
+        class="record-create-overlay"
+        @click.self="closeCreateRecordForm()"
+      >
+        <div class="record-create-popup">
+          <div class="record-create-popup-header">
+            <span class="record-create-popup-title">Créer une fiche</span>
+            <button class="record-create-popup-close" @click="closeCreateRecordForm()" type="button">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <div class="record-create-popup-body">
+            <wwLayoutItemContext
+              is-repeat
+              :index="0"
+              :item="{ row: activeCreateRow, rowId: activeCreateRowId, columnField: activeCreateColumnField }"
+              :data="{ row: activeCreateRow, rowId: activeCreateRowId, columnField: activeCreateColumnField }"
+            >
+              <wwLayout path="createRecordDropzone" direction="column" />
+            </wwLayoutItemContext>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -154,6 +183,7 @@ import {
   watch,
   nextTick,
   ref,
+  onMounted,
   onBeforeUnmount,
   isRef,
 } from "vue";
@@ -1179,6 +1209,11 @@ export default {
         defaultValue: [],
         readonly: true,
       });
+    const activeCreateColumnField = ref(null);
+    const activeCreateRow = ref(null);
+    const activeCreateRowId = ref(null);
+    const createPopupTeleportTarget = ref(null);
+
     const showColumnChooser = ref(false);
     const columnChooserRef = ref(null);
     const columnChooserSearch = ref('');
@@ -1257,6 +1292,22 @@ export default {
       if (clickOutsideTimer !== null) clearTimeout(clickOutsideTimer);
       wwLib.getFrontDocument().removeEventListener('click', handleClickOutside);
     });
+
+    // Resolve teleport target for the create record popup
+    onMounted(() => {
+      createPopupTeleportTarget.value = (wwLib?.getFrontDocument?.() || document).body;
+    });
+
+    const { value: activeCreateColumn, setValue: setActiveCreateColumn } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: "activeCreateColumn",
+        type: "string",
+        defaultValue: null,
+        readonly: true,
+      });
+    // Keep the ref and the component variable in sync
+    watch(activeCreateColumnField, (val) => setActiveCreateColumn(val));
 
     const { value: records, setValue: setRecords } =
       wwLib.wwVariable.useComponentVariable({
@@ -3208,6 +3259,10 @@ export default {
       hiddenColumns,
       setHiddenColumns,
       getTranslations,
+      activeCreateColumnField,
+      activeCreateRow,
+      activeCreateRowId,
+      createPopupTeleportTarget,
       showColumnChooser,
       columnChooserRef,
       columnChooserSearch,
@@ -3641,9 +3696,14 @@ export default {
               contextField: col?.recordContextField || '',
               previewFields: col?.recordPreviewFields || [],
               allowCreate: col?.allowCreateRecord || false,
-              createFields: col?.createRecordFields || [],
               enableDebugLogs: !!this.cfg?.enableDebugLogs,
               getSupabaseInstance: () => wwLib.wwPlugins.supabase?.instance,
+              onCreateClick: (ctx) => {
+                const payload = typeof ctx === 'string' ? { columnField: ctx } : (ctx || {});
+                this.activeCreateColumnField = payload.columnField || null;
+                this.activeCreateRow = payload.row ?? null;
+                this.activeCreateRowId = payload.rowId ?? null;
+              },
               onRecordNavigate: (eventData) => {
                 this.$emit("trigger-event", {
                   name: "onRecordNavigation",
@@ -5088,6 +5148,55 @@ export default {
         if (this.gridApi) this.gridApi.stopEditing(cancel);
       }, 0);
     },
+    async createRecord(columnId, rowId, data) {
+      const col = this.cfg?.columns?.find(c => c.field === columnId);
+      if (!col || col.cellDataType !== 'record') {
+        console.warn(`[Datagrid] createRecord: column "${columnId}" not found or not a record column`);
+        return;
+      }
+      if (!col.recordTable) {
+        console.warn(`[Datagrid] createRecord: column "${columnId}" has no recordTable configured`);
+        return;
+      }
+
+      const supabase = wwLib.wwPlugins?.supabase?.instance;
+      if (!supabase) {
+        console.warn('[Datagrid] createRecord: Supabase plugin is not available');
+        return;
+      }
+
+      const { data: newRecord, error } = await supabase
+        .from(col.recordTable)
+        .insert(data)
+        .select()
+        .single();
+
+      if (error || !newRecord) {
+        console.warn('[Datagrid] createRecord: insert failed', error);
+        return;
+      }
+
+      const valueField = col.recordValueField || 'id';
+      await this.setCellValue(rowId, columnId, newRecord[valueField]);
+
+      if (this.activeCreateColumnField === columnId) {
+        this.activeCreateColumnField = null;
+        this.activeCreateRow = null;
+        this.activeCreateRowId = null;
+      }
+
+      this.$emit('trigger-event', {
+        name: 'onRecordCreated',
+        event: { record: newRecord, columnId, rowId: String(rowId) },
+      });
+    },
+
+    closeCreateRecordForm() {
+      this.activeCreateColumnField = null;
+      this.activeCreateRow = null;
+      this.activeCreateRowId = null;
+    },
+
     async resetFilters() {
       // Wait for grid to be ready
       try {
@@ -5650,18 +5759,21 @@ export default {
 
         if (this.wwEditorState.isACopy) return;
 
-        // We assume there will only be one custom column each time
+        // Auto-create containerId for new custom columns
         const columnIndex = (this.rawContent.columns || []).findIndex(
           (col) => col?.cellDataType === "custom" && !col?.containerId
         );
-        if (columnIndex === -1) return;
-        const newColumns = [...this.rawContent.columns];
-        let column = { ...newColumns[columnIndex] };
-        column.containerId = await this.createElement("ww-flexbox", {
-          _state: { name: `Cell ${column.headerName || column.field}` },
-        });
-        newColumns[columnIndex] = column;
-        this.$emit("update:content:effect", { columns: newColumns });
+        if (columnIndex !== -1) {
+          const newColumns = [...this.rawContent.columns];
+          let column = { ...newColumns[columnIndex] };
+          column.containerId = await this.createElement("ww-flexbox", {
+            _state: { name: `Cell ${column.headerName || column.field}` },
+          });
+          newColumns[columnIndex] = column;
+          this.$emit("update:content:effect", { columns: newColumns });
+          return;
+        }
+
       },
       deep: true,
     },
@@ -5672,6 +5784,71 @@ export default {
 
 <style scoped lang="scss">
 @import url('https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700&display=swap');
+.record-create-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.15);
+  backdrop-filter: blur(1px);
+}
+
+.record-create-popup {
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+  width: fit-content;
+  max-width: 90%;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.record-create-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  flex-shrink: 0;
+}
+
+.record-create-popup-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: #111827;
+  font-family: inherit;
+}
+
+.record-create-popup-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+
+  &:hover {
+    background: #f3f4f6;
+    color: #374151;
+  }
+}
+
+.record-create-popup-body {
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
 .ww-datagrid {
   position: relative;
   isolation: isolate; // Create a new stacking context to contain AG Grid elements

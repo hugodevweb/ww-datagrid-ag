@@ -343,9 +343,51 @@ export default {
       label: { en: "On Record Navigation" },
       event: { record: null, row: null, columnId: "" },
     },
+    {
+      name: "onRecordCreated",
+      label: { en: "On Record Created" },
+      event: { record: null, columnId: "", rowId: "" },
+    },
   ],
   actions: [
     { label: "Reset filters", action: "resetFilters" },
+    {
+      label: "Create record",
+      action: "createRecord",
+      args: [
+        {
+          name: "Column ID",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The field name of the record column where the new record will be attached.",
+          },
+          /* wwEditor:end */
+        },
+        {
+          name: "Row ID",
+          type: "string",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "string",
+            tooltip: "The ID of the row to attach the created record to.",
+          },
+          /* wwEditor:end */
+        },
+        {
+          name: "Data",
+          type: "object",
+          /* wwEditor:start */
+          bindingValidation: {
+            type: "object",
+            tooltip: "Object with field names as keys and their values (e.g. { name: 'Acme', status: 'active' }).",
+          },
+          /* wwEditor:end */
+        },
+      ],
+    },
+    { label: "Close create record form", action: "closeCreateRecordForm" },
     { label: "Reset sort", action: "resetSort" },
     { label: "Open column management", action: "openColumnChooser" },
     {
@@ -501,6 +543,10 @@ export default {
     },
   ],
   properties: {
+    createRecordDropzone: {
+      hidden: true,
+      defaultValue: [],
+    },
     layout: {
       type: "TextSelect",
       label: "Height Mode",
@@ -2524,46 +2570,6 @@ export default {
                 hidden: array?.item?.cellDataType !== "record",
                 defaultValue: false,
               },
-              createRecordFields: {
-                label: "Create Record Fields",
-                type: "Array",
-                hidden: (content, sidePanelContent, boundProperties, wwProps, array) =>
-                  array?.item?.cellDataType !== "record" || !array?.item?.allowCreateRecord,
-                options: {
-                  item: {
-                    type: "Object",
-                    options: {
-                      item: {
-                        field: {
-                          label: "Field Name",
-                          type: "Text",
-                        },
-                        label: {
-                          label: "Label",
-                          type: "Text",
-                        },
-                        type: {
-                          label: "Type",
-                          type: "TextSelect",
-                          options: {
-                            options: [
-                              { value: "text", label: "Text", default: true },
-                              { value: "number", label: "Number" },
-                              { value: "boolean", label: "Boolean" },
-                            ],
-                          },
-                        },
-                      },
-                    },
-                  },
-                },
-                defaultValue: [],
-                /* wwEditor:start */
-                propertyHelp: {
-                  tooltip: "Form fields shown in the inline creation form. Each field defines its name, display label, and input type.",
-                },
-                /* wwEditor:end */
-              },
             },
             propertiesOrder: [
               "headerName",
@@ -2595,7 +2601,6 @@ export default {
               "recordContextField",
               "recordPreviewFields",
               "allowCreateRecord",
-              "createRecordFields",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",
