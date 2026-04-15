@@ -103,6 +103,13 @@ export default {
         getValue() {
             return this.currentValue;
         },
+        // AG Grid editor interface method
+        // Called by AG Grid before completing the edit to validate the current value
+        getValidationErrors() {
+            const cb = this.params?.getValidationErrors;
+            if (typeof cb !== 'function') return null;
+            return cb({ value: this.getValue(), data: this.params?.data });
+        },
         // Prevent click from propagating to row when suppressRowInteraction is enabled
         handleClick(event) {
             if (this.params?.suppressRowInteraction) {

@@ -551,6 +551,13 @@ export default {
                 return this.selectedUserIds.length > 0 ? this.selectedUserIds[0] : null;
             }
         },
+        // AG Grid editor interface method
+        // Called by AG Grid before completing the edit to validate the current value
+        getValidationErrors() {
+            const cb = this.params?.getValidationErrors;
+            if (typeof cb !== 'function') return null;
+            return cb({ value: this.getValue(), data: this.params?.data });
+        },
         stopEditing() {
             this.removeClickOutsideListener();
             if (this.params?.stopEditing) {

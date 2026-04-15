@@ -316,6 +316,12 @@ export default {
         const cached = this.tableName ? getCachedRecords(this.cacheKey) : null;
         if (cached) {
             this.allRecords = cached;
+            // If the current value isn't in the cached list, the cache is stale (e.g. a record
+            // was just created). Invalidate and re-fetch so the chip can be rendered.
+            if (this.currentValue != null && !cached.find(r => r[this.valueField] === this.currentValue)) {
+                invalidateCache(this.cacheKey);
+                this.fetchRecords();
+            }
         } else if (this.currentValue != null) {
             this.fetchRecords();
         }
@@ -356,6 +362,12 @@ export default {
             const cached = this.tableName ? getCachedRecords(this.cacheKey) : null;
             if (cached) {
                 this.allRecords = cached;
+                // If the current value isn't in the cached list, the cache is stale (e.g. a record
+                // was just created). Invalidate and re-fetch so the chip can be rendered.
+                if (this.currentValue != null && !cached.find(r => r[this.valueField] === this.currentValue)) {
+                    invalidateCache(this.cacheKey);
+                    this.fetchRecords();
+                }
             } else if (this.currentValue != null && this.allRecords.length === 0) {
                 this.fetchRecords();
             }
@@ -363,6 +375,13 @@ export default {
         },
         getValue() {
             return this.currentValue;
+        },
+        // AG Grid editor interface method
+        // Called by AG Grid before completing the edit to validate the current value
+        getValidationErrors() {
+            const cb = this.params?.getValidationErrors;
+            if (typeof cb !== 'function') return null;
+            return cb({ value: this.getValue(), data: this.params?.data });
         },
 
         // ─── Record fetching ─────────────────────────────────────────────────

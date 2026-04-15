@@ -2169,7 +2169,7 @@ export default {
                   item: {
                     type: "Object",
                     defaultValue: { type: "required" },
-                    options: {
+                    options: (content, sidePanelContent, boundProps, wwProps, ruleArray) => ({
                       item: {
                         type: {
                           label: "Type",
@@ -2190,13 +2190,15 @@ export default {
                           label: "Value",
                           type: "Text",
                           hidden:
-                            array?.item?.type === "required" || !array?.item?.type,
+                            ruleArray?.item?.type === "required" ||
+                            ruleArray?.item?.type === "custom" ||
+                            !ruleArray?.item?.type,
                           bindable: true,
                         },
                         custom: {
                           label: "Custom Formula",
                           type: "Formula",
-                          hidden: array?.item?.type !== "custom",
+                          hidden: ruleArray?.item?.type !== "custom",
                           options: (content, sidePanelContent, boundProps, wwProps, array) => ({
                             // For Supabase data source, rowData is empty, so create a template from columns
                             template: (() => {
@@ -2246,7 +2248,7 @@ export default {
                           /* wwEditor:end */
                         },
                       },
-                    },
+                    }),
                   },
                 },
                 defaultValue: [],

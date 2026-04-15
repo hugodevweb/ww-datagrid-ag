@@ -93,6 +93,14 @@ export default {
             return this.value;
         },
 
+        // Required by AG Grid - returns validation errors for the current in-progress value
+        // Delegates to the callback passed via cellEditorParams.getValidationErrors
+        getValidationErrors() {
+            const cb = this.params?.getValidationErrors;
+            if (typeof cb !== 'function') return null;
+            return cb({ value: this.getValue(), data: this.params?.data });
+        },
+
         // Required by AG Grid - check if editing should be cancelled before start
         isCancelBeforeStart() {
             return false;

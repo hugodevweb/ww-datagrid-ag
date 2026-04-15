@@ -3414,9 +3414,52 @@ export default {
         return validationFn(newValue, rowData);
       };
 
-      // Use memoized value setter factory
+      // Wrap a valueSetter with synchronous validation.
+      // ag-grid 33.2.4 has no native getValidationErrors / invalidEditValueMode,
+      // so we enforce rules here: if validation fails, we reject the update
+      // (revert mode) or restart editing (block mode).
+      const self = this;
+      const wrapWithValidation = (baseSetter, col) => {
+        if (!col?.validation || !Array.isArray(col.validation) || col.validation.length === 0) {
+          return baseSetter;
+        }
+        const validationFn = createValidationFunction(col, self.resolveMappingFormula);
+        return (params) => {
+          const errors = validationFn(params.newValue, params.data);
+          if (errors && errors.length > 0) {
+            const mode = self.invalidEditValueMode;
+            // Notify app of validation failure
+            self.$emit("trigger-event", {
+              name: "validationFailed",
+              event: {
+                field: col.field,
+                value: params.newValue,
+                oldValue: params.oldValue,
+                errors,
+                rowId: params.data?.[self.cfg?.idKey] ?? params.node?.id,
+                data: params.data,
+              },
+            });
+            if (mode === "block" && params.api && params.node && col.field) {
+              // Re-open the editor so the user fixes the value
+              setTimeout(() => {
+                try {
+                  params.api.startEditingCell({
+                    rowIndex: params.node.rowIndex,
+                    colKey: col.field,
+                  });
+                } catch (e) { /* noop */ }
+              }, 0);
+            }
+            return false; // Reject update (revert)
+          }
+          return baseSetter(params);
+        };
+      };
+
+      // Use memoized value setter factory, wrapped with validation
       const getValueSetter = (col, customSetter) => {
-        return createValueSetter(col, customSetter);
+        return wrapWithValidation(createValueSetter(col, customSetter), col);
       };
       // Get column widths from viewConfiguration (for restoring user-resized widths)
       // Note: When sizes key is present but empty ({}), default column widths from column config will be used
@@ -3775,13 +3818,13 @@ export default {
               valueGetter: (params) => {
                 return params.data?.[col?.field];
               },
-              valueSetter: (params) => {
+              valueSetter: wrapWithValidation((params) => {
                 // Read old value directly from data (not from AG Grid's oldValue
                 // which may be stale when a valueGetter is defined)
                 const oldVal = params.data?.[col?.field];
                 params.data[col.field] = params.newValue;
                 return oldVal !== params.newValue;
-              },
+              }, col),
             };
           }
           default: {
@@ -3835,11 +3878,11 @@ export default {
               };
               
               // Ensure the checkbox updates the data correctly
-              result.valueSetter = (params) => {
+              result.valueSetter = wrapWithValidation((params) => {
                 const newValue = params.newValue === true || params.newValue === 'true' || params.newValue === 1 || params.newValue === '1';
                 params.data[col?.field] = newValue;
                 return true;
-              };
+              }, col);
               
               // For editable boolean columns, use checkbox as both renderer and editor
               if (col?.editable) {
