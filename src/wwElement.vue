@@ -3413,26 +3413,42 @@ export default {
       // `validationFailed` trigger event so WeWeb workflows can react.
       // ag-Grid v34 uses this return value (string[] | null) to drive
       // `invalidEditValueMode` (revert/block) and tooltip display natively.
+      // AG Grid calls getValidationErrors on submission attempts, so we fire
+      // the workflow + toast here directly — deduped per edit session via
+      // `_validationFiredForCurrentEdit` (reset in onCellEditingStarted).
       const self = this;
       const getValidationErrors = (col, newValue, rowData, params) => {
         const validationFn = createValidationFunction(col, self.resolveMappingFormula);
         const errors = validationFn(newValue, rowData);
-        console.log('[validation] getValidationErrors called', {
-          field: col?.field,
-          newValue,
-          errors,
-        });
         if (errors && errors.length > 0) {
-          self._pendingValidationError = {
-            col,
-            newValue,
-            rowData,
-            params,
-            errors,
-          };
+          self._pendingValidationError = { col, newValue, rowData, params, errors };
+          if (!self._validationFiredForCurrentEdit) {
+            self._validationFiredForCurrentEdit = true;
+            const rowId = rowData?.[self.cfg?.idKey] ?? params?.node?.id ?? null;
+            self.$emit("trigger-event", {
+              name: "validationFailed",
+              event: {
+                field: col?.field,
+                value: newValue,
+                oldValue: rowData?.[col?.field],
+                errors,
+                rowId,
+                data: rowData,
+              },
+            });
+            try {
+              wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
+                body: errors.join('\n'),
+                title: `Champ invalide : ${col?.headerName || col?.field || ''}`,
+                type: 'error',
+              });
+            } catch (e) {
+              console.warn('[validation] toast workflow failed', e);
+            }
+          }
         } else {
-          // Value became valid — clear so a clean commit does not fire.
           self._pendingValidationError = null;
+          self._validationFiredForCurrentEdit = false;
         }
         return errors;
       };
@@ -3510,19 +3526,37 @@ export default {
 
         const cellDataType = col?.cellDataType;
 
+        // Route cellEditorParams.getValidationErrors through the tracking helper
+        // so _pendingValidationError is populated and onCellEditingStopped fires
+        // the `validationFailed` trigger event + toast.
+        const attachValidationTracking = (def) => {
+          if (def?.cellEditorParams) {
+            def.cellEditorParams.getValidationErrors = (params) => {
+              return getValidationErrors(col, params?.value, params?.data, params);
+            };
+          }
+          return def;
+        };
+
         switch (cellDataType) {
           case "action": {
             return createActionColumnDef(col, commonProperties, this.onActionTrigger, this.content);
           }
           case "custom": {
-            return createCustomColumnDef(col, commonProperties, this.onCustomCellEdit, this.resolveMappingFormula);
+            return attachValidationTracking(
+              createCustomColumnDef(col, commonProperties, this.onCustomCellEdit, this.resolveMappingFormula)
+            );
           }
           case "dateString":
           case "dateTime": {
-            return createDateColumnDef(col, commonProperties, this.resolveMappingFormula);
+            return attachValidationTracking(
+              createDateColumnDef(col, commonProperties, this.resolveMappingFormula)
+            );
           }
           case "currency": {
-            return createCurrencyColumnDef(col, commonProperties, this.resolveMappingFormula);
+            return attachValidationTracking(
+              createCurrencyColumnDef(col, commonProperties, this.resolveMappingFormula)
+            );
           }
           case "image": {
             return createImageColumnDef(col, commonProperties);
@@ -4539,54 +4573,12 @@ export default {
       // Method kept for potential future use
     },
     onCellEditingStarted(event) {
-      console.log('[validation] >>> onCellEditingStarted', {
-        field: event?.column?.getColId?.(),
-      });
       this._pendingValidationError = null;
+      this._validationFiredForCurrentEdit = false;
     },
     onCellEditingStopped(event) {
-      console.log('[validation] >>> onCellEditingStopped', {
-        field: event?.column?.getColId?.(),
-        valueChanged: event?.valueChanged,
-        newValue: event?.newValue,
-        oldValue: event?.oldValue,
-        hasPending: !!this._pendingValidationError,
-      });
-      const pending = this._pendingValidationError;
       this._pendingValidationError = null;
-      if (!pending) {
-        console.log('[validation] skip: no pending error');
-        return;
-      }
-      if (event?.valueChanged === true) {
-        console.log('[validation] skip: clean commit');
-        return;
-      }
-      console.log('[validation] FIRING event + toast', {
-        field: pending.col?.field,
-        errors: pending.errors,
-      });
-      const { col, newValue, errors, rowData, params } = pending;
-      this.$emit("trigger-event", {
-        name: "validationFailed",
-        event: {
-          field: col?.field,
-          value: newValue,
-          oldValue: event?.oldValue ?? params?.data?.[col?.field],
-          errors,
-          rowId: rowData?.[this.cfg?.idKey] ?? event?.node?.id ?? params?.node?.id ?? null,
-          data: rowData,
-        },
-      });
-      try {
-        wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
-          body: errors.join('\n'),
-          title: col?.headerName || col?.field || '',
-          type: 'error',
-        });
-      } catch (e) {
-        console.warn('[validation] toast workflow failed', e);
-      }
+      this._validationFiredForCurrentEdit = false;
     },
     onRowEditingStarted(event) {
       console.log('[validation] >>> onRowEditingStarted', event?.rowIndex);
