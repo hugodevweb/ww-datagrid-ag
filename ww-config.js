@@ -211,6 +211,18 @@ export default {
       getTestEvent: "getOnCellValueChangedTestEvent",
     },
     {
+      name: "validationFailed",
+      label: { en: "On Validation Failed" },
+      event: {
+        field: "",
+        value: null,
+        oldValue: null,
+        errors: [],
+        rowId: null,
+        data: null,
+      },
+    },
+    {
       name: "rowSelected",
       label: { en: "On Row Selected" },
       event: {

@@ -5,7 +5,10 @@
       "Bash(find /c/VS_code/vueJs/ww-datagrid-ag/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.vue -o -name *.js \\\\\\))",
       "Bash(npx vue-tsc:*)",
       "Bash(node -e \":*)",
-      "Bash(grep -l \"invalidEditValueMode\" node_modules/ag-grid-community/dist/types/src/interfaces/*.d.ts node_modules/ag-grid-community/dist/types/src/entities/*.d.ts)"
+      "Bash(grep -l \"invalidEditValueMode\" node_modules/ag-grid-community/dist/types/src/interfaces/*.d.ts node_modules/ag-grid-community/dist/types/src/entities/*.d.ts)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(npx weweb *)"
     ]
   }
 }

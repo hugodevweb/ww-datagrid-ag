@@ -48,6 +48,10 @@
       @selection-changed="onSelectionChanged"
       @cell-value-changed="onCellValueChanged"
       @cell-edit-request="onCellEditRequest"
+      @cell-editing-started="onCellEditingStarted"
+      @cell-editing-stopped="onCellEditingStopped"
+      @row-editing-started="onRowEditingStarted"
+      @row-editing-stopped="onRowEditingStopped"
       @filter-changed="onFilterChanged"
       @sort-changed="onSortChanged"
       @pagination-changed="onPaginationChanged"
@@ -192,7 +196,6 @@ import {
   AllCommunityModule,
   ModuleRegistry,
   themeQuartz,
-  ValidationModule,
 } from "ag-grid-community";
 import {
   AG_GRID_LOCALE_EN,
@@ -269,15 +272,13 @@ import {
   emitCellValueChangedEvent,
   manageDataUpdateFlag,
   processValueByType,
-  validateCellValue,
   getRowId
 } from "./utils/cellValueUtils.js";
 import { createGridMonitor } from "./utils/performanceMonitor.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
-// ValidationModule is REQUIRED for getValidationErrors to work
-ModuleRegistry.registerModules([AllCommunityModule, ValidationModule]);
+ModuleRegistry.registerModules([AllCommunityModule]);
 
 export default {
   components: {
@@ -3408,58 +3409,36 @@ export default {
       // First, map all columns to their definitions
       const columnsMap = new Map();
 
-      // Use memoized validation function factory
-      const getValidationErrors = (col, newValue, rowData) => {
-        const validationFn = createValidationFunction(col, this.resolveMappingFormula);
-        return validationFn(newValue, rowData);
-      };
-
-      // Wrap a valueSetter with synchronous validation.
-      // ag-grid 33.2.4 has no native getValidationErrors / invalidEditValueMode,
-      // so we enforce rules here: if validation fails, we reject the update
-      // (revert mode) or restart editing (block mode).
+      // Run validation rules for a column and, on failure, emit the
+      // `validationFailed` trigger event so WeWeb workflows can react.
+      // ag-Grid v34 uses this return value (string[] | null) to drive
+      // `invalidEditValueMode` (revert/block) and tooltip display natively.
       const self = this;
-      const wrapWithValidation = (baseSetter, col) => {
-        if (!col?.validation || !Array.isArray(col.validation) || col.validation.length === 0) {
-          return baseSetter;
-        }
+      const getValidationErrors = (col, newValue, rowData, params) => {
         const validationFn = createValidationFunction(col, self.resolveMappingFormula);
-        return (params) => {
-          const errors = validationFn(params.newValue, params.data);
-          if (errors && errors.length > 0) {
-            const mode = self.invalidEditValueMode;
-            // Notify app of validation failure
-            self.$emit("trigger-event", {
-              name: "validationFailed",
-              event: {
-                field: col.field,
-                value: params.newValue,
-                oldValue: params.oldValue,
-                errors,
-                rowId: params.data?.[self.cfg?.idKey] ?? params.node?.id,
-                data: params.data,
-              },
-            });
-            if (mode === "block" && params.api && params.node && col.field) {
-              // Re-open the editor so the user fixes the value
-              setTimeout(() => {
-                try {
-                  params.api.startEditingCell({
-                    rowIndex: params.node.rowIndex,
-                    colKey: col.field,
-                  });
-                } catch (e) { /* noop */ }
-              }, 0);
-            }
-            return false; // Reject update (revert)
-          }
-          return baseSetter(params);
-        };
+        const errors = validationFn(newValue, rowData);
+        console.log('[validation] getValidationErrors called', {
+          field: col?.field,
+          newValue,
+          errors,
+        });
+        if (errors && errors.length > 0) {
+          self._pendingValidationError = {
+            col,
+            newValue,
+            rowData,
+            params,
+            errors,
+          };
+        } else {
+          // Value became valid — clear so a clean commit does not fire.
+          self._pendingValidationError = null;
+        }
+        return errors;
       };
 
-      // Use memoized value setter factory, wrapped with validation
       const getValueSetter = (col, customSetter) => {
-        return wrapWithValidation(createValueSetter(col, customSetter), col);
+        return createValueSetter(col, customSetter);
       };
       // Get column widths from viewConfiguration (for restoring user-resized widths)
       // Note: When sizes key is present but empty ({}), default column widths from column config will be used
@@ -3591,7 +3570,7 @@ export default {
               cellEditorParams: {
                 ...selectParams,
                 getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
+                  return getValidationErrors(col, params.value, params.data, params);
                 },
               },
               editable: col?.editable !== false,
@@ -3689,7 +3668,7 @@ export default {
               cellEditorParams: {
                 ...userParams,
                 getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
+                  return getValidationErrors(col, params.value, params.data, params);
                 },
               },
               editable: col?.editable !== false,
@@ -3790,7 +3769,7 @@ export default {
               cellEditorParams: {
                 ...recordParams,
                 getValidationErrors: (params) => {
-                  return getValidationErrors(col, params.value, params.data);
+                  return getValidationErrors(col, params.value, params.data, params);
                 },
               },
               editable: col?.editable !== false,
@@ -3818,13 +3797,13 @@ export default {
               valueGetter: (params) => {
                 return params.data?.[col?.field];
               },
-              valueSetter: wrapWithValidation((params) => {
+              valueSetter: (params) => {
                 // Read old value directly from data (not from AG Grid's oldValue
                 // which may be stale when a valueGetter is defined)
                 const oldVal = params.data?.[col?.field];
                 params.data[col.field] = params.newValue;
                 return oldVal !== params.newValue;
-              }, col),
+              },
             };
           }
           default: {
@@ -3878,18 +3857,18 @@ export default {
               };
               
               // Ensure the checkbox updates the data correctly
-              result.valueSetter = wrapWithValidation((params) => {
+              result.valueSetter = (params) => {
                 const newValue = params.newValue === true || params.newValue === 'true' || params.newValue === 1 || params.newValue === '1';
                 params.data[col?.field] = newValue;
                 return true;
-              }, col);
+              };
               
               // For editable boolean columns, use checkbox as both renderer and editor
               if (col?.editable) {
                 result.cellEditor = 'agCheckboxCellEditor';
                 // Create the validation function
                 const validationFn = (params) => {
-                  return getValidationErrors(col, params?.value, params?.data);
+                  return getValidationErrors(col, params?.value, params?.data, params);
                 };
                 result.cellEditorParams = {
                   getValidationErrors: validationFn,
@@ -3932,7 +3911,7 @@ export default {
               // Add cellEditor and cellEditorParams for editable non-boolean columns to ensure validation works
               // Create the validation function
               const validationFn = (params) => {
-                return getValidationErrors(col, params?.value, params?.data);
+                return getValidationErrors(col, params?.value, params?.data, params);
               };
 
               // Explicitly set cellEditor to ensure validation is triggered
@@ -4558,6 +4537,62 @@ export default {
     },
     onCellEditRequest(event) {
       // Method kept for potential future use
+    },
+    onCellEditingStarted(event) {
+      console.log('[validation] >>> onCellEditingStarted', {
+        field: event?.column?.getColId?.(),
+      });
+      this._pendingValidationError = null;
+    },
+    onCellEditingStopped(event) {
+      console.log('[validation] >>> onCellEditingStopped', {
+        field: event?.column?.getColId?.(),
+        valueChanged: event?.valueChanged,
+        newValue: event?.newValue,
+        oldValue: event?.oldValue,
+        hasPending: !!this._pendingValidationError,
+      });
+      const pending = this._pendingValidationError;
+      this._pendingValidationError = null;
+      if (!pending) {
+        console.log('[validation] skip: no pending error');
+        return;
+      }
+      if (event?.valueChanged === true) {
+        console.log('[validation] skip: clean commit');
+        return;
+      }
+      console.log('[validation] FIRING event + toast', {
+        field: pending.col?.field,
+        errors: pending.errors,
+      });
+      const { col, newValue, errors, rowData, params } = pending;
+      this.$emit("trigger-event", {
+        name: "validationFailed",
+        event: {
+          field: col?.field,
+          value: newValue,
+          oldValue: event?.oldValue ?? params?.data?.[col?.field],
+          errors,
+          rowId: rowData?.[this.cfg?.idKey] ?? event?.node?.id ?? params?.node?.id ?? null,
+          data: rowData,
+        },
+      });
+      try {
+        wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
+          body: errors.join('\n'),
+          title: col?.headerName || col?.field || '',
+          type: 'error',
+        });
+      } catch (e) {
+        console.warn('[validation] toast workflow failed', e);
+      }
+    },
+    onRowEditingStarted(event) {
+      console.log('[validation] >>> onRowEditingStarted', event?.rowIndex);
+    },
+    onRowEditingStopped(event) {
+      console.log('[validation] >>> onRowEditingStopped', event?.rowIndex);
     },
     onCellValueChanged(event) {
       // Find the column configuration to get isDirectUpdate
