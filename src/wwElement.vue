@@ -1,6 +1,8 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing }" :style="cssVars" ref="gridContainerRef">
+  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive }" :style="cssVars" ref="gridContainerRef">
+    <!-- Single-grid mode: unchanged behavior -->
     <ag-grid-vue
+      v-if="!isGroupingActive"
       :components="gridComponents"
       :rowData="rowData"
       :columnDefs="columnDefs"
@@ -65,6 +67,119 @@
       @model-updated="onModelUpdated"
     >
     </ag-grid-vue>
+
+    <!-- Multi-grid mode: one grid per group, collapsible, drag-reorderable.
+         Group-wide actions (collapse all / expand all / reorder) now live in
+         the column-chooser panel's Grouping tab. -->
+    <template v-else>
+      <div
+        v-for="group in orderedGroups"
+        :key="group.value"
+        class="ww-group"
+        :class="{
+          'ww-group--dragging': groupDragValue === group.value,
+          'ww-group--drag-over': groupDragOverValue === group.value && groupDragValue !== group.value,
+          'ww-group--collapsed': group.collapsed,
+        }"
+      >
+        <div
+          class="ww-group__header"
+          :style="{ '--group-color': group.color }"
+          :draggable="true"
+          @dragstart="onGroupDragStart(group.value)"
+          @dragover.prevent="onGroupDragOver(group.value)"
+          @drop.prevent="onGroupDrop(group.value)"
+          @dragend="onGroupDragEnd"
+          @click.self="toggleGroupCollapsed(group.value)"
+        >
+          <button
+            type="button"
+            class="ww-group__chevron"
+            :class="{ 'ww-group__chevron--open': !group.collapsed }"
+            @click.stop="toggleGroupCollapsed(group.value)"
+            :aria-expanded="!group.collapsed"
+            :aria-label="group.collapsed ? 'Expand group' : 'Collapse group'"
+          >
+            <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+              <path d="M3.5 2l3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+          <div class="ww-group__title-block" @click.stop="toggleGroupCollapsed(group.value)">
+            <span class="ww-group__label">{{ group.label }}</span>
+            <span
+              v-if="group.count !== null && group.count !== undefined"
+              class="ww-group__items"
+            >{{ formatItemCount(group.count) }}</span>
+          </div>
+          <span class="ww-group__drag-handle" aria-hidden="true">
+            <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
+              <circle cx="2.5" cy="3" r="1"/><circle cx="7.5" cy="3" r="1"/>
+              <circle cx="2.5" cy="7" r="1"/><circle cx="7.5" cy="7" r="1"/>
+              <circle cx="2.5" cy="11" r="1"/><circle cx="7.5" cy="11" r="1"/>
+            </svg>
+          </span>
+        </div>
+
+        <ag-grid-vue
+          v-if="!group.collapsed"
+          :components="gridComponents"
+          :rowData="isInfiniteScrollEnabled ? undefined : groupRowData(group.value)"
+          :rowModelType="rowModelType"
+          :cacheBlockSize="cacheBlockSize"
+          :alignedGrids="alignedGridApisForGroup"
+          :columnDefs="columnDefs"
+          :defaultColDef="defaultColDef"
+          :dataTypeDefinitions="dataTypeDefinitions"
+          domLayout="autoHeight"
+          class="ww-group__grid"
+          :rowSelection="rowSelection"
+          :selection-column-def="{ pinned: true }"
+          :theme="theme"
+          :getRowId="getRowId"
+          :pagination="paginationEnabled"
+          :paginationPageSize="
+            forcedPaginationPageSize
+              ? 0
+              : paginationPageSizeSelector
+              ? paginationPageSizeSelector[0]
+              : cfg.paginationPageSize
+          "
+          :paginationPageSizeSelector="paginationPageSizeSelector"
+          :suppressMovableColumns="!cfg.movableColumns"
+          :columnHoverHighlight="cfg.columnHoverHighlight"
+          :locale-text="localeText"
+          :invalidEditValueMode="invalidEditValueMode"
+          :getRowStyle="rowStyle"
+          enableCellTextSelection
+          ensureDomOrder
+          :row-drag-managed="false"
+          :rowBuffer="cfg.rowBuffer ?? 10"
+          :suppressRowVirtualisation="false"
+          :animateRows="false"
+          :debounceVerticalScrollbar="true"
+          :suppressScrollOnNewData="true"
+          :suppressAnimationFrame="cfg.suppressAnimationFrame ?? false"
+          @grid-ready="(p) => onGroupGridReady(group.value, p)"
+          @row-selected="(e) => onGroupRowSelected(group.value, e)"
+          @selection-changed="(e) => onGroupSelectionChanged(group.value, e)"
+          @cell-value-changed="onCellValueChanged"
+          @cell-edit-request="onCellEditRequest"
+          @cell-editing-started="onCellEditingStarted"
+          @cell-editing-stopped="onCellEditingStopped"
+          @row-editing-started="onRowEditingStarted"
+          @row-editing-stopped="onRowEditingStopped"
+          @filter-changed="(e) => onGroupFilterChanged(group.value, e)"
+          @sort-changed="(e) => onGroupSortChanged(group.value, e)"
+          @pagination-changed="onPaginationChanged"
+          @row-clicked="onRowClicked"
+          @column-moved="(e) => onGroupColumnMoved(group.value, e)"
+          @column-resized="(e) => onGroupColumnResized(group.value, e)"
+          @first-data-rendered="onFirstDataRendered"
+          @model-updated="onModelUpdated"
+        >
+        </ag-grid-vue>
+      </div>
+    </template>
     <div v-if="cfg.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
       <Transition name="cc-fade">
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
@@ -78,71 +193,189 @@
             </button>
           </div>
 
-          <!-- Search row with select-all -->
-          <div class="cc-search-row">
-            <label class="cc-checkbox-wrap" title="Tout afficher / masquer">
-              <input
-                type="checkbox"
-                class="cc-checkbox"
-                :checked="allColumnsVisible"
-                :indeterminate.prop="someColumnsHidden"
-                @change="toggleAllColumns"
-              />
-            </label>
-            <div class="cc-search-box">
-              <svg class="cc-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
-                <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
-                <path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              </svg>
-              <input
-                class="cc-search-input"
-                type="text"
-                v-model="columnChooserSearch"
-                :placeholder="getTranslations(cfg?.lang || 'en').search"
-                @click.stop
-              />
-            </div>
+          <!-- Tabs -->
+          <div class="cc-tabs" role="tablist">
+            <button
+              type="button"
+              class="cc-tab"
+              :class="{ 'cc-tab--active': activeChooserTab === 'columns' }"
+              role="tab"
+              :aria-selected="activeChooserTab === 'columns'"
+              @click="activeChooserTab = 'columns'"
+            >
+              {{ getTranslations(cfg?.lang || 'en').columnsTab }}
+            </button>
+            <button
+              type="button"
+              class="cc-tab"
+              :class="{ 'cc-tab--active': activeChooserTab === 'grouping' }"
+              role="tab"
+              :aria-selected="activeChooserTab === 'grouping'"
+              @click="activeChooserTab = 'grouping'"
+            >
+              {{ getTranslations(cfg?.lang || 'en').groupingTab }}
+            </button>
           </div>
 
-          <!-- Column list -->
-          <div class="cc-list">
-            <div
-              v-for="col in filteredColumnsList"
-              :key="col.colId"
-              class="cc-row"
-              :class="{
-                'cc-row--drag-over': chooserDragOverColId === col.colId && chooserDragColId !== col.colId,
-                'cc-row--dragging': chooserDragColId === col.colId,
-                'cc-row--locked': col.isLocked,
-              }"
-              :draggable="!columnChooserSearch && !col.isLocked"
-              @dragstart="onChooserDragStart(col.colId)"
-              @dragover.prevent="onChooserDragOver(col.colId)"
-              @drop.prevent="onChooserDrop(col.colId)"
-              @dragend="onChooserDragEnd"
-            >
-              <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': col.isLocked }">
+          <!-- Tab: Columns -->
+          <template v-if="activeChooserTab === 'columns'">
+            <!-- Search row with select-all -->
+            <div class="cc-search-row">
+              <label class="cc-checkbox-wrap" title="Tout afficher / masquer">
                 <input
                   type="checkbox"
                   class="cc-checkbox"
-                  :checked="!col.isHidden"
-                  :disabled="col.isLocked"
-                  @change="toggleColumnVisibility(col.colId)"
+                  :checked="allColumnsVisible"
+                  :indeterminate.prop="someColumnsHidden"
+                  @change="toggleAllColumns"
                 />
               </label>
-              <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch || col.isLocked }">
-                <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
-                  <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
-                  <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
-                  <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
+              <div class="cc-search-box">
+                <svg class="cc-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
                 </svg>
-              </span>
-              <span class="cc-col-name">{{ col.headerName }}</span>
+                <input
+                  class="cc-search-input"
+                  type="text"
+                  v-model="columnChooserSearch"
+                  :placeholder="getTranslations(cfg?.lang || 'en').search"
+                  @click.stop
+                />
+              </div>
             </div>
-            <div v-if="filteredColumnsList.length === 0" class="cc-empty">
-              {{ getTranslations(cfg?.lang || 'en').noColumnsMatch.replace('{searchTerm}', columnChooserSearch) }}
+
+            <!-- Column list -->
+            <div class="cc-list">
+              <div
+                v-for="col in filteredColumnsList"
+                :key="col.colId"
+                class="cc-row"
+                :class="{
+                  'cc-row--drag-over': chooserDragOverColId === col.colId && chooserDragColId !== col.colId,
+                  'cc-row--dragging': chooserDragColId === col.colId,
+                  'cc-row--locked': col.isLocked,
+                }"
+                :draggable="!columnChooserSearch && !col.isLocked"
+                @dragstart="onChooserDragStart(col.colId)"
+                @dragover.prevent="onChooserDragOver(col.colId)"
+                @drop.prevent="onChooserDrop(col.colId)"
+                @dragend="onChooserDragEnd"
+              >
+                <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': col.isLocked }">
+                  <input
+                    type="checkbox"
+                    class="cc-checkbox"
+                    :checked="!col.isHidden"
+                    :disabled="col.isLocked"
+                    @change="toggleColumnVisibility(col.colId)"
+                  />
+                </label>
+                <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch || col.isLocked }">
+                  <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+                    <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
+                    <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+                    <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
+                  </svg>
+                </span>
+                <span class="cc-col-name">{{ col.headerName }}</span>
+              </div>
+              <div v-if="filteredColumnsList.length === 0" class="cc-empty">
+                {{ getTranslations(cfg?.lang || 'en').noColumnsMatch.replace('{searchTerm}', columnChooserSearch) }}
+              </div>
             </div>
-          </div>
+          </template>
+
+          <!-- Tab: Grouping -->
+          <template v-else-if="activeChooserTab === 'grouping'">
+            <!-- Group-by selector -->
+            <div class="cc-group-select-row">
+              <label class="cc-group-select-label">{{ getTranslations(cfg?.lang || 'en').groupBy }}</label>
+              <select
+                class="cc-group-select"
+                :value="groupingState?.columnId || ''"
+                :disabled="selectableGroupingColumns.length === 0"
+                @change="setGroupingColumn($event.target.value || null)"
+              >
+                <option value="">{{ getTranslations(cfg?.lang || 'en').noGrouping }}</option>
+                <option
+                  v-for="opt in selectableGroupingColumns"
+                  :key="opt.field"
+                  :value="opt.field"
+                >{{ opt.displayName }}</option>
+              </select>
+            </div>
+
+            <!-- Collapse / expand all + group ordering -->
+            <template v-if="isGroupingActive && orderedGroups.length > 0">
+              <div class="cc-group-actions">
+                <button
+                  type="button"
+                  class="cc-group-action-btn"
+                  @click="collapseAllGroups"
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                    <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>{{ getTranslations(cfg?.lang || 'en').collapseAll }}</span>
+                </button>
+                <button
+                  type="button"
+                  class="cc-group-action-btn"
+                  @click="expandAllGroups"
+                >
+                  <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="transform: rotate(-90deg);">
+                    <path d="M3 4.5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <span>{{ getTranslations(cfg?.lang || 'en').expandAll }}</span>
+                </button>
+              </div>
+
+              <label class="cc-group-toggle-row">
+                <input
+                  type="checkbox"
+                  class="cc-checkbox"
+                  :checked="groupingState?.showUnassigned !== false"
+                  @change="setShowUnassigned($event.target.checked)"
+                />
+                <span class="cc-group-toggle-label">{{ getTranslations(cfg?.lang || 'en').showUnassigned }}</span>
+              </label>
+
+              <div class="cc-group-list-label">{{ getTranslations(cfg?.lang || 'en').groupsOrder }}</div>
+              <div class="cc-group-list">
+                <div
+                  v-for="group in orderedGroups"
+                  :key="group.value"
+                  class="cc-group-row"
+                  :class="{
+                    'cc-group-row--drag-over': groupDragOverValue === group.value && groupDragValue !== group.value,
+                    'cc-group-row--dragging': groupDragValue === group.value,
+                  }"
+                  draggable="true"
+                  @dragstart="onGroupDragStart(group.value)"
+                  @dragover.prevent="onGroupDragOver(group.value)"
+                  @drop.prevent="onGroupDrop(group.value)"
+                  @dragend="onGroupDragEnd"
+                >
+                  <span class="cc-group-row__swatch" :style="{ backgroundColor: group.color }"></span>
+                  <span class="cc-drag-handle">
+                    <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+                      <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
+                      <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+                      <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
+                    </svg>
+                  </span>
+                  <span class="cc-group-row__label">{{ group.label }}</span>
+                  <span v-if="group.count !== null && group.count !== undefined" class="cc-group-row__count">{{ group.count }}</span>
+                </div>
+              </div>
+            </template>
+
+            <!-- Empty state: no select columns -->
+            <div v-else-if="selectableGroupingColumns.length === 0" class="cc-empty">
+              {{ getTranslations(cfg?.lang || 'en').noSelectColumns }}
+            </div>
+          </template>
         </div>
       </Transition>
     </div>
@@ -804,11 +1037,25 @@ export default {
               .lte(supabaseField, new Date(filterToDate).toISOString());
           }
         } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Select filters now store values (IDs) directly in filter.values, not labels
-          // Use the values directly for Supabase filtering
-          const optionValues = filter.values.filter(val => val != null); // Remove any null/undefined values
-          
-          if (optionValues.length > 0) {
+          // Select filters store values (IDs) directly in filter.values, not labels.
+          // Supports the `__empty__` sentinel for null/empty matching — used by the
+          // grouping feature to query the "Unassigned" group (rows with null select value).
+          const wantsEmpty = filter.values.includes('__empty__');
+          const optionValues = filter.values.filter(val => val != null && val !== '__empty__');
+
+          if (wantsEmpty && optionValues.length === 0) {
+            // Only null/empty match requested — use .is(null)
+            currentQuery = currentQuery.is(supabaseField, null);
+          } else if (wantsEmpty && optionValues.length > 0) {
+            // Mixed: match null OR any of the provided values
+            const orConditions = [`${supabaseField}.is.null`];
+            if (optionValues.length === 1) {
+              orConditions.push(`${supabaseField}.eq.${optionValues[0]}`);
+            } else {
+              orConditions.push(`${supabaseField}.in.(${optionValues.join(',')})`);
+            }
+            currentQuery = currentQuery.or(orConditions.join(','));
+          } else if (optionValues.length > 0) {
             if (optionValues.length === 1) {
               currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
             } else {
@@ -1222,6 +1469,8 @@ export default {
     const chooserHiddenState = ref([]); // local reactive hidden-columns list for the chooser UI
     const chooserDragColId = ref(null);
     const chooserDragOverColId = ref(null);
+    // Chooser panel active tab — 'columns' (default, existing UI) or 'grouping' (new UI).
+    const activeChooserTab = ref('columns');
 
     const handleClickOutside = (event) => {
       if (columnChooserRef.value && !columnChooserRef.value.contains(event.target)) {
@@ -1377,6 +1626,200 @@ export default {
       { immediate: true, deep: true }
     );
 
+    // ========== GROUPING FEATURE ==========
+    // Sentinel used as the key for rows whose grouping column value is null/empty.
+    const UNASSIGNED_GROUP = '__unassigned__';
+
+    // Grouping state — source of truth, mirrored into viewConfiguration.grouping.
+    const groupingState = ref({ columnId: null, order: [], collapsed: [], showUnassigned: true });
+
+    // Map<groupValue, GridApi> — populated from each group grid's grid-ready event.
+    const groupGridApis = shallowRef(new Map());
+
+    // AG Grid `alignedGrids` feed — returns every currently-mounted group grid
+    // wrapped as { api } so all siblings auto-sync column widths, column order,
+    // visibility, pinning, and horizontal scroll natively (v34 feature).
+    // AG Grid self-excludes the calling grid, so returning all APIs is safe.
+    // Passed as a function so it re-reads the live Map on every call.
+    const alignedGridApisForGroup = () => {
+      if (!isGroupingActive.value) return [];
+      const apis = Array.from(groupGridApis.value.values()).filter(Boolean);
+      return apis.map(api => ({ api }));
+    };
+
+    // Map<groupValue, row[]> — aggregated selection across group grids.
+    const groupSelections = ref(new Map());
+
+    // Reentry guards for cross-grid synchronization.
+    const isSyncingLayout = ref(false);
+    const isSyncingFilters = ref(false);
+    const isSyncingSort = ref(false);
+
+    // Drag-reorder state for group headers.
+    const groupDragValue = ref(null);
+    const groupDragOverValue = ref(null);
+
+    // Track which invalid-columnId warning has already been logged (avoid log spam).
+    const warnedInvalidGroupingColumn = ref(null);
+
+    const isSelectColumn = (colId) => {
+      const col = findColumnByField(colId);
+      return !!col && col.cellDataType === 'select';
+    };
+
+    const isValidGroupColumn = (colId) => {
+      if (!colId) return false;
+      return isSelectColumn(colId);
+    };
+
+    const groupingColumnId = computed(() => groupingState.value?.columnId || null);
+
+    // Grouping is active only when a valid select column is configured.
+    // Works across local, Supabase paginated, and Supabase infinite-scroll modes.
+    // In infinite-scroll mode each group gets its own IDatasource — see
+    // groupDatasourceFor(groupValue) below.
+    const isGroupingActive = computed(() => {
+      const colId = groupingColumnId.value;
+      if (!colId) return false;
+      if (!isValidGroupColumn(colId)) {
+        if (warnedInvalidGroupingColumn.value !== colId) {
+          warnedInvalidGroupingColumn.value = colId;
+          console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${colId}" is invalid or not a select column — grouping disabled.`);
+        }
+        return false;
+      }
+      if (warnedInvalidGroupingColumn.value === colId) {
+        warnedInvalidGroupingColumn.value = null;
+      }
+      return true;
+    });
+
+    // Extract an option's color for a given group value from the select column's options.
+    const getGroupColor = (colId, groupValue) => {
+      if (groupValue === UNASSIGNED_GROUP) return '#9ca3af';
+      const col = findColumnByField(colId);
+      const options = Array.isArray(col?.options) ? col.options : [];
+      const match = options.find(o => String(o?.value) === String(groupValue));
+      return match?.color || '#e5e7eb';
+    };
+
+    const getGroupLabel = (colId, groupValue) => {
+      if (groupValue === UNASSIGNED_GROUP) return 'Unassigned';
+      const col = findColumnByField(colId);
+      const options = Array.isArray(col?.options) ? col.options : [];
+      const match = options.find(o => String(o?.value) === String(groupValue));
+      return match?.label ?? String(groupValue);
+    };
+
+    // Normalize a raw cell value to a group key string.
+    const rowGroupKey = (row, colId) => {
+      const raw = row?.[colId];
+      if (raw === null || raw === undefined || raw === '') return UNASSIGNED_GROUP;
+      return String(raw);
+    };
+
+    // Source data for grouping — unified across data sources.
+    // Local: rowData. Supabase paginated: supabaseData.
+    // Infinite scroll: empty — each group grid owns its own IDatasource via
+    // groupDatasourceFor(). Counts come from groupInfiniteCounts instead.
+    const groupingSourceRows = computed(() => {
+      if (!isGroupingActive.value) return [];
+      // In infinite-scroll mode, supabaseData only holds the last-fetched block,
+      // which would produce wrong partitions. Per-group datasources handle fetching.
+      if (isInfiniteScrollEnabled.value) return [];
+      if (cfg.value?.dataSource === 'supabase') {
+        return Array.isArray(supabaseData.value) ? supabaseData.value : [];
+      }
+      const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
+      return Array.isArray(data) ? data : [];
+    });
+
+    // Map<groupValue, row[]>
+    const groupedRowData = computed(() => {
+      if (!isGroupingActive.value) return new Map();
+      const colId = groupingColumnId.value;
+      const out = new Map();
+      for (const row of groupingSourceRows.value) {
+        const key = rowGroupKey(row, colId);
+        let arr = out.get(key);
+        if (!arr) { arr = []; out.set(key, arr); }
+        arr.push(row);
+      }
+      return out;
+    });
+
+    const groupRowData = (groupValue) => groupedRowData.value.get(groupValue) || [];
+
+    // Row counts for badge display in infinite-scroll mode — populated by each
+    // per-group datasource's getRows on successful fetch. Map<groupValue, totalCount>
+    const groupInfiniteCounts = ref(new Map());
+
+    // Compute the ordered list of groups to render.
+    const orderedGroups = computed(() => {
+      if (!isGroupingActive.value) return [];
+      const colId = groupingColumnId.value;
+      const col = findColumnByField(colId);
+      const options = Array.isArray(col?.options) ? col.options : [];
+      const orderArr = Array.isArray(groupingState.value?.order) ? groupingState.value.order : [];
+      const collapsedSet = new Set(Array.isArray(groupingState.value?.collapsed) ? groupingState.value.collapsed : []);
+      const dataMap = groupedRowData.value;
+      const infiniteCounts = isInfiniteScrollEnabled.value ? groupInfiniteCounts.value : null;
+
+      // Count resolution:
+      //  - Infinite-scroll: use totalCount reported by each group's datasource (null if unknown yet).
+      //  - Local / paginated: partition the in-memory dataset.
+      const countFor = (value) => {
+        if (infiniteCounts) {
+          return infiniteCounts.has(value) ? infiniteCounts.get(value) : null;
+        }
+        return dataMap.get(value)?.length || 0;
+      };
+
+      const base = options.map((o) => {
+        const value = String(o.value);
+        return {
+          value,
+          label: o.label ?? value,
+          color: o.color || '#e5e7eb',
+          count: countFor(value),
+          collapsed: collapsedSet.has(value),
+        };
+      });
+
+      // Unassigned group:
+      //  - User-toggleable via groupingState.showUnassigned (default true).
+      //  - Local / paginated: only show when it has rows (we know the full set).
+      //  - Infinite-scroll: always show — we can't cheaply know upfront if null
+      //    rows exist, and the group's datasource will report 0 if not.
+      const unassignedCount = countFor(UNASSIGNED_GROUP);
+      const userShowUnassigned = groupingState.value?.showUnassigned !== false;
+      const showUnassigned = userShowUnassigned && (
+        infiniteCounts
+          ? true
+          : (unassignedCount || 0) > 0
+      );
+      if (showUnassigned) {
+        base.push({
+          value: UNASSIGNED_GROUP,
+          label: 'Unassigned',
+          color: '#9ca3af',
+          count: unassignedCount,
+          collapsed: collapsedSet.has(UNASSIGNED_GROUP),
+        });
+      }
+
+      // Apply custom order (listed first), then append any unlisted groups at the end.
+      if (orderArr.length === 0) return base;
+      const byValue = new Map(base.map(g => [g.value, g]));
+      const ordered = [];
+      for (const v of orderArr) {
+        if (byValue.has(v)) { ordered.push(byValue.get(v)); byValue.delete(v); }
+      }
+      byValue.forEach(g => ordered.push(g));
+      return ordered;
+    });
+    // ========== /GROUPING FEATURE ==========
+
     // Helper function to get current column widths from the grid
     // Helper to check if a column is a virtual (sort/filter-only) column
     const isVirtualColumn = (col) => {
@@ -1407,23 +1850,32 @@ export default {
       if (!gridApi.value) return;
 
       const columns = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col));
+      const grouping = groupingState?.value
+        ? {
+            columnId: groupingState.value.columnId ?? null,
+            order: Array.isArray(groupingState.value.order) ? [...groupingState.value.order] : [],
+            collapsed: Array.isArray(groupingState.value.collapsed) ? [...groupingState.value.collapsed] : [],
+            showUnassigned: groupingState.value.showUnassigned !== false,
+          }
+        : { columnId: null, order: [], collapsed: [], showUnassigned: true };
       const config = {
         sizes: getCurrentColumnWidths(),
         filters: filterValue.value || {},
         sorting: sortValue.value || [],
         columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
         hiddenColumns: hiddenColumns.value || [],
+        grouping,
       };
-      
+
       setCurrentConfig(config);
       updateViewEditedVariable(config);
     };
 
-    // Deep-equal helper restricted to the five view-state keys
+    // Deep-equal helper restricted to the view-state keys
     const isViewConfigEdited = (current, baseline) => {
       if (!baseline || typeof baseline !== 'object') return false;
 
-      const keysToCheck = ['sizes', 'filters', 'sorting', 'columnsOrder', 'hiddenColumns'];
+      const keysToCheck = ['sizes', 'filters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping'];
 
       for (const key of keysToCheck) {
         const baseVal = baseline[key];
@@ -1432,6 +1884,24 @@ export default {
         // If baseline is absent/empty, any non-empty current value means edited
         if (isEmptyConfigValue(baseVal)) {
           if (!isEmptyConfigValue(curVal)) return true;
+          continue;
+        }
+
+        // Special case: grouping is a structured object { columnId, order, collapsed, showUnassigned }
+        if (key === 'grouping') {
+          if (!curVal || typeof curVal !== 'object') return true;
+          if ((baseVal.columnId ?? null) !== (curVal.columnId ?? null)) return true;
+          const bOrder = Array.isArray(baseVal.order) ? baseVal.order : [];
+          const cOrder = Array.isArray(curVal.order) ? curVal.order : [];
+          if (bOrder.length !== cOrder.length) return true;
+          for (let i = 0; i < bOrder.length; i++) if (bOrder[i] !== cOrder[i]) return true;
+          const bCol = Array.isArray(baseVal.collapsed) ? baseVal.collapsed : [];
+          const cCol = Array.isArray(curVal.collapsed) ? curVal.collapsed : [];
+          if (bCol.length !== cCol.length) return true;
+          const bColSet = new Set(bCol);
+          for (const v of cCol) if (!bColSet.has(v)) return true;
+          // showUnassigned defaults to true when absent
+          if ((baseVal.showUnassigned !== false) !== (curVal.showUnassigned !== false)) return true;
           continue;
         }
 
@@ -1953,9 +2423,39 @@ export default {
             debugLog('[ViewConfiguration] Skipped hidden columns (key not present, keeping current state)');
           }
 
-          // 6. Clear row selections when view changes (not on initial load)
+          // 6. Apply grouping config if key is present
+          if (viewConfig && 'grouping' in viewConfig) {
+            const g = viewConfig.grouping;
+            if (isEmptyConfigValue(g) || !g || !g.columnId) {
+              groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
+              groupGridApis.value = new Map();
+              groupSelections.value = new Map();
+              debugLog('[ViewConfiguration] Disabled grouping (empty or no columnId)');
+            } else if (isValidGroupColumn(g.columnId)) {
+              groupingState.value = {
+                columnId: g.columnId,
+                order: Array.isArray(g.order) ? [...g.order] : [],
+                collapsed: Array.isArray(g.collapsed) ? [...g.collapsed] : [],
+                showUnassigned: g.showUnassigned !== false,
+              };
+              // When grouping activates, we unmount the single grid and mount per-group grids.
+              // Clear any stale per-group caches so fresh grid-ready events register them.
+              groupGridApis.value = new Map();
+              groupSelections.value = new Map();
+              debugLog('[ViewConfiguration] Applied grouping:', groupingState.value);
+            } else {
+              console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);
+              groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
+            }
+          } else {
+            debugLog('[ViewConfiguration] Skipped grouping (key not present, keeping current state)');
+          }
+
+          // 7. Clear row selections when view changes (not on initial load)
           if (!isInitial) {
-            gridApi.value.deselectAll();
+            try { gridApi.value.deselectAll(); } catch (_) { /* noop */ }
+            groupGridApis.value.forEach(api => { try { api.deselectAll(); } catch (_) { /* noop */ } });
+            groupSelections.value = new Map();
             setSelectedRows([]);
             debugLog('[ViewConfiguration] Cleared row selections');
           }
@@ -2041,12 +2541,27 @@ export default {
         
         if (isConfigChanged && newConfig && oldConfig) {
           // Quick check of key properties instead of deep stringify
-          const keys = ['filters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns'];
+          const keys = ['filters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping'];
           hasContentChanged = keys.some(key => {
             const newVal = newConfig[key];
             const oldVal = oldConfig[key];
             // Simple reference and length comparison
             if (newVal !== oldVal) {
+              // grouping needs a structural compare on { columnId, order, collapsed, showUnassigned }
+              if (key === 'grouping') {
+                const a = newVal || {}; const b = oldVal || {};
+                if ((a.columnId ?? null) !== (b.columnId ?? null)) return true;
+                const aOrder = Array.isArray(a.order) ? a.order : [];
+                const bOrder = Array.isArray(b.order) ? b.order : [];
+                if (aOrder.length !== bOrder.length || aOrder.some((v, i) => v !== bOrder[i])) return true;
+                const aCol = Array.isArray(a.collapsed) ? a.collapsed : [];
+                const bCol = Array.isArray(b.collapsed) ? b.collapsed : [];
+                if (aCol.length !== bCol.length) return true;
+                const bSet = new Set(bCol);
+                if (aCol.some(v => !bSet.has(v))) return true;
+                if ((a.showUnassigned !== false) !== (b.showUnassigned !== false)) return true;
+                return false;
+              }
               if (Array.isArray(newVal) && Array.isArray(oldVal)) {
                 return newVal.length !== oldVal.length || newVal.some((item, idx) => item !== oldVal[idx]);
               }
@@ -2133,6 +2648,17 @@ export default {
         };
       }
       initialState.value = state;
+
+      // Seed groupingState from initial viewConfiguration so the component
+      // mounts directly into multi-grid mode when grouping is pre-configured.
+      const initialGrouping = viewConfig && typeof viewConfig === 'object' ? viewConfig.grouping : null;
+      if (initialGrouping && typeof initialGrouping === 'object' && initialGrouping.columnId) {
+        groupingState.value = {
+          columnId: initialGrouping.columnId,
+          order: Array.isArray(initialGrouping.order) ? [...initialGrouping.order] : [],
+          collapsed: Array.isArray(initialGrouping.collapsed) ? [...initialGrouping.collapsed] : [],
+        };
+      }
     }
 
     const onRowSelected = (event) => {
@@ -2389,6 +2915,292 @@ export default {
         },
       });
     };
+
+    // ========== GROUPING EVENT HANDLERS ==========
+
+    // Called when each group grid fires grid-ready. Registers the api and
+    // applies current shared state (filter / sort / widths) so a newly-expanded
+    // group picks up the live view.
+    const onGroupGridReady = (groupValue, params) => {
+      groupGridApis.value.set(groupValue, params.api);
+      // Trigger reactivity
+      groupGridApis.value = new Map(groupGridApis.value);
+
+      // Promote the first group's api to the primary `gridApi` so existing
+      // code paths that reference gridApi.value keep working.
+      if (!gridApi.value || !Array.from(groupGridApis.value.values()).includes(gridApi.value)) {
+        gridApi.value = params.api;
+        gridReady.value = true;
+      }
+
+      // Apply any already-active filter / sort / widths to this new grid
+      try {
+        const filterModel = filterValue.value || {};
+        if (filterModel && Object.keys(filterModel).length > 0) {
+          params.api.setFilterModel(filterModel);
+        }
+        const sortModel = Array.isArray(sortValue.value) ? sortValue.value : [];
+        if (sortModel.length > 0) {
+          params.api.applyColumnState({ state: sortModel, defaultState: { sort: null } });
+        }
+        // Apply widths from currentConfig.sizes if available
+        const sizes = currentConfig.value?.sizes;
+        if (sizes && typeof sizes === 'object' && Object.keys(sizes).length > 0) {
+          const state = Object.entries(sizes).map(([colId, width]) => ({ colId, width }));
+          params.api.applyColumnState({ state });
+        }
+        // Apply column order if available
+        const order = Array.isArray(columnOrder.value) ? columnOrder.value : [];
+        if (order.length > 0) {
+          params.api.applyColumnState({
+            state: order.map(colId => ({ colId })),
+            applyOrder: true,
+          });
+        }
+      } catch (e) {
+        debugLog('[Grouping] Error applying initial state to new group grid:', e);
+      }
+
+      // In infinite-scroll mode, assign this group's datasource — but stagger
+      // the assignment across groups so N grids don't fire getRows in the same
+      // tick (which can trigger AG Grid error #252 on initial mount and also
+      // hammer Supabase with N parallel requests). Stagger = 100ms + 50ms × index.
+      if (isInfiniteScrollEnabled.value && isGroupingActive.value) {
+        const idx = orderedGroups.value.findIndex(g => g.value === groupValue);
+        const delay = 100 + Math.max(0, idx) * 50;
+        setTimeout(() => {
+          // Guard: grid might have been unmounted (collapsed) or grouping disabled
+          // before the timer fires.
+          const stillMounted = groupGridApis.value.get(groupValue) === params.api;
+          if (!stillMounted || !isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+          const ds = groupDatasourceFor(groupValue);
+          if (!ds) return;
+          try {
+            params.api.setGridOption('datasource', ds);
+            debugLog(`[Group Infinite] Assigned datasource for "${groupValue}" after ${delay}ms`);
+          } catch (e) {
+            console.warn(`[Group Infinite] Failed to set datasource for "${groupValue}":`, e?.message);
+          }
+        }, delay);
+      }
+    };
+
+    const onGroupGridUnmounted = (groupValue) => {
+      groupGridApis.value.delete(groupValue);
+      groupGridApis.value = new Map(groupGridApis.value);
+      groupSelections.value.delete(groupValue);
+    };
+
+    // Route a single-grid event to every group grid, then run the legacy handler
+    // with the firing grid set as `gridApi.value`.
+    const withFiringGrid = (event, handler) => {
+      const prev = gridApi.value;
+      try {
+        if (event?.api) gridApi.value = event.api;
+        return handler(event);
+      } finally {
+        gridApi.value = prev;
+      }
+    };
+
+    const onGroupFilterChanged = (groupValue, event) => {
+      if (isSyncingFilters.value) return;
+      if (!event?.api) return;
+      isSyncingFilters.value = true;
+      try {
+        const model = event.api.getFilterModel();
+        groupGridApis.value.forEach((api, gv) => {
+          if (gv === groupValue) return;
+          try { api.setFilterModel(model); } catch (_) { /* noop */ }
+        });
+      } finally {
+        nextTick(() => { isSyncingFilters.value = false; });
+      }
+      withFiringGrid(event, onFilterChanged);
+    };
+
+    const onGroupSortChanged = (groupValue, event) => {
+      if (isSyncingSort.value) return;
+      if (!event?.api) return;
+      isSyncingSort.value = true;
+      try {
+        const sortModel = event.api.getState()?.sort?.sortModel || [];
+        groupGridApis.value.forEach((api, gv) => {
+          if (gv === groupValue) return;
+          try { api.applyColumnState({ state: sortModel, defaultState: { sort: null } }); } catch (_) { /* noop */ }
+        });
+      } finally {
+        nextTick(() => { isSyncingSort.value = false; });
+      }
+      withFiringGrid(event, onSortChanged);
+    };
+
+    const onGroupColumnResized = (groupValue, event) => {
+      if (!event?.finished || event.source !== 'uiColumnResized') return;
+      if (isSyncingLayout.value) return;
+      isSyncingLayout.value = true;
+      try {
+        const columns = event.api.getAllGridColumns() || [];
+        const state = columns.map(col => ({ colId: col.getColId(), width: col.getActualWidth() }));
+        groupGridApis.value.forEach((api, gv) => {
+          if (gv === groupValue) return;
+          try { api.applyColumnState({ state }); } catch (_) { /* noop */ }
+        });
+      } finally {
+        nextTick(() => { isSyncingLayout.value = false; });
+      }
+      withFiringGrid(event, onColumnResized);
+    };
+
+    const onGroupColumnMoved = (groupValue, event) => {
+      if (!event?.finished || event.source !== 'uiColumnMoved') return;
+      if (isSyncingLayout.value) return;
+      isSyncingLayout.value = true;
+      try {
+        const columns = event.api.getAllGridColumns().filter(col => !isVirtualColumn(col));
+        const newOrder = columns.map(col => col.getColId());
+        groupGridApis.value.forEach((api, gv) => {
+          if (gv === groupValue) return;
+          try { api.applyColumnState({ state: newOrder.map(colId => ({ colId })), applyOrder: true }); } catch (_) { /* noop */ }
+        });
+      } finally {
+        nextTick(() => { isSyncingLayout.value = false; });
+      }
+      withFiringGrid(event, onColumnMoved);
+    };
+
+    const onGroupSelectionChanged = (groupValue, event) => {
+      if (!event?.api) return;
+      const selected = event.api.getSelectedRows() || [];
+      groupSelections.value.set(groupValue, selected);
+      const all = [];
+      groupSelections.value.forEach(rows => { all.push(...rows); });
+      setSelectedRows(all);
+    };
+
+    // Per-group selection event emits (rowSelected/rowDeselected)
+    const onGroupRowSelected = (groupValue, event) => {
+      const name = event.node.isSelected() ? 'rowSelected' : 'rowDeselected';
+      ctx.emit('trigger-event', {
+        name,
+        event: { row: event.data },
+      });
+    };
+
+    // Drag-and-drop reorder for group headers
+    const resetGroupDrag = () => {
+      groupDragValue.value = null;
+      groupDragOverValue.value = null;
+    };
+
+    const onGroupDragStart = (groupValue) => {
+      groupDragValue.value = groupValue;
+    };
+
+    const onGroupDragOver = (groupValue) => {
+      if (groupDragValue.value && groupValue !== groupDragValue.value) {
+        groupDragOverValue.value = groupValue;
+      }
+    };
+
+    const onGroupDrop = (targetValue) => {
+      const from = groupDragValue.value;
+      if (!from || from === targetValue) { resetGroupDrag(); return; }
+      const currentOrder = orderedGroups.value.map(g => g.value);
+      const fi = currentOrder.indexOf(from);
+      const ti = currentOrder.indexOf(targetValue);
+      if (fi === -1 || ti === -1) { resetGroupDrag(); return; }
+      const next = [...currentOrder];
+      next.splice(fi, 1);
+      next.splice(ti, 0, from);
+      writeGroupingToViewConfig({ order: next });
+      resetGroupDrag();
+    };
+
+    const onGroupDragEnd = () => {
+      resetGroupDrag();
+    };
+
+    // Toggle a single group's collapsed state and persist
+    const toggleGroupCollapsed = (groupValue) => {
+      const collapsed = Array.isArray(groupingState.value?.collapsed) ? [...groupingState.value.collapsed] : [];
+      const idx = collapsed.indexOf(groupValue);
+      if (idx >= 0) collapsed.splice(idx, 1);
+      else collapsed.push(groupValue);
+      writeGroupingToViewConfig({ collapsed });
+    };
+
+    const collapseAllGroups = () => {
+      const all = orderedGroups.value.map(g => g.value);
+      writeGroupingToViewConfig({ collapsed: all });
+    };
+
+    const expandAllGroups = () => {
+      writeGroupingToViewConfig({ collapsed: [] });
+    };
+
+    // Merge a partial grouping update into groupingState and refresh currentConfig.
+    const writeGroupingToViewConfig = (partial) => {
+      const prev = groupingState.value || {};
+      const next = {
+        columnId: prev.columnId ?? null,
+        order: Array.isArray(prev.order) ? [...prev.order] : [],
+        collapsed: Array.isArray(prev.collapsed) ? [...prev.collapsed] : [],
+        showUnassigned: prev.showUnassigned !== false,
+        ...partial,
+      };
+      groupingState.value = next;
+      updateCurrentConfig();
+    };
+
+    // Columns that qualify as a grouping target (cellDataType === 'select').
+    // Drives the dropdown inside the chooser panel's Grouping tab.
+    // displayName prefers the user-facing label (headerName) and falls back to
+    // displayName / field so it stays readable even if headerName is unset.
+    const selectableGroupingColumns = computed(() => {
+      const cols = Array.isArray(props.content?.columns) ? props.content.columns : [];
+      return cols
+        .filter(c => c?.field && c?.cellDataType === 'select')
+        .map(c => ({
+          field: c.field,
+          displayName: c.headerName || c.displayName || c.field,
+        }));
+    });
+
+    // Switch (or clear) the grouping column. Clearing also resets order/collapsed.
+    const setGroupingColumn = (colId) => {
+      const next = colId || null;
+      if (!next) {
+        writeGroupingToViewConfig({ columnId: null, order: [], collapsed: [] });
+        return;
+      }
+      // Changing to a different column — wipe order/collapsed since they referenced
+      // the previous column's option values.
+      const prev = groupingState.value?.columnId;
+      if (prev !== next) {
+        writeGroupingToViewConfig({ columnId: next, order: [], collapsed: [] });
+      } else {
+        writeGroupingToViewConfig({ columnId: next });
+      }
+    };
+
+    // Toggle visibility of the Unassigned group (rows whose grouping value is null/empty).
+    const setShowUnassigned = (show) => {
+      writeGroupingToViewConfig({ showUnassigned: !!show });
+    };
+
+    // Locate the group grid that contains a given rowId.
+    const findGroupForRowId = (rowId) => {
+      if (!isGroupingActive.value) return null;
+      for (const [gv, api] of groupGridApis.value.entries()) {
+        try {
+          const node = findRowNode(api, rowId, resolveMappingFormula, props.content);
+          if (node) return { groupValue: gv, api, node };
+        } catch (_) { /* continue */ }
+      }
+      return null;
+    };
+    // ========== /GROUPING EVENT HANDLERS ==========
 
     // Track scroll debounce timer
     const scrollDebounceTimer = ref(null);
@@ -2651,6 +3463,102 @@ export default {
       },
       { immediate: true }
     );
+
+    // ========== PER-GROUP INFINITE-SCROLL DATASOURCES ==========
+    // Each group grid gets its own IDatasource whose getRows injects a filter
+    // for its group value. Datasources are memoized by groupValue so the prop
+    // identity is stable across renders — AG Grid only resets its cache when
+    // the datasource reference itself changes.
+
+    // Map<groupValue, IDatasource> — memoized factory cache.
+    const groupDatasourceCache = new Map();
+
+    // Build a filter model that forces the grouping column to match `groupValue`.
+    // For UNASSIGNED_GROUP we use the `__empty__` sentinel which convertFilterToSupabase
+    // now translates to `IS NULL`.
+    const buildGroupFilterModel = (baseFilterModel, groupValue) => {
+      const colId = groupingColumnId.value;
+      if (!colId) return baseFilterModel || {};
+      const merged = { ...(baseFilterModel || {}) };
+      const values = groupValue === UNASSIGNED_GROUP ? ['__empty__'] : [groupValue];
+      merged[colId] = { type: 'selectFilter', values };
+      return merged;
+    };
+
+    // Returns a memoized IDatasource for the given group value.
+    // Returns undefined when not in grouping + infinite-scroll mode.
+    const groupDatasourceFor = (groupValue) => {
+      if (!isGroupingActive.value || !isInfiniteScrollEnabled.value) return undefined;
+      const key = String(groupValue);
+      const existing = groupDatasourceCache.get(key);
+      if (existing) return existing;
+
+      const ds = {
+        rowCount: undefined,
+        getRows: async (params) => {
+          const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
+          const mergedFilter = buildGroupFilterModel(filterModel, groupValue);
+          const requestedBlockSize = endRow - startRow;
+
+          try {
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            const { data, totalCount } = await fetchSupabaseDataForInfinite(
+              startRow,
+              endRow,
+              mergedFilter,
+              sortModel,
+              searchValue
+            );
+
+            // Cache per-group total so badge counts stay accurate.
+            if (typeof totalCount === 'number' && totalCount >= 0) {
+              const next = new Map(groupInfiniteCounts.value);
+              next.set(groupValue, totalCount);
+              groupInfiniteCounts.value = next;
+            }
+
+            const rowCount = data.length;
+            const isLastBlock =
+              totalCount === 0 ||
+              rowCount < requestedBlockSize ||
+              (totalCount > 0 && endRow >= totalCount);
+            const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
+
+            // Defer to avoid AG Grid error #252 (callback during render cycle).
+            setTimeout(() => {
+              try { successCallback(data, lastRow); }
+              catch (e) { console.error(`[Group Infinite] successCallback error for "${groupValue}":`, e); }
+            }, 0);
+          } catch (error) {
+            console.error(`[Group Infinite] getRows error for "${groupValue}":`, error);
+            setTimeout(() => { try { failCallback(); } catch (_) { /* noop */ } }, 0);
+          }
+        },
+      };
+      groupDatasourceCache.set(key, ds);
+      return ds;
+    };
+
+    // Invalidate the datasource cache (and counts) when grouping column changes
+    // or infinite-scroll toggles. A new cache entry produces a new reference,
+    // which causes AG Grid to rebuild its infinite cache for each group.
+    watch(
+      () => [groupingColumnId.value, isInfiniteScrollEnabled.value],
+      () => {
+        groupDatasourceCache.clear();
+        groupInfiniteCounts.value = new Map();
+      }
+    );
+
+    // Refresh a specific group's infinite cache (e.g. after a cross-group cell edit).
+    const refreshGroupInfiniteCache = (groupValue) => {
+      if (!isInfiniteScrollEnabled.value) return;
+      const api = groupGridApis.value.get(groupValue);
+      if (!api) return;
+      try { api.purgeInfiniteCache(); }
+      catch (e) { console.warn(`[Group Infinite] purge failed for "${groupValue}":`, e?.message); }
+    };
+    // ========== /PER-GROUP INFINITE-SCROLL DATASOURCES ==========
 
     const rowData = computed(() => {
       // If using infinite scrolling, rowData should be undefined (grid uses datasource)
@@ -3189,13 +4097,25 @@ export default {
       // Use setTimeout to avoid error #252
       nextTick(() => {
         setTimeout(() => {
-          if (gridApi.value && !isGridRendering.value) {
-            gridApi.value.refreshCells();
-          } else if (gridApi.value && isGridRendering.value) {
+          const doRefresh = () => {
+            if (isGroupingActive.value && groupGridApis.value.size > 0) {
+              // Iterate all group grids in multi-grid mode
+              groupGridApis.value.forEach((api) => {
+                try {
+                  if (api) api.refreshCells();
+                } catch (e) {
+                  console.warn('[Datagrid] refreshCells failed on group grid:', e?.message);
+                }
+              });
+            } else if (gridApi.value) {
+              gridApi.value.refreshCells();
+            }
+          };
+          if (!isGridRendering.value) {
+            doRefresh();
+          } else {
             // Retry after rendering completes
-            setTimeout(() => {
-              if (gridApi.value) gridApi.value.refreshCells();
-            }, 100);
+            setTimeout(doRefresh, 100);
           }
         }, 0);
       });
@@ -3290,6 +4210,10 @@ export default {
       createPopupTeleportTarget,
       showColumnChooser,
       columnChooserRef,
+      activeChooserTab,
+      selectableGroupingColumns,
+      setGroupingColumn,
+      setShowUnassigned,
       columnChooserSearch,
       chooserColumnOrder,
       chooserHiddenState,
@@ -3297,6 +4221,34 @@ export default {
       chooserDragOverColId,
       updateCurrentConfig,
       columnDefsVar,
+      // ========== GROUPING EXPORTS ==========
+      isGroupingActive,
+      orderedGroups,
+      groupRowData,
+      groupingState,
+      groupDragValue,
+      groupDragOverValue,
+      onGroupGridReady,
+      onGroupFilterChanged,
+      onGroupSortChanged,
+      onGroupColumnResized,
+      onGroupColumnMoved,
+      onGroupSelectionChanged,
+      onGroupRowSelected,
+      onGroupDragStart,
+      onGroupDragOver,
+      onGroupDrop,
+      onGroupDragEnd,
+      toggleGroupCollapsed,
+      collapseAllGroups,
+      expandAllGroups,
+      findGroupForRowId,
+      groupGridApis,
+      alignedGridApisForGroup,
+      groupDatasourceFor,
+      refreshGroupInfiniteCache,
+      groupInfiniteCounts,
+      // ========== /GROUPING EXPORTS ==========
       /* wwEditor:start */
       createElement,
       rawContent: inject("componentRawContent", {}),
@@ -3518,7 +4470,9 @@ export default {
           pinned: col?.pinned === "none" ? false : col?.pinned,
           width,
           flex,
-          hide: !!col?.hide || (viewHiddenColumns !== null && viewHiddenColumns.has(colId)),
+          hide: !!col?.hide
+            || (viewHiddenColumns !== null && viewHiddenColumns.has(colId))
+            || (this.isGroupingActive && colId === this.groupingState?.columnId),
           headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
           ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
           valueSetter: getValueSetter(col),
@@ -4381,6 +5335,17 @@ export default {
     openColumnChooser() {
       this.showColumnChooser = true;
     },
+    /**
+     * Format a per-group row count as a localized "X items" / "X éléments" string.
+     * Picks the singular form when count === 1, otherwise the plural form.
+     * Returns '' for null/undefined (e.g. infinite-scroll mode before first fetch).
+     */
+    formatItemCount(count) {
+      if (count === null || count === undefined) return '';
+      const t = this.getTranslations(this.cfg?.lang || 'en');
+      const tpl = count === 1 ? t.itemCountOne : t.itemCountMany;
+      return (tpl || '{count}').replace('{count}', count);
+    },
     hideColumn(colId) {
       if (!colId) return;
       const current = [...(this.hiddenColumns || [])];
@@ -4592,6 +5557,40 @@ export default {
       const columnConfig = this.cfg.columns.find(
         (col) => col?.field === columnId || col?.actionName === columnId
       );
+
+      // Cross-group refresh in infinite-scroll + grouping mode.
+      // When the user edits the grouping column itself, the row needs to move
+      // from its old group grid to the new group grid. Since each group owns
+      // its own infinite cache, we purge the cache of both the old and new
+      // group APIs — AG Grid will refetch the visible block on each side.
+      if (
+        this.isGroupingActive &&
+        this.isInfiniteScrollEnabled &&
+        this.groupingState?.columnId === columnId &&
+        this.groupGridApis &&
+        this.groupGridApis.size > 0
+      ) {
+        const normalize = (v) => (v === null || v === undefined || v === '' ? null : String(v));
+        const oldGroupVal = normalize(event.oldValue);
+        const newGroupVal = normalize(event.data?.[columnId]);
+        const targets = new Set();
+        if (oldGroupVal !== newGroupVal) {
+          // Map null/'' to the Unassigned-group sentinel (matches the
+          // UNASSIGNED_GROUP constant used by groupGridApis Map keys).
+          const UNASSIGNED = '__unassigned__';
+          targets.add(oldGroupVal ?? UNASSIGNED);
+          targets.add(newGroupVal ?? UNASSIGNED);
+          // Small defer so the write has landed before we purge + refetch.
+          setTimeout(() => {
+            targets.forEach((gv) => {
+              const api = this.groupGridApis.get(gv);
+              if (!api) return;
+              try { api.purgeInfiniteCache(); }
+              catch (e) { this.debugLog?.(`[Group Infinite] purge failed for "${gv}":`, e?.message); }
+            });
+          }, 50);
+        }
+      }
       
       // For select columns: read the value directly from the data to ensure we get the ID, not the label
       // The valueSetter ensures the actual value (ID) is stored in the data field
@@ -4838,15 +5837,27 @@ export default {
         console.warn("[Datagrid] setCellValue requires rowId and columnId parameters");
         return false;
       }
-      
-      // Use unified row lookup utility
-      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
-      
+
+      // In grouped mode, locate the row in whichever group grid contains it.
+      // Fall back to the primary gridApi for single-grid mode.
+      let targetApi = this.gridApi;
+      let rowNode = null;
+      if (this.isGroupingActive) {
+        const found = this.findGroupForRowId(rowId);
+        if (found) {
+          targetApi = found.api;
+          rowNode = found.node;
+        }
+      }
+      if (!rowNode) {
+        rowNode = findRowNode(targetApi, rowId, this.resolveMappingFormula, this.content);
+      }
+
       if (!rowNode) {
         console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid. Make sure the row ID matches the ID formula output.`);
         // Debug: log available row IDs to help troubleshoot
         if (this.cfg?.enableDebugLogs) {
-          const availableIds = getAvailableRowIds(this.gridApi, this.resolveMappingFormula, this.content);
+          const availableIds = getAvailableRowIds(targetApi, this.resolveMappingFormula, this.content);
           console.log('[Datagrid] Available row IDs:', availableIds);
         }
         return false;
@@ -5064,23 +6075,35 @@ export default {
           return false;
         }
 
-        // Find and update the row in the grid using unified lookup
-        let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
+        // In grouped mode, locate the row in whichever group grid contains it.
+        // Fall back to the primary gridApi for single-grid mode.
+        let targetApi = this.gridApi;
+        let rowNode = null;
+        if (this.isGroupingActive) {
+          const found = this.findGroupForRowId(rowId);
+          if (found) {
+            targetApi = found.api;
+            rowNode = found.node;
+          }
+        }
+        if (!rowNode) {
+          rowNode = findRowNode(targetApi, rowId, this.resolveMappingFormula, this.content);
+        }
 
         if (rowNode) {
           // Update the row data
           rowNode.setData(data);
-          
+
           // CRITICAL FIX: Wrap refresh in setTimeout to prevent error #252
           // This ensures the API call happens outside the current render cycle
           setTimeout(() => {
-            if (this.gridApi && !this.isGridRendering) {
+            if (targetApi && !this.isGridRendering) {
               if (this.content?.conditionalRowStyles?.length > 0) {
                 // Redraw the row to re-evaluate conditional row styles (also refreshes cells)
-                this.gridApi.redrawRows({ rowNodes: [rowNode] });
+                targetApi.redrawRows({ rowNodes: [rowNode] });
               } else {
                 // Just refresh cells if no conditional styles
-                this.gridApi.refreshCells({
+                targetApi.refreshCells({
                   rowNodes: [rowNode],
                   force: true,
                 });
@@ -5302,7 +6325,13 @@ export default {
       if (!this.gridApi) return;
       // Defer to avoid error #252
       setTimeout(() => {
-        if (this.gridApi) this.gridApi.setFilterModel(null);
+        if (this.isGroupingActive && this.groupGridApis && this.groupGridApis.size > 0) {
+          this.groupGridApis.forEach((api) => {
+            try { api.setFilterModel(null); } catch (e) { /* noop */ }
+          });
+        } else if (this.gridApi) {
+          this.gridApi.setFilterModel(null);
+        }
       }, 0);
     },
     async resetSort() {
@@ -5316,10 +6345,19 @@ export default {
       if (!this.gridApi) return;
       // Defer to avoid error #252
       setTimeout(() => {
-        if (this.gridApi) this.gridApi.applyColumnState({
-          state: [],
-          defaultState: { sort: null },
-        });
+        const applyReset = (api) => {
+          try {
+            api.applyColumnState({
+              state: [],
+              defaultState: { sort: null },
+            });
+          } catch (e) { /* noop */ }
+        };
+        if (this.isGroupingActive && this.groupGridApis && this.groupGridApis.size > 0) {
+          this.groupGridApis.forEach(applyReset);
+        } else if (this.gridApi) {
+          applyReset(this.gridApi);
+        }
       }, 0);
     },
     async deselectAll() {
@@ -5333,7 +6371,13 @@ export default {
       if (!this.gridApi) return;
       // Defer to avoid error #252
       setTimeout(() => {
-        if (this.gridApi) this.gridApi.deselectAll();
+        if (this.isGroupingActive && this.groupGridApis && this.groupGridApis.size > 0) {
+          this.groupGridApis.forEach((api) => {
+            try { api.deselectAll(); } catch (e) { /* noop */ }
+          });
+        } else if (this.gridApi) {
+          this.gridApi.deselectAll();
+        }
       }, 0);
     },
     async selectAll(mode) {
@@ -5351,9 +6395,16 @@ export default {
         );
         return;
       }
+      const selectMode = mode || this.cfg.selectAll || "all";
       // Defer to avoid error #252
       setTimeout(() => {
-        if (this.gridApi) this.gridApi.selectAll(mode || this.cfg.selectAll || "all");
+        if (this.isGroupingActive && this.groupGridApis && this.groupGridApis.size > 0) {
+          this.groupGridApis.forEach((api) => {
+            try { api.selectAll(selectMode); } catch (e) { /* noop */ }
+          });
+        } else if (this.gridApi) {
+          this.gridApi.selectAll(selectMode);
+        }
       }, 0);
     },
     async selectRow(rowId) {
@@ -5364,18 +6415,27 @@ export default {
         console.warn("[Datagrid] Grid not ready for selectRow:", error.message);
         return;
       }
-      
+
       if (!this.gridApi) return;
-      
+
       // Additional check: if grid is currently rendering, defer the call
       if (this.isGridRendering) {
         setTimeout(() => this.selectRow(rowId), 100);
         return;
       }
-      
-      // Use unified row lookup utility
-      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
-      
+
+      // In grouped mode, locate the row in whichever group grid contains it.
+      let rowNode = null;
+      if (this.isGroupingActive) {
+        const found = this.findGroupForRowId(rowId);
+        if (found) {
+          rowNode = found.node;
+        }
+      }
+      if (!rowNode) {
+        rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
+      }
+
       if (rowNode) {
         rowNode.setSelected(true);
       }
@@ -5388,18 +6448,27 @@ export default {
         console.warn("[Datagrid] Grid not ready for deselectRow:", error.message);
         return;
       }
-      
+
       if (!this.gridApi) return;
-      
+
       // Additional check: if grid is currently rendering, defer the call
       if (this.isGridRendering) {
         setTimeout(() => this.deselectRow(rowId), 100);
         return;
       }
-      
-      // Use unified row lookup utility
-      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
-      
+
+      // In grouped mode, locate the row in whichever group grid contains it.
+      let rowNode = null;
+      if (this.isGroupingActive) {
+        const found = this.findGroupForRowId(rowId);
+        if (found) {
+          rowNode = found.node;
+        }
+      }
+      if (!rowNode) {
+        rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
+      }
+
       if (rowNode) {
         rowNode.setSelected(false);
       }
@@ -5433,10 +6502,22 @@ export default {
         console.warn("[Datagrid] removeRow requires a rowId parameter");
         return false;
       }
-      
-      // Use unified row lookup utility
-      let rowNode = findRowNode(this.gridApi, rowId, this.resolveMappingFormula, this.content);
-      
+
+      // In grouped mode, locate the row in whichever group grid contains it.
+      // Fall back to the primary gridApi for single-grid mode.
+      let targetApi = this.gridApi;
+      let rowNode = null;
+      if (this.isGroupingActive) {
+        const found = this.findGroupForRowId(rowId);
+        if (found) {
+          targetApi = found.api;
+          rowNode = found.node;
+        }
+      }
+      if (!rowNode) {
+        rowNode = findRowNode(targetApi, rowId, this.resolveMappingFormula, this.content);
+      }
+
       if (!rowNode) {
         console.warn(`[Datagrid] Row with id "${rowId}" not found in the grid`);
         return false;
@@ -6280,6 +7361,217 @@ export default {
   }
 }
 
+// ==================== Chooser tabs (Columns / Grouping) ====================
+.cc-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.08)));
+}
+
+.cc-tab {
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px; // overlap parent border
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ag-foreground-color, #9aa0aa);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  border-radius: 4px 4px 0 0;
+
+  &:hover:not(.cc-tab--active) {
+    color: var(--ag-foreground-color, #e8eaed);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  &.cc-tab--active {
+    color: var(--ag-foreground-color, #e8eaed);
+    border-bottom-color: var(--ag-accent-color, #3b82f6);
+    font-weight: 600;
+  }
+}
+
+// ==================== Grouping tab content ====================
+.cc-group-select-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.06)));
+}
+
+.cc-group-select-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ag-foreground-color, #9aa0aa);
+  flex: 0 0 auto;
+}
+
+.cc-group-select {
+  flex: 1;
+  appearance: none;
+  background: var(--ww-data-grid_cc-input-bg, rgba(255,255,255,0.04));
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.12)));
+  border-radius: 6px;
+  padding: 6px 28px 6px 10px;
+  font-size: 13px;
+  color: var(--ag-foreground-color, #e8eaed);
+  cursor: pointer;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%239aa0aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: border-color 0.15s, background-color 0.15s;
+
+  &:hover:not(:disabled) {
+    border-color: var(--ag-accent-color, #3b82f6);
+  }
+
+  &:focus {
+    outline: none;
+    border-color: var(--ag-accent-color, #3b82f6);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  option {
+    background: var(--ww-data-grid_cc-bg, #1f2125);
+    color: var(--ag-foreground-color, #e8eaed);
+  }
+}
+
+.cc-group-actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px 14px 6px;
+}
+
+.cc-group-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--ww-data-grid_cc-input-bg, rgba(255,255,255,0.04));
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.12)));
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--ag-foreground-color, #d1d5db);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+
+  svg { color: var(--ag-foreground-color, #9aa0aa); flex-shrink: 0; }
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--ag-foreground-color, #e8eaed);
+    svg { color: var(--ag-foreground-color, #e8eaed); }
+  }
+}
+
+.cc-group-list-label {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ag-foreground-color, #9aa0aa);
+}
+
+.cc-group-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  margin: 4px 6px 0;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--ag-foreground-color, #1f2329);
+  transition: background 0.12s;
+
+  &:hover {
+    background: var(--ag-row-hover-color, rgba(0, 0, 0, 0.04));
+  }
+
+  .cc-group-toggle-label {
+    flex: 1;
+    line-height: 1.2;
+  }
+}
+
+.cc-group-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.cc-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: grab;
+  user-select: none;
+  transition: background 0.12s, transform 0.12s;
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  &.cc-group-row--dragging {
+    opacity: 0.4;
+    cursor: grabbing;
+  }
+
+  &.cc-group-row--drag-over {
+    background: rgba(59, 130, 246, 0.12);
+    box-shadow: inset 0 2px 0 0 var(--ag-accent-color, #3b82f6);
+  }
+}
+
+.cc-group-row__swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.15) inset;
+}
+
+.cc-group-row__label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--ag-foreground-color, #e8eaed);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-group-row__count {
+  flex-shrink: 0;
+  min-width: 22px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ag-foreground-color, #9aa0aa);
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  line-height: 1.4;
+}
+
 // Search row (select-all + search input)
 .cc-search-row {
   display: flex;
@@ -6489,5 +7781,149 @@ export default {
 .cc-fade-leave-to {
   opacity: 0;
   transform: translateY(-6px);
+}
+
+// ===========================================================================
+// Grouping feature styles
+// ===========================================================================
+
+.ww-datagrid.grouped {
+  display: flex !important;
+  flex-direction: column !important;
+  row-gap: 14px;
+  padding: 20px 4px 24px;
+}
+
+// .ww-group-toolbar removed — its buttons now live in the chooser panel's
+// Grouping tab (.cc-group-actions / .cc-group-action-btn).
+
+.ww-group {
+  display: flex;
+  flex-direction: column;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: opacity 0.15s ease, box-shadow 0.15s ease;
+
+
+  &.ww-group--dragging {
+    opacity: 0.45;
+  }
+
+  &.ww-group--drag-over {
+    box-shadow: 0 0 0 2px var(--ag-active-color, #3b9eff);
+  }
+
+  &.ww-group--collapsed {
+    .ww-group__header {
+      border-bottom-left-radius: 6px;
+      border-bottom-right-radius: 6px;
+      margin-bottom: 0;
+    }
+  }
+}
+
+.ww-group__header {
+  --group-color: #9ca3af;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 6px;
+  background: color-mix(in srgb, var(--group-color) 10%, transparent);
+  border-left: 4px solid var(--group-color);
+  border-top-left-radius: 6px;
+  border-top-right-radius: 6px;
+  cursor: grab;
+  user-select: none;
+  font-family: inherit;
+
+  &:active {
+    cursor: grabbing;
+  }
+
+  &:hover {
+    background: color-mix(in srgb, var(--group-color) 16%, transparent);
+  }
+}
+
+.ww-group__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--group-color);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+  flex-shrink: 0;
+
+  &:hover {
+    background: color-mix(in srgb, var(--group-color) 20%, transparent);
+  }
+
+  &.ww-group__chevron--open {
+    transform: rotate(90deg);
+  }
+}
+
+.ww-group__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.ww-group__label {
+  font-size: 13px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--group-color) 80%, #111827);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+
+.ww-group__items {
+  font-size: 11px;
+  font-weight: 500;
+  // Use the user-configured Text color (cfg.textColor → --ag-foreground-color).
+  color: var(--ag-foreground-color, #6b7280);
+  opacity: 0.75;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.ww-group__drag-handle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--group-color);
+  opacity: 0.5;
+  cursor: grab;
+  flex-shrink: 0;
+  transition: opacity 0.15s ease;
+
+  .ww-group__header:hover & {
+    opacity: 0.85;
+  }
+
+  &:active {
+    cursor: grabbing;
+  }
+}
+
+.ww-group__grid {
+  width: 100%;
+  min-height: 0;
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  overflow: hidden;
 }
 </style>

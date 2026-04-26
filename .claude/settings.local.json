@@ -8,7 +8,8 @@
       "Bash(grep -l \"invalidEditValueMode\" node_modules/ag-grid-community/dist/types/src/interfaces/*.d.ts node_modules/ag-grid-community/dist/types/src/entities/*.d.ts)",
       "Bash(npm install *)",
       "Bash(npm run *)",
-      "Bash(npx weweb *)"
+      "Bash(npx weweb *)",
+      "Bash(grep -n \"^      updateCurrentConfig,\\\\|^    return {\\\\|^      };$\" C:/VS_code/vueJs/ww-datagrid-ag/src/wwElement.vue)"
     ]
   }
 }
