@@ -76,10 +76,12 @@
         v-for="group in orderedGroups"
         :key="group.value"
         class="ww-group"
+        :style="{ '--group-color': group.color }"
         :class="{
           'ww-group--dragging': groupDragValue === group.value,
           'ww-group--drag-over': groupDragOverValue === group.value && groupDragValue !== group.value,
           'ww-group--collapsed': group.collapsed,
+          'ww-group--has-footer': !group.collapsed && !hasGroupAggregation(group.value),
         }"
       >
         <div
@@ -124,6 +126,7 @@
           v-if="!group.collapsed"
           :components="gridComponents"
           :rowData="isInfiniteScrollEnabled ? undefined : groupRowData(group.value)"
+          :pinnedBottomRowData="groupAggregationData(group.value)"
           :rowModelType="rowModelType"
           :cacheBlockSize="cacheBlockSize"
           :alignedGrids="alignedGridApisForGroup"
@@ -174,12 +177,55 @@
           @row-clicked="onRowClicked"
           @column-moved="(e) => onGroupColumnMoved(group.value, e)"
           @column-resized="(e) => onGroupColumnResized(group.value, e)"
+          @body-scroll="onGroupBodyScroll"
           @first-data-rendered="onFirstDataRendered"
-          @model-updated="onModelUpdated"
+          @model-updated="(e) => { onModelUpdated(e); onGroupModelUpdated(group.value); }"
         >
         </ag-grid-vue>
+
+        <div
+          v-if="!group.collapsed && !hasGroupAggregation(group.value)"
+          class="ww-group__footer"
+          :style="{ '--group-color': group.color }"
+        >
+          <span
+            v-if="group.count !== null && group.count !== undefined"
+            class="ww-group__footer-count"
+          >{{ formatItemCount(group.count) }}</span>
+        </div>
+      </div>
+
+      <div
+        v-if="hasGroupHorizontalOverflow"
+        ref="groupHorizontalScrollRef"
+        class="ww-group-horizontal-scroll"
+        :style="{
+          left: `${groupHorizontalScrollLeft}px`,
+          width: `${groupHorizontalViewportWidth}px`,
+        }"
+        @scroll="onGroupHorizontalScrollbarScroll"
+      >
+        <div
+          class="ww-group-horizontal-scroll__spacer"
+          :style="{ width: `${groupHorizontalScrollWidth}px` }"
+        ></div>
       </div>
     </template>
+
+    <Transition name="group-loading-fade">
+      <div
+        v-if="isGroupingTransitionLoading"
+        class="ww-group-loading-overlay"
+        role="status"
+        aria-live="polite"
+      >
+        <div class="ww-group-loading-card">
+          <span class="ww-group-loading-spinner" aria-hidden="true"></span>
+          <span>{{ getTranslations(cfg?.lang || 'en').loadingGroups || 'Loading groups...' }}</span>
+        </div>
+      </div>
+    </Transition>
+
     <div v-if="cfg.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
       <Transition name="cc-fade">
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
@@ -293,8 +339,8 @@
               <label class="cc-group-select-label">{{ getTranslations(cfg?.lang || 'en').groupBy }}</label>
               <select
                 class="cc-group-select"
-                :value="groupingState?.columnId || ''"
-                :disabled="selectableGroupingColumns.length === 0"
+                :value="pendingGroupingColumnId !== null ? pendingGroupingColumnId : (groupingState?.columnId || '')"
+                :disabled="selectableGroupingColumns.length === 0 || isGroupingTransitionLoading"
                 @change="setGroupingColumn($event.target.value || null)"
               >
                 <option value="">{{ getTranslations(cfg?.lang || 'en').noGrouping }}</option>
@@ -304,6 +350,7 @@
                   :value="opt.field"
                 >{{ opt.displayName }}</option>
               </select>
+              <span v-if="isGroupingTransitionLoading" class="cc-group-loading-dot" aria-hidden="true"></span>
             </div>
 
             <!-- Collapse / expand all + group ordering -->
@@ -512,6 +559,24 @@ import { createGridMonitor } from "./utils/performanceMonitor.js";
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
 ModuleRegistry.registerModules([AllCommunityModule]);
+
+// Renderer used for the per-group aggregation row pinned at the bottom of each
+// group's grid. Bypasses configured cellRenderers (pills, buttons, avatars…)
+// and just prints the formatted value, so empty cells stay blank instead of
+// rendering an action button or empty pill on the totals row.
+const PinnedAggregationCellRenderer = {
+  name: "PinnedAggregationCellRenderer",
+  props: { params: { type: Object, required: true } },
+  computed: {
+    display() {
+      const v = this.params.valueFormatted;
+      if (v != null && v !== "") return v;
+      const raw = this.params.value;
+      return raw == null ? "" : String(raw);
+    },
+  },
+  template: '<span class="ww-agg-cell">{{ display }}</span>',
+};
 
 export default {
   components: {
@@ -1632,6 +1697,10 @@ export default {
 
     // Grouping state — source of truth, mirrored into viewConfiguration.grouping.
     const groupingState = ref({ columnId: null, order: [], collapsed: [], showUnassigned: true });
+    const pendingGroupingColumnId = ref(null);
+    const isGroupingTransitionLoading = ref(false);
+    const groupingTransitionStartedAt = ref(0);
+    let groupingTransitionTimer = null;
 
     // Map<groupValue, GridApi> — populated from each group grid's grid-ready event.
     const groupGridApis = shallowRef(new Map());
@@ -1654,6 +1723,11 @@ export default {
     const isSyncingLayout = ref(false);
     const isSyncingFilters = ref(false);
     const isSyncingSort = ref(false);
+    const isSyncingGroupHorizontalScroll = ref(false);
+    const groupHorizontalScrollRef = ref(null);
+    const groupHorizontalScrollWidth = ref(0);
+    const groupHorizontalViewportWidth = ref(0);
+    const groupHorizontalScrollLeft = ref(0);
 
     // Drag-reorder state for group headers.
     const groupDragValue = ref(null);
@@ -1750,6 +1824,114 @@ export default {
 
     const groupRowData = (groupValue) => groupedRowData.value.get(groupValue) || [];
 
+    // Per-group sum aggregations for numeric columns. Returned in the shape
+    // AG Grid's pinnedBottomRowData expects: an array containing one row
+    // object whose keys are column fields and values are the summed numbers.
+    // Currency values are stored as cents in the row data, so summing the raw
+    // values + reusing the existing currency valueFormatter yields the correctly
+    // formatted total.
+    //
+    // Detection is permissive: we exclude column types that are clearly not
+    // numeric (select, user, dates, etc.) and let everything else through —
+    // a column only appears in the totals row if at least one of its values
+    // actually parses as a number, so non-numeric "custom"/untyped columns
+    // simply contribute nothing.
+    //
+    // In infinite-scroll mode the full dataset isn't in Vue state, so we
+    // aggregate over the rows AG Grid has actually loaded (kept in sync via
+    // onGroupModelUpdated below). The total is therefore partial — it grows
+    // as the user scrolls further into the dataset.
+    const NON_NUMERIC_TYPES = new Set([
+      "select", "user", "image", "action", "dateString", "dateTime",
+      "boolean", "record", "custom",
+    ]);
+    const aggregatableColumns = computed(() =>
+      (cfg.value?.columns || []).filter(
+        (c) => c?.field && !c.hide && !NON_NUMERIC_TYPES.has(c.cellDataType)
+      )
+    );
+    const sumRowsForAggCols = (rows, aggCols) => {
+      const aggRow = { __isAggregation: true };
+      let hasAny = false;
+      for (const col of aggCols) {
+        let sum = 0;
+        let hasValue = false;
+        for (const row of rows) {
+          const raw = row?.[col.field];
+          if (raw == null || raw === "") continue;
+          const num = typeof raw === "number" ? raw : parseFloat(raw);
+          if (!isNaN(num)) { sum += num; hasValue = true; }
+        }
+        if (hasValue) { aggRow[col.field] = sum; hasAny = true; }
+      }
+      return hasAny ? [aggRow] : [];
+    };
+
+    // Per-group totals computed by walking the grid's loaded rows (infinite
+    // mode only). Updated by onGroupModelUpdated whenever a page arrives.
+    const groupAggregationsLoaded = ref(new Map());
+
+    const groupAggregations = computed(() => {
+      if (!isGroupingActive.value) return new Map();
+      const aggCols = aggregatableColumns.value;
+      if (aggCols.length === 0) return new Map();
+
+      if (isInfiniteScrollEnabled.value) {
+        if (cfg.value?.enableDebugLogs) {
+          console.log("[grouping] aggregations (infinite, partial)", {
+            candidateFields: aggCols.map((c) => ({ field: c.field, type: c.cellDataType })),
+            aggregationsByGroup: Object.fromEntries(groupAggregationsLoaded.value),
+          });
+        }
+        return groupAggregationsLoaded.value;
+      }
+
+      const out = new Map();
+      for (const [groupValue, rows] of groupedRowData.value) {
+        out.set(groupValue, sumRowsForAggCols(rows, aggCols));
+      }
+      if (cfg.value?.enableDebugLogs) {
+        console.log("[grouping] aggregations", {
+          candidateFields: aggCols.map((c) => ({ field: c.field, type: c.cellDataType })),
+          aggregationsByGroup: Object.fromEntries(out),
+        });
+      }
+      return out;
+    });
+
+    const groupAggregationData = (groupValue) => groupAggregations.value.get(groupValue) || [];
+    const hasGroupAggregation = (groupValue) =>
+      (groupAggregations.value.get(groupValue) || []).length > 0;
+
+    // Recompute aggregations for an infinite-scroll group by iterating the
+    // rows AG Grid currently has loaded. Called from each per-group grid's
+    // model-updated event, so totals refresh as new pages arrive.
+    const onGroupModelUpdated = (groupValue) => {
+      if (!isInfiniteScrollEnabled.value) return;
+      const aggCols = aggregatableColumns.value;
+      if (aggCols.length === 0) return;
+      const api = groupGridApis.value?.get?.(groupValue);
+      if (!api || api.isDestroyed?.()) return;
+      const rows = [];
+      try {
+        api.forEachNode((node) => { if (node?.data) rows.push(node.data); });
+      } catch (_) { return; }
+      const aggRowArr = sumRowsForAggCols(rows, aggCols);
+      const prev = groupAggregationsLoaded.value.get(groupValue);
+      // Skip the update if nothing changed (avoids triggering AG Grid re-renders
+      // on every model-updated, which fires frequently during scroll).
+      if (prev && prev.length === aggRowArr.length && aggRowArr.length > 0) {
+        const a = prev[0], b = aggRowArr[0];
+        const aKeys = Object.keys(a), bKeys = Object.keys(b);
+        if (aKeys.length === bKeys.length && aKeys.every((k) => a[k] === b[k])) return;
+      } else if (prev?.length === 0 && aggRowArr.length === 0) {
+        return;
+      }
+      const next = new Map(groupAggregationsLoaded.value);
+      next.set(groupValue, aggRowArr);
+      groupAggregationsLoaded.value = next;
+    };
+
     // Row counts for badge display in infinite-scroll mode — populated by each
     // per-group datasource's getRows on successful fetch. Map<groupValue, totalCount>
     const groupInfiniteCounts = ref(new Map());
@@ -1818,6 +2000,11 @@ export default {
       byValue.forEach(g => ordered.push(g));
       return ordered;
     });
+
+    const hasGroupHorizontalOverflow = computed(() => (
+      isGroupingActive.value &&
+      groupHorizontalScrollWidth.value > groupHorizontalViewportWidth.value + 1
+    ));
     // ========== /GROUPING FEATURE ==========
 
     // Helper function to get current column widths from the grid
@@ -2222,6 +2409,9 @@ export default {
             }
           }, 150);
         }
+        if (isGroupingActive.value) {
+          updateGroupHorizontalScrollbarMetrics();
+        }
       }, 50);
     };
     
@@ -2242,6 +2432,9 @@ export default {
             // Don't scroll on model updates, just ensure styling is correct
             // The rowStyle function will handle the visual highlighting
           }
+        }
+        if (isGroupingActive.value) {
+          updateGroupHorizontalScrollbarMetrics();
         }
       }, 50);
     };
@@ -2918,6 +3111,108 @@ export default {
 
     // ========== GROUPING EVENT HANDLERS ==========
 
+    const getGroupHorizontalScrollViewports = () => {
+      if (!gridContainerRef.value) return [];
+      return Array.from(
+        gridContainerRef.value.querySelectorAll('.ww-group__grid .ag-body-horizontal-scroll-viewport')
+      );
+    };
+
+    const runAfterGroupLayout = (callback) => {
+      nextTick(() => {
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(callback);
+        } else {
+          setTimeout(callback, 0);
+        }
+      });
+    };
+
+    const updateGroupHorizontalScrollbarMetrics = () => {
+      runAfterGroupLayout(() => {
+        const viewport = getGroupHorizontalScrollViewports().find(el => el.scrollWidth > 0);
+        groupHorizontalScrollWidth.value = viewport?.scrollWidth || 0;
+        groupHorizontalViewportWidth.value = viewport?.clientWidth || 0;
+        if (viewport && gridContainerRef.value) {
+          const containerRect = gridContainerRef.value.getBoundingClientRect();
+          const viewportRect = viewport.getBoundingClientRect();
+          groupHorizontalScrollLeft.value = Math.max(0, viewportRect.left - containerRect.left);
+        } else {
+          groupHorizontalScrollLeft.value = 0;
+        }
+
+        if (viewport && groupHorizontalScrollRef.value) {
+          groupHorizontalScrollRef.value.scrollLeft = viewport.scrollLeft || 0;
+        }
+      });
+    };
+
+    const syncGroupHorizontalScrollLeft = (left) => {
+      if (isSyncingGroupHorizontalScroll.value) return;
+      isSyncingGroupHorizontalScroll.value = true;
+
+      const nextLeft = Number.isFinite(left) ? left : 0;
+      getGroupHorizontalScrollViewports().forEach((viewport) => {
+        if (Math.abs((viewport.scrollLeft || 0) - nextLeft) > 1) {
+          viewport.scrollLeft = nextLeft;
+          viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
+        }
+      });
+
+      if (groupHorizontalScrollRef.value && Math.abs(groupHorizontalScrollRef.value.scrollLeft - nextLeft) > 1) {
+        groupHorizontalScrollRef.value.scrollLeft = nextLeft;
+      }
+
+      const releaseSync = () => {
+        isSyncingGroupHorizontalScroll.value = false;
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(releaseSync);
+      } else {
+        setTimeout(releaseSync, 0);
+      }
+    };
+
+    const onGroupHorizontalScrollbarScroll = (event) => {
+      syncGroupHorizontalScrollLeft(event?.target?.scrollLeft || 0);
+    };
+
+    const onGroupBodyScroll = (event) => {
+      if (isSyncingGroupHorizontalScroll.value) return;
+      const left = typeof event?.left === 'number'
+        ? event.left
+        : (getGroupHorizontalScrollViewports()[0]?.scrollLeft || 0);
+      if (groupHorizontalScrollRef.value && Math.abs(groupHorizontalScrollRef.value.scrollLeft - left) > 1) {
+        groupHorizontalScrollRef.value.scrollLeft = left;
+      }
+    };
+
+    const handleGroupHorizontalResize = () => {
+      if (isGroupingActive.value) {
+        updateGroupHorizontalScrollbarMetrics();
+      }
+    };
+
+    watch(
+      () => [isGroupingActive.value, orderedGroups.value.length],
+      ([active]) => {
+        if (active) {
+          updateGroupHorizontalScrollbarMetrics();
+        } else {
+          groupHorizontalScrollWidth.value = 0;
+          groupHorizontalViewportWidth.value = 0;
+          groupHorizontalScrollLeft.value = 0;
+        }
+      },
+      { flush: 'post' }
+    );
+
+    onMounted(() => {
+      const frontWindow = wwLib?.getFrontWindow?.() || window;
+      frontWindow.addEventListener('resize', handleGroupHorizontalResize);
+      updateGroupHorizontalScrollbarMetrics();
+    });
+
     // Called when each group grid fires grid-ready. Registers the api and
     // applies current shared state (filter / sort / widths) so a newly-expanded
     // group picks up the live view.
@@ -2961,6 +3256,8 @@ export default {
         debugLog('[Grouping] Error applying initial state to new group grid:', e);
       }
 
+      updateGroupHorizontalScrollbarMetrics();
+
       // In infinite-scroll mode, assign this group's datasource — but stagger
       // the assignment across groups so N grids don't fire getRows in the same
       // tick (which can trigger AG Grid error #252 on initial mount and also
@@ -2989,6 +3286,7 @@ export default {
       groupGridApis.value.delete(groupValue);
       groupGridApis.value = new Map(groupGridApis.value);
       groupSelections.value.delete(groupValue);
+      updateGroupHorizontalScrollbarMetrics();
     };
 
     // Route a single-grid event to every group grid, then run the legacy handler
@@ -3047,7 +3345,10 @@ export default {
           try { api.applyColumnState({ state }); } catch (_) { /* noop */ }
         });
       } finally {
-        nextTick(() => { isSyncingLayout.value = false; });
+        nextTick(() => {
+          isSyncingLayout.value = false;
+          updateGroupHorizontalScrollbarMetrics();
+        });
       }
       withFiringGrid(event, onColumnResized);
     };
@@ -3064,7 +3365,10 @@ export default {
           try { api.applyColumnState({ state: newOrder.map(colId => ({ colId })), applyOrder: true }); } catch (_) { /* noop */ }
         });
       } finally {
-        nextTick(() => { isSyncingLayout.value = false; });
+        nextTick(() => {
+          isSyncingLayout.value = false;
+          updateGroupHorizontalScrollbarMetrics();
+        });
       }
       withFiringGrid(event, onColumnMoved);
     };
@@ -3128,15 +3432,18 @@ export default {
       if (idx >= 0) collapsed.splice(idx, 1);
       else collapsed.push(groupValue);
       writeGroupingToViewConfig({ collapsed });
+      updateGroupHorizontalScrollbarMetrics();
     };
 
     const collapseAllGroups = () => {
       const all = orderedGroups.value.map(g => g.value);
       writeGroupingToViewConfig({ collapsed: all });
+      updateGroupHorizontalScrollbarMetrics();
     };
 
     const expandAllGroups = () => {
       writeGroupingToViewConfig({ collapsed: [] });
+      updateGroupHorizontalScrollbarMetrics();
     };
 
     // Merge a partial grouping update into groupingState and refresh currentConfig.
@@ -3151,6 +3458,48 @@ export default {
       };
       groupingState.value = next;
       updateCurrentConfig();
+    };
+
+    const afterNextPaint = (callback) => {
+      const schedule = () => setTimeout(callback, 0);
+      if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(schedule);
+      } else {
+        schedule();
+      }
+    };
+
+    const startGroupingTransition = () => {
+      if (groupingTransitionTimer) {
+        clearTimeout(groupingTransitionTimer);
+        groupingTransitionTimer = null;
+      }
+      groupingTransitionStartedAt.value = Date.now();
+      isGroupingTransitionLoading.value = true;
+    };
+
+    const finishGroupingTransition = () => {
+      if (groupingTransitionTimer) {
+        clearTimeout(groupingTransitionTimer);
+      }
+      const elapsed = Date.now() - groupingTransitionStartedAt.value;
+      const delay = Math.max(180 - elapsed, 0);
+      groupingTransitionTimer = setTimeout(() => {
+        isGroupingTransitionLoading.value = false;
+        pendingGroupingColumnId.value = null;
+        groupingTransitionTimer = null;
+      }, delay);
+    };
+
+    const applyGroupingWithLoading = (partial) => {
+      startGroupingTransition();
+      afterNextPaint(() => {
+        try {
+          writeGroupingToViewConfig(partial);
+        } finally {
+          nextTick(() => afterNextPaint(finishGroupingTransition));
+        }
+      });
     };
 
     // Columns that qualify as a grouping target (cellDataType === 'select').
@@ -3170,17 +3519,18 @@ export default {
     // Switch (or clear) the grouping column. Clearing also resets order/collapsed.
     const setGroupingColumn = (colId) => {
       const next = colId || null;
+      pendingGroupingColumnId.value = next || '';
       if (!next) {
-        writeGroupingToViewConfig({ columnId: null, order: [], collapsed: [] });
+        applyGroupingWithLoading({ columnId: null, order: [], collapsed: [] });
         return;
       }
       // Changing to a different column — wipe order/collapsed since they referenced
       // the previous column's option values.
       const prev = groupingState.value?.columnId;
       if (prev !== next) {
-        writeGroupingToViewConfig({ columnId: next, order: [], collapsed: [] });
+        applyGroupingWithLoading({ columnId: next, order: [], collapsed: [] });
       } else {
-        writeGroupingToViewConfig({ columnId: next });
+        applyGroupingWithLoading({ columnId: next });
       }
     };
 
@@ -3216,6 +3566,12 @@ export default {
       if (searchDebounceTimer.value) {
         clearTimeout(searchDebounceTimer.value);
       }
+      if (groupingTransitionTimer) {
+        clearTimeout(groupingTransitionTimer);
+        groupingTransitionTimer = null;
+      }
+      const frontWindow = wwLib?.getFrontWindow?.() || window;
+      frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
     });
 
     const onBodyScroll = (event) => {
@@ -3547,6 +3903,7 @@ export default {
       () => {
         groupDatasourceCache.clear();
         groupInfiniteCounts.value = new Map();
+        groupAggregationsLoaded.value = new Map();
       }
     );
 
@@ -3625,6 +3982,13 @@ export default {
         // Only apply transaction if there was an actual array or length change
         if (isArrayChange || isLengthChange) {
           nextTick(() => {
+            const hasActiveEditor = typeof gridApi.value?.getEditingCells === 'function' &&
+              gridApi.value.getEditingCells().length > 0;
+            if (hasActiveEditor) {
+              console.log('[Datagrid rowData] skipped grid data refresh while editor active');
+              return;
+            }
+
             // Use queue-based approach for grid operations
             if (Array.isArray(newData) && newData.length > 0) {
               // Apply transaction first
@@ -3725,6 +4089,12 @@ export default {
             lastConditionalRowStylesJson.value = null;
             // Styles were removed, redraw to clear any applied styles
             if (gridApi.value && gridReady.value && !isGridRendering.value) {
+              const hasActiveEditor = typeof gridApi.value.getEditingCells === 'function' &&
+                gridApi.value.getEditingCells().length > 0;
+              if (hasActiveEditor) {
+                console.log('[Datagrid styles] skipped redraw while editor active');
+                return;
+              }
               // Use queue-based approach instead of setTimeout
               gridApiUtils.redrawRows(gridApi.value).catch(error => {
                 console.warn('[Datagrid] Error during conditional styles redraw:', error);
@@ -3745,6 +4115,12 @@ export default {
           
           // Debounce the redraw to avoid multiple rapid redraws
           if (gridApi.value && gridReady.value && !isGridRendering.value) {
+            const hasActiveEditor = typeof gridApi.value.getEditingCells === 'function' &&
+              gridApi.value.getEditingCells().length > 0;
+            if (hasActiveEditor) {
+              console.log('[Datagrid styles] skipped redraw while editor active');
+              return;
+            }
             // Use queue-based approach instead of setTimeout
             gridApiUtils.redrawRows(gridApi.value).catch(error => {
               console.warn('[Datagrid] Error during conditional styles clear:', error);
@@ -4130,6 +4506,7 @@ export default {
       DateCellEditor,
       UserCellRenderer,
       UserFilterComponent,
+      PinnedAggregationCellRenderer,
     };
 
     return {
@@ -4214,6 +4591,8 @@ export default {
       selectableGroupingColumns,
       setGroupingColumn,
       setShowUnassigned,
+      pendingGroupingColumnId,
+      isGroupingTransitionLoading,
       columnChooserSearch,
       chooserColumnOrder,
       chooserHiddenState,
@@ -4225,6 +4604,9 @@ export default {
       isGroupingActive,
       orderedGroups,
       groupRowData,
+      groupAggregationData,
+      hasGroupAggregation,
+      onGroupModelUpdated,
       groupingState,
       groupDragValue,
       groupDragOverValue,
@@ -4245,6 +4627,13 @@ export default {
       findGroupForRowId,
       groupGridApis,
       alignedGridApisForGroup,
+      groupHorizontalScrollRef,
+      groupHorizontalScrollWidth,
+      groupHorizontalViewportWidth,
+      groupHorizontalScrollLeft,
+      hasGroupHorizontalOverflow,
+      onGroupHorizontalScrollbarScroll,
+      onGroupBodyScroll,
       groupDatasourceFor,
       refreshGroupInfiniteCache,
       groupInfiniteCounts,
@@ -5052,6 +5441,21 @@ export default {
         columns[0].rowDrag = true;
       }
 
+      // For the per-group aggregation totals row pinned at the bottom of each
+      // group's grid: route every cell through PinnedAggregationCellRenderer so
+      // configured cellRenderers (action buttons, select pills, avatars…) are
+      // bypassed. Numeric/currency columns still go through their valueFormatter
+      // first, so the displayed total is correctly formatted.
+      for (const col of columns) {
+        if (col.__virtualColumn) continue;
+        col.cellRendererSelector = (params) => {
+          if (params?.node?.rowPinned === "bottom") {
+            return { component: "PinnedAggregationCellRenderer" };
+          }
+          return undefined;
+        };
+      }
+
       return columns;
     },
     rowSelection() {
@@ -5086,13 +5490,34 @@ export default {
       };
     },
     cssVars() {
+      const columnChooserBackground =
+        this.cfg.columnChooserBackground ||
+        this.cfg.menuBackgroundColor ||
+        this.cfg.headerBackgroundColor ||
+        this.cfg.rowBackgroundColor;
+      const columnChooserBorderColor =
+        this.cfg.columnChooserBorderColor ||
+        this.cfg.borderColor ||
+        this.cfg.outerBorderColor;
+      const columnChooserTextColor =
+        this.cfg.columnChooserTextColor ||
+        this.cfg.menuTextColor ||
+        this.cfg.textColor ||
+        this.cfg.cellColor ||
+        this.cfg.headerTextColor;
+      const columnChooserAccentColor =
+        this.cfg.columnChooserAccentColor ||
+        this.cfg.selectionCheckboxColor ||
+        this.cfg.userFocusColor ||
+        this.cfg.cellSelectionBorderColor;
+
       return {
-        "--ww-data-grid_cc-background": this.cfg.columnChooserBackground,
-        "--ww-data-grid_cc-border-color": this.cfg.columnChooserBorderColor,
-        "--ww-data-grid_cc-border-radius": this.cfg.columnChooserBorderRadius,
-        "--ww-data-grid_cc-text-color": this.cfg.columnChooserTextColor,
-        "--ww-data-grid_cc-accent-color": this.cfg.columnChooserAccentColor,
-        "--ww-data-grid_cc-width": this.cfg.columnChooserWidth,
+        "--ww-data-grid_cc-background": columnChooserBackground,
+        "--ww-data-grid_cc-border-color": columnChooserBorderColor,
+        "--ww-data-grid_cc-border-radius": this.cfg.columnChooserBorderRadius || "8px",
+        "--ww-data-grid_cc-text-color": columnChooserTextColor,
+        "--ww-data-grid_cc-accent-color": columnChooserAccentColor,
+        "--ww-data-grid_cc-width": this.cfg.columnChooserWidth || "260px",
         "--ww-data-grid_action-backgroundColor":
           this.cfg.actionBackgroundColor,
         "--ww-data-grid_action-color": this.cfg.actionColor,
@@ -5540,10 +5965,29 @@ export default {
     onCellEditingStarted(event) {
       this._pendingValidationError = null;
       this._validationFiredForCurrentEdit = false;
+      this._lastActiveCellEdit = {
+        rowIndex: event?.rowIndex,
+        rowPinned: event?.node?.rowPinned ?? null,
+        rowId: event?.node?.id,
+        field: event?.colDef?.field,
+        colId: event?.column?.getColId?.(),
+        dataId: event?.data?.id,
+        startedAt: Date.now(),
+      };
+      console.log('[Datagrid edit] cell editing started', this._lastActiveCellEdit);
     },
     onCellEditingStopped(event) {
+      console.log('[Datagrid edit] cell editing stopped', {
+        rowIndex: event?.rowIndex,
+        rowId: event?.node?.id,
+        field: event?.colDef?.field,
+        colId: event?.column?.getColId?.(),
+        dataId: event?.data?.id,
+        lastActiveCellEdit: this._lastActiveCellEdit,
+      });
       this._pendingValidationError = null;
       this._validationFiredForCurrentEdit = false;
+      this._lastActiveCellEdit = null;
     },
     onRowEditingStarted(event) {
       console.log('[validation] >>> onRowEditingStarted', event?.rowIndex);
@@ -5759,6 +6203,20 @@ export default {
         // Use a slightly longer timeout to batch with any other updates
         setTimeout(() => {
           if (this.gridApi && !this.isGridRendering) {
+            const hasActiveEditor = typeof this.gridApi.getEditingCells === 'function' &&
+              this.gridApi.getEditingCells().length > 0;
+            if (hasActiveEditor) {
+              console.log('[Datagrid edit] skipped conditional row redraw while editor active', {
+                rowIndex: event?.rowIndex,
+                rowId: event?.node?.id,
+                columnId,
+              });
+              this.gridApi.refreshCells({
+                rowNodes: [event.node],
+                force: true,
+              });
+              return;
+            }
             this.gridApi.redrawRows({ rowNodes: [event.node] });
           }
         }, 50);
@@ -6091,18 +6549,104 @@ export default {
         }
 
         if (rowNode) {
-          // Update the row data
-          rowNode.setData(data);
+          const getColumnId = (column) => {
+            if (!column) return null;
+            if (typeof column.getColId === 'function') return column.getColId();
+            return column.colId || column.field || null;
+          };
+          const editingCells = typeof targetApi?.getEditingCells === 'function'
+            ? targetApi.getEditingCells()
+            : [];
+          const hasActiveEditor = editingCells.length > 0;
+          const rowPinned = rowNode.rowPinned ?? null;
+          const editingColumnIds = new Set(
+            editingCells
+              .filter((cell) => (
+                cell?.rowIndex === rowNode.rowIndex &&
+                (cell?.rowPinned ?? null) === rowPinned
+              ))
+              .map((cell) => getColumnId(cell?.column))
+              .filter(Boolean)
+          );
+          const isRowBeingEdited = editingColumnIds.size > 0;
+          const formatEditingCells = (cells) => cells.map((cell) => ({
+            rowIndex: cell?.rowIndex,
+            rowPinned: cell?.rowPinned ?? null,
+            colId: getColumnId(cell?.column),
+          }));
+          const shouldPreserveEditState = hasActiveEditor;
+
+          console.log('[Datagrid refreshRow] row found', {
+            rowId,
+            rowNodeId: rowNode.id,
+            rowIndex: rowNode.rowIndex,
+            rowPinned,
+            hasGetEditingCells: typeof targetApi?.getEditingCells === 'function',
+            editingCells: formatEditingCells(editingCells),
+            hasActiveEditor,
+            isRowBeingEdited,
+            editingColumnIds: Array.from(editingColumnIds),
+            lastActiveCellEdit: this._lastActiveCellEdit,
+            willUseInPlaceUpdate: shouldPreserveEditState && !!rowNode.data,
+          });
+
+          if (shouldPreserveEditState && rowNode.data) {
+            // Preserve active editors by avoiding row replacement while any
+            // edit is open. If this row is edited, leave that column untouched.
+            Object.keys(rowNode.data).forEach((key) => {
+              if (!Object.prototype.hasOwnProperty.call(data, key) && !editingColumnIds.has(key)) {
+                delete rowNode.data[key];
+              }
+            });
+            Object.keys(data).forEach((key) => {
+              if (!editingColumnIds.has(key)) {
+                rowNode.data[key] = data[key];
+              }
+            });
+          } else {
+            // Update the row data
+            console.log('[Datagrid refreshRow] using rowNode.setData', {
+              rowId,
+              reason: shouldPreserveEditState ? 'missing rowNode.data' : 'no active editor',
+            });
+            rowNode.setData(data);
+          }
 
           // CRITICAL FIX: Wrap refresh in setTimeout to prevent error #252
           // This ensures the API call happens outside the current render cycle
           setTimeout(() => {
             if (targetApi && !this.isGridRendering) {
-              if (this.content?.conditionalRowStyles?.length > 0) {
+              const editingCellsNow = typeof targetApi?.getEditingCells === 'function'
+                ? targetApi.getEditingCells()
+                : [];
+              console.log('[Datagrid refreshRow] deferred refresh', {
+                rowId,
+                editingCellsAtRefresh: formatEditingCells(editingCellsNow),
+                initialHasActiveEditor: hasActiveEditor,
+                initialIsRowBeingEdited: isRowBeingEdited,
+                hasConditionalRowStyles: this.content?.conditionalRowStyles?.length > 0,
+              });
+              if (shouldPreserveEditState) {
+                const refreshColumns = Object.keys(data).filter((key) => !editingColumnIds.has(key));
+                console.log('[Datagrid refreshRow] refreshCells while preserving edit state', {
+                  rowId,
+                  refreshColumns,
+                  skippedEditingColumns: Array.from(editingColumnIds),
+                });
+                if (refreshColumns.length > 0) {
+                  targetApi.refreshCells({
+                    rowNodes: [rowNode],
+                    columns: refreshColumns,
+                    force: true,
+                  });
+                }
+              } else if (this.content?.conditionalRowStyles?.length > 0) {
                 // Redraw the row to re-evaluate conditional row styles (also refreshes cells)
+                console.log('[Datagrid refreshRow] redrawRows with no active editor', { rowId });
                 targetApi.redrawRows({ rowNodes: [rowNode] });
               } else {
                 // Just refresh cells if no conditional styles
+                console.log('[Datagrid refreshRow] refreshCells with no active editor', { rowId });
                 targetApi.refreshCells({
                   rowNodes: [rowNode],
                   force: true,
@@ -7061,7 +7605,75 @@ export default {
   :deep(.ag-body-viewport) {
     overflow-y: auto !important;
   }
-  
+
+  // Always-visible, simple horizontal scrollbar (single-grid mode)
+  // Pinned to the bottom of the component, above all grid content.
+  :deep(.ag-body-horizontal-scroll),
+  :deep(.ag-body-horizontal-scroll-viewport),
+  :deep(.ag-horizontal-left-spacer),
+  :deep(.ag-horizontal-right-spacer) {
+    height: 8px !important;
+    min-height: 8px !important;
+    max-height: 8px !important;
+  }
+
+  :deep(.ag-body-horizontal-scroll) {
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 100 !important;
+    background: #f1f1f1;
+  }
+
+  // Ensure pinned-column spacers also show the scrollbar background
+  // (so the bar renders edge-to-edge even under pinned action columns)
+  :deep(.ag-horizontal-left-spacer),
+  :deep(.ag-horizontal-right-spacer) {
+    background: #f1f1f1 !important;
+    overflow: hidden !important;
+    pointer-events: none;
+  }
+
+  :deep(.ag-body-horizontal-scroll-viewport) {
+    overflow-x: scroll !important;
+    scrollbar-width: thin;
+    scrollbar-color: #888 #f1f1f1;
+
+    &::-webkit-scrollbar {
+      height: 8px;
+      width: 8px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    &::-webkit-scrollbar-button,
+    &::-webkit-scrollbar-button:single-button,
+    &::-webkit-scrollbar-button:start:decrement,
+    &::-webkit-scrollbar-button:end:increment,
+    &::-webkit-scrollbar-button:horizontal:start:decrement,
+    &::-webkit-scrollbar-button:horizontal:end:increment,
+    &::-webkit-scrollbar-button:vertical:start:decrement,
+    &::-webkit-scrollbar-button:vertical:end:increment {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      background: transparent !important;
+    }
+    &::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    &::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 0;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 0;
+
+      &:hover {
+        background: #555;
+      }
+    }
+  }
+
   // Ensure header and body rows stay aligned during horizontal scroll
   :deep(.ag-header-row),
   :deep(.ag-row) {
@@ -7271,20 +7883,20 @@ export default {
   min-height: 28px;
   background: transparent;
   border: none;
-  border-left: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
+  border-left: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
   border-radius: 0;
   cursor: pointer;
   font-size: 12px;
-  color: var(--ag-header-foreground-color, #ccc);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-header-foreground-color, #ccc));
   line-height: 1;
   transition: background 0.15s;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 10%, transparent);
   }
 
   &.has-hidden {
-    color: var(--ag-active-color, #3b9eff);
+    color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
   }
 }
 
@@ -7296,7 +7908,7 @@ export default {
   height: 16px;
   padding: 0 4px;
   border-radius: 8px;
-  background: var(--ag-active-color, #3b9eff);
+  background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
   color: #fff;
   font-size: 10px;
   font-weight: 700;
@@ -7313,6 +7925,7 @@ export default {
   border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
   border-radius: var(--ww-data-grid_cc-border-radius, 8px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   z-index: 1000;
   overflow: hidden;
   display: flex;
@@ -7351,13 +7964,13 @@ export default {
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   padding: 0;
   transition: background 0.15s, color 0.15s;
 
   &:hover {
-    background: rgba(255,255,255,0.08);
-    color: var(--ag-foreground-color, #e8eaed);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 10%, transparent);
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   }
 }
 
@@ -7379,19 +7992,19 @@ export default {
   padding: 10px 14px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s;
   border-radius: 4px 4px 0 0;
 
   &:hover:not(.cc-tab--active) {
-    color: var(--ag-foreground-color, #e8eaed);
-    background: rgba(255, 255, 255, 0.04);
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
   }
 
   &.cc-tab--active {
-    color: var(--ag-foreground-color, #e8eaed);
-    border-bottom-color: var(--ag-accent-color, #3b82f6);
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+    border-bottom-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
     font-weight: 600;
   }
 }
@@ -7408,19 +8021,19 @@ export default {
 .cc-group-select-label {
   font-size: 12px;
   font-weight: 500;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   flex: 0 0 auto;
 }
 
 .cc-group-select {
   flex: 1;
   appearance: none;
-  background: var(--ww-data-grid_cc-input-bg, rgba(255,255,255,0.04));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
   border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.12)));
   border-radius: 6px;
   padding: 6px 28px 6px 10px;
   font-size: 13px;
-  color: var(--ag-foreground-color, #e8eaed);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   cursor: pointer;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'><path d='M1 1l4 4 4-4' stroke='%239aa0aa' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/></svg>");
   background-repeat: no-repeat;
@@ -7428,13 +8041,13 @@ export default {
   transition: border-color 0.15s, background-color 0.15s;
 
   &:hover:not(:disabled) {
-    border-color: var(--ag-accent-color, #3b82f6);
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
   }
 
   &:focus {
     outline: none;
-    border-color: var(--ag-accent-color, #3b82f6);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 25%, transparent);
   }
 
   &:disabled {
@@ -7443,9 +8056,19 @@ export default {
   }
 
   option {
-    background: var(--ww-data-grid_cc-bg, #1f2125);
-    color: var(--ag-foreground-color, #e8eaed);
+    background: var(--ww-data-grid_cc-background, var(--ag-background-color, #1f2125));
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   }
+}
+
+.cc-group-loading-dot {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--ww-data-grid_cc-text-color, #94a3b8) 28%, transparent);
+  border-top-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
+  border-radius: 999px;
+  animation: ww-group-spin 0.8s linear infinite;
+  flex: 0 0 auto;
 }
 
 .cc-group-actions {
@@ -7459,21 +8082,24 @@ export default {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  background: var(--ww-data-grid_cc-input-bg, rgba(255,255,255,0.04));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
   border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.12)));
   border-radius: 6px;
   font-size: 12px;
-  color: var(--ag-foreground-color, #d1d5db);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #d1d5db));
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 
-  svg { color: var(--ag-foreground-color, #9aa0aa); flex-shrink: 0; }
+  svg {
+    color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
+    flex-shrink: 0;
+  }
 
   &:hover {
-    background: rgba(255, 255, 255, 0.08);
-    border-color: rgba(255, 255, 255, 0.2);
-    color: var(--ag-foreground-color, #e8eaed);
-    svg { color: var(--ag-foreground-color, #e8eaed); }
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 12%, transparent);
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
+    color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+    svg { color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)); }
   }
 }
 
@@ -7483,7 +8109,7 @@ export default {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
 }
 
 .cc-group-toggle-row {
@@ -7496,11 +8122,11 @@ export default {
   cursor: pointer;
   user-select: none;
   font-size: 13px;
-  color: var(--ag-foreground-color, #1f2329);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #1f2329));
   transition: background 0.12s;
 
   &:hover {
-    background: var(--ag-row-hover-color, rgba(0, 0, 0, 0.04));
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #000000) 8%, transparent);
   }
 
   .cc-group-toggle-label {
@@ -7528,7 +8154,7 @@ export default {
   transition: background 0.12s, transform 0.12s;
 
   &:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
   }
 
   &.cc-group-row--dragging {
@@ -7537,8 +8163,8 @@ export default {
   }
 
   &.cc-group-row--drag-over {
-    background: rgba(59, 130, 246, 0.12);
-    box-shadow: inset 0 2px 0 0 var(--ag-accent-color, #3b82f6);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 16%, transparent);
+    box-shadow: inset 0 2px 0 0 var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
   }
 }
 
@@ -7553,7 +8179,7 @@ export default {
 .cc-group-row__label {
   flex: 1;
   font-size: 13px;
-  color: var(--ag-foreground-color, #e8eaed);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7564,8 +8190,8 @@ export default {
   min-width: 22px;
   padding: 1px 7px;
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--ag-foreground-color, #9aa0aa);
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 10%, transparent);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   font-size: 11px;
   font-weight: 600;
   text-align: center;
@@ -7586,14 +8212,14 @@ export default {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: var(--ag-control-panel-background-color, rgba(255,255,255,0.06));
-  border: 1px solid var(--ag-border-color, rgba(255,255,255,0.1));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
   border-radius: 6px;
   padding: 6px 10px;
 }
 
 .cc-search-icon {
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   flex-shrink: 0;
   opacity: 0.6;
 }
@@ -7645,7 +8271,7 @@ export default {
       top: 0px;
       width: 5px;
       height: 9px;
-      border: 2px solid #fff;
+      border: 2px solid var(--ww-data-grid_cc-background, #fff);
       border-top: none;
       border-left: none;
       transform: rotate(45deg);
@@ -7663,7 +8289,7 @@ export default {
       top: 50%;
       width: 8px;
       height: 2px;
-      background: #fff;
+      background: var(--ww-data-grid_cc-background, #fff);
       transform: translateY(-50%);
     }
   }
@@ -7687,7 +8313,7 @@ export default {
     background: transparent;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.15);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 18%, transparent);
     border-radius: 2px;
   }
 }
@@ -7703,12 +8329,12 @@ export default {
   border-left: 2px solid transparent;
 
   &:hover {
-    background: rgba(255,255,255,0.05);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 7%, transparent);
   }
 
   &.cc-row--drag-over {
     border-left-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
-    background: rgba(59, 158, 255, 0.06);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b9eff) 12%, transparent);
   }
 
   &.cc-row--dragging {
@@ -7733,7 +8359,7 @@ export default {
 .cc-drag-handle {
   display: flex;
   align-items: center;
-  color: var(--ag-foreground-color, #9aa0aa);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed)) 62%, transparent);
   opacity: 0.4;
   cursor: grab;
   flex-shrink: 0;
@@ -7791,7 +8417,59 @@ export default {
   display: flex !important;
   flex-direction: column !important;
   row-gap: 14px;
-  padding: 20px 4px 24px;
+  padding: 20px 4px 12px;
+}
+
+.ww-group-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--ag-background-color, #ffffff) 68%, transparent);
+  backdrop-filter: blur(2px);
+  pointer-events: all;
+}
+
+.ww-group-loading-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 999px;
+  background: var(--ag-background-color, #ffffff);
+  border: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.12));
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
+  color: var(--ag-foreground-color, #111827);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ww-group-loading-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(148, 163, 184, 0.35);
+  border-top-color: var(--ag-accent-color, #3b82f6);
+  border-radius: 999px;
+  animation: ww-group-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+
+.group-loading-fade-enter-active,
+.group-loading-fade-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.group-loading-fade-enter-from,
+.group-loading-fade-leave-to {
+  opacity: 0;
+}
+
+@keyframes ww-group-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 // .ww-group-toolbar removed — its buttons now live in the chooser panel's
@@ -7925,5 +8603,127 @@ export default {
   border-bottom-left-radius: 6px;
   border-bottom-right-radius: 6px;
   overflow: hidden;
+
+  :deep(.ag-body-horizontal-scroll) {
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    overflow: hidden !important;
+  }
+
+  :deep(.ag-body-horizontal-scroll-viewport) {
+    overflow-x: hidden !important;
+  }
+
+  // Aggregation totals row (pinned at the bottom of each group's grid).
+  // Styled to mirror the group header: same color tint + accent border, so
+  // it visually closes the group with a clear "totals" cue.
+  :deep(.ag-floating-bottom) {
+    border-top: 1px solid color-mix(in srgb, var(--group-color, #9ca3af) 35%, transparent);
+    background: color-mix(in srgb, var(--group-color, #9ca3af) 8%, transparent);
+  }
+
+  :deep(.ag-floating-bottom .ag-row),
+  :deep(.ag-floating-bottom .ag-cell) {
+    background: transparent;
+    font-weight: 600;
+  }
+
+  :deep(.ww-agg-cell) {
+    display: inline-block;
+    width: 100%;
+    color: color-mix(in srgb, var(--group-color, #9ca3af) 70%, var(--ag-foreground-color, #111827));
+  }
+}
+
+// Hide the pinned aggregation row when the group is collapsed (the grid
+// itself is unmounted by v-if, but be defensive in case AG Grid keeps the
+// floating container around during transitions).
+.ww-group--collapsed :deep(.ag-floating-bottom) {
+  display: none;
+}
+
+.ww-group--has-footer .ww-group__grid {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.ww-group__footer {
+  --group-color: #9ca3af;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 4px 12px;
+  min-height: 18px;
+  background: color-mix(in srgb, var(--group-color) 6%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--group-color) 25%, transparent);
+  border-left: 4px solid var(--group-color);
+  border-bottom-left-radius: 6px;
+  border-bottom-right-radius: 6px;
+  font-family: inherit;
+}
+
+.ww-group__footer-count {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ag-foreground-color, #6b7280);
+  opacity: 0.7;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.ww-group-horizontal-scroll {
+  position: absolute;
+  bottom: 0;
+  z-index: 30;
+  height: 8px;
+  overflow-x: scroll;
+  overflow-y: hidden;
+  flex: 0 0 auto;
+  scrollbar-width: thin;
+  scrollbar-color: #888 #f1f1f1;
+
+  &::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+
+  &::-webkit-scrollbar-button,
+  &::-webkit-scrollbar-button:single-button,
+  &::-webkit-scrollbar-button:start:decrement,
+  &::-webkit-scrollbar-button:end:increment,
+  &::-webkit-scrollbar-button:horizontal:start:decrement,
+  &::-webkit-scrollbar-button:horizontal:end:increment,
+  &::-webkit-scrollbar-button:vertical:start:decrement,
+  &::-webkit-scrollbar-button:vertical:end:increment {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+  }
+
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  &::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 0;
+  }
+
+  &::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 0;
+
+    &:hover {
+      background: #555;
+    }
+  }
+}
+
+.ww-group-horizontal-scroll__spacer {
+  height: 1px;
 }
 </style>
