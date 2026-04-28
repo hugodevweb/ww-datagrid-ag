@@ -12,7 +12,8 @@
       "Bash(grep -n \"^      updateCurrentConfig,\\\\|^    return {\\\\|^      };$\" C:/VS_code/vueJs/ww-datagrid-ag/src/wwElement.vue)",
       "Bash(echo.)",
       "Read(//mnt/c/Users/hugo4/**)",
-      "Read(//c/Users/hugo4/.claude/**)"
+      "Read(//c/Users/hugo4/.claude/**)",
+      "Bash(git checkout *)"
     ]
   }
 }

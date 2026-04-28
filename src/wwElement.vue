@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive }" :style="cssVars" ref="gridContainerRef">
+  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive }" :style="[cssVars, style]" ref="gridContainerRef">
     <!-- Single-grid mode: unchanged behavior -->
     <ag-grid-vue
       v-if="!isGroupingActive"
@@ -10,7 +10,7 @@
       :defaultColDef="defaultColDef"
       :dataTypeDefinitions="dataTypeDefinitions"
       :domLayout="cfg.layout === 'auto' ? 'autoHeight' : 'normal'"
-      :style="style"
+      :style="cfg.layout !== 'auto' ? { height: '100%' } : {}"
       :rowSelection="rowSelection"
       :selection-column-def="{ pinned: true }"
       :theme="theme"
