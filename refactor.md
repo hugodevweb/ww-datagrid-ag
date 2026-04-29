@@ -4,8 +4,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 
 ## Current state
 
-- **Datagrid.vue:** 6,537 lines (was 8,730 — total removed: 2,193; Session 3 removed 692).
-- **Composables created:** 6 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping).
+- **Datagrid.vue:** 5,970 lines (was 8,730 — total removed: 2,760, ~32% reduction; Session 4 removed 568).
+- **Composables created:** 7 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig).
 - **New utils created:** 2 of 2 (convertFilterToSupabase, supabaseFieldMappings).
 - **Build status:** `npm run serve` passes cleanly.
 - **Branch:** `create-groups` (uncommitted).
@@ -16,7 +16,7 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 |---|---|---|---|---|
 | 1 | `composables/useGridApi.js` | setup 1000-1010, 1635-1793 | 122 actual | **DONE (S1)** |
 | 2 | `composables/useDataFetch.js` | setup 770-1208, 1611-1648, 1654-1702, 3022 | 416 actual | **DONE (S2)** — also owns `isInfiniteScrollEnabled` and inline filter helpers |
-| 3 | `composables/useViewConfig.js` | setup 577-609, 1471-1631, 1911-2280 | ~500 | not started |
+| 3 | `composables/useViewConfig.js` | setup 845-870, 887-893, 923-1074, 1183-1191, 1208-1618 | 661 actual | **DONE (S4)** |
 | 4 | `composables/useColumnState.js` | setup 1011-1051, 1471-1523; computed 4732-5729 (columnDefs, defaultColDef, theme, rowStyle, cssVars, style, dataTypeDefinitions) | ~1,000 | not started |
 | 5 | `composables/useColumnChooser.js` | setup 1051-1065, 1523-1593; computed 4757-4811; methods 5773-5903 | ~400 | not started |
 | 6 | `composables/useFiltersAndSort.js` | setup 1002-1017, 1660-1661, 2233-2354 | 173 actual | **DONE (S2)** |
@@ -35,9 +35,10 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 1 | useGridApi + useSelection + 2 utils wired in (useFiltersAndSort deferred — too coupled to data-fetch) | `npm run serve` | **DONE** — build passes |
 | 2 | useDataFetch + useInfiniteScroll + useFiltersAndSort | `npm run serve` | **DONE** — build passes |
 | 3 | useGrouping (useViewConfig moved to S4 — cycle deps proved too tangled to do both at once) | `npm run serve` + WeWeb smoke test grouping | **DONE** — build passes |
-| 4 | useViewConfig + useColumnState + useColumnChooser (converts most of `computed:` block) | `npm run serve` | pending |
-| 5 | useCellEditing + useGridActions (converts most of `methods:` block) | `npm run serve` + cell edit smoke test | pending |
-| 6 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks | `npm run serve` + full WeWeb smoke test | pending |
+| 4 | useViewConfig (split off — useColumnState/useColumnChooser deferred to S5) | `npm run serve` + WeWeb smoke test view-config restore | **DONE** — build passes |
+| 5 | useColumnState + useColumnChooser (converts most of `computed:` block) | `npm run serve` | pending |
+| 6 | useCellEditing + useGridActions (converts most of `methods:` block) | `npm run serve` + cell edit smoke test | pending |
+| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks | `npm run serve` + full WeWeb smoke test | pending |
 
 Each session is committable independently. Run `npm run serve` and at least a quick WeWeb smoke test before committing.
 
@@ -136,6 +137,26 @@ No boundary issues this round — the surgery applied cleanly on first try.
 
 **Pre-existing bugs noticed (not fixed):** Same as S2 — `methods.removeRow` calls bare `cleanupRemovedIds()` without `this.`.
 
+### 2026-04-30 — Session 4: useViewConfig
+**Shipped:**
+- `composables/useViewConfig.js` (661 lines) — owns `currentConfig`/`columnDefs` WeWeb component variables and the `props.content?.columns → setColumnDefsVar` watcher; `getCurrentColumnWidths`, `updateCurrentConfig`, `isViewConfigEdited` (internal); `suppressEditedUntil`/`updateViewEditedVariable` for the edited-flag suppression machinery; `lastAppliedViewConfig`/`isApplyingViewConfig`/`applyViewConfigGeneration` (internal); the big `applyViewConfiguration` function (~250 lines that pushes a saved viewConfiguration into the grid — filters, sorting, columnsOrder, sizes, hiddenColumns, grouping, deselection, chooser sync, retry-on-#252); the `gridReady`-triggered initial-apply watcher; the external `cfg.viewConfiguration` change watcher (with optimized comparison + multi-stage edited-variable reset); and the one-time `initialState` ref + seeding (incl. `groupingState` bootstrap when `viewConfiguration.grouping` is pre-set).
+
+**Wired into Datagrid.vue:** Single composable destructure block inserted right after `isVirtualColumn` definition (currently line ~890), with one direct dep block (gridApi/gridReady/debugLog/groupingState/groupGridApis/groupSelections/getStoredCollapsedForView/isValidGroupColumn/setSelectedRows/columnOrder+setter/hiddenColumns+setter/chooserColumnOrder/chooserHiddenState/isVirtualColumn/isEmptyConfigValue) and two thunks (`getFilterValue`, `getSortValue`) — useFiltersAndSort is created AFTER useViewConfig because useFiltersAndSort consumes `isApplyingViewConfig` and `updateCurrentConfig` from useViewConfig, but useViewConfig needs to read `filterValue`/`sortValue` snapshots inside `updateCurrentConfig`. Lazy thunks resolve at call time, breaking the cycle.
+
+**Surgery details:** Single PowerShell pass deleted 12 contiguous code regions: currentConfig + columnDefsVar variables (845-870), watch on props.content?.columns (887-893), getCurrentColumnWidths (923-939), updateCurrentConfig (941-966), isViewConfigEdited (968-1035), suppressEditedUntil block (1037-1043), updateViewEditedVariable (1045-1074), lastAppliedViewConfig+isApplyingViewConfig+applyViewConfigGeneration block (1183-1191), applyViewConfiguration body (1208-1459), gridReady watcher (1461-1483), viewConfiguration change watcher (1485-1576), and the initialState ref + seeding block (1578-1618). No boundary issues this round — surgery applied cleanly on first try (build green immediately).
+
+**Datagrid.vue:** 6,538 → 5,970 (568 lines removed; cumulative reduction since start: 8,730 → 5,970 = 32%).
+**Build:** `npm run serve` compiles cleanly. Only the pre-existing webpack-dev-server `https` deprecation warning.
+**Not committed yet** — user to review and commit when ready.
+
+**Judgment calls:**
+- **Cycle resolved by reordering, not by mutating shared deps.** useViewConfig needs `filterValue`/`sortValue` to build the currentConfig snapshot; useFiltersAndSort needs `isApplyingViewConfig`/`updateCurrentConfig` to gate event emission and refresh the config after each filter/sort change. Solution: useViewConfig is created BEFORE useFiltersAndSort (so its return values are in scope at the useFiltersAndSort call), and the two reads inside `updateCurrentConfig` go through `getFilterValue()` / `getSortValue()` thunks that resolve at call time — by which point useFiltersAndSort has been created and its returns are bound. Cleaner than threading a setter callback.
+- **Inline column-state deps still passed as parameters.** `columnOrder`/`hiddenColumns`/`chooserColumnOrder`/`chooserHiddenState`/`isVirtualColumn`/`isEmptyConfigValue` are read by `applyViewConfiguration` and `updateCurrentConfig`. They'll move into `useColumnState`/`useColumnChooser` in S5; for now they're passed as deps to keep the contract stable. After S5, useViewConfig's deps object can drop them in favor of direct destructuring (or thunks if ordering forces it).
+- **`useGrouping`'s `getCurrentConfig`/`getUpdateCurrentConfig` thunks are still needed.** useGrouping is created BEFORE useViewConfig (because useViewConfig consumes grouping state from useGrouping). So `currentConfig`/`updateCurrentConfig` aren't in scope at useGrouping's call site — the thunks remain mandatory. Audit deferred until S5 when more refs settle into known positions.
+- **`initialState` seeding stays single-shot, runs at composable creation.** The original code uses an `if (!initialState.value)` guard wrapped around the seeding, even though the ref was just created with `null`. Kept that guard verbatim for behavior parity, even though it's effectively always-true on first run. Removing it would be a stylistic change unrelated to this session's scope.
+
+**Pre-existing bugs noticed (not fixed):** Same as previous sessions — `methods.removeRow` calls bare `cleanupRemovedIds()` without `this.`.
+
 ## Next action
 
-Start Session 4: extract `useViewConfig`. Owns `applyViewConfiguration` (~370 lines), `currentConfig`/`columnDefsVar` WeWeb variables (note: `columnOrder`/`hiddenColumns` may stay inline or move to `useColumnState` instead — TBD when planning S4), `updateCurrentConfig`, `getCurrentColumnWidths`, `isViewConfigEdited`, `updateViewEditedVariable`, `suppressEditedUntil`, `lastAppliedViewConfig`, `isApplyingViewConfig`, `applyViewConfigGeneration`, the `gridReady`-triggered initial-config watcher, the `viewConfiguration` change watcher, and `initialState` (the AG Grid initial-state ref). After useViewConfig lands, all the `getUpdateCurrentConfig`/`getCurrentConfig` thunks in `useGrouping` will resolve cleanly and we can audit whether to drop the thunk pattern in favor of direct refs (depends on ordering). Estimated ~600-800 line reduction. Will pair with `useColumnState` if scope permits, or do columnState in S5 along with `useColumnChooser`.
+Start Session 5: extract `useColumnState` (~1,000 lines target — covers the big `columnDefs` computed at original lines 4812-5473, `defaultColDef`, `dataTypeDefinitions`, `theme`, `rowStyle`, `cssVars`, `style`, plus `columnOrder`/`hiddenColumns` WeWeb variables and `isVirtualColumn`/`onColumnMoved`/`onColumnResized`) and `useColumnChooser` (~400 lines — chooser panel UI state, `allColumnsList`/`filteredColumnsList`/`allColumnsVisible`/`someColumnsHidden`, `hideColumn`/`showColumn`/`toggleColumnVisibility`/`toggleAllColumns`, `onChooserDragStart`/`Over`/`Drop`/`End`, `openColumnChooser`). Most of these live in the Options API `computed:`/`methods:` blocks and require the `this.x` → `x.value` mechanical conversion. After S5 ships, `useViewConfig`'s dep parameters (columnOrder/hiddenColumns/chooser*/isVirtualColumn) can be removed and consumed directly. Estimated ~1,400 line reduction.

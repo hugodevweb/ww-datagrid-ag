@@ -561,6 +561,7 @@ import { useDataFetch } from "./composables/useDataFetch.js";
 import { useFiltersAndSort } from "./composables/useFiltersAndSort.js";
 import { useInfiniteScroll } from "./composables/useInfiniteScroll.js";
 import { useGrouping } from "./composables/useGrouping.js";
+import { useViewConfig } from "./composables/useViewConfig.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -841,32 +842,6 @@ export default {
     watch(activeCreateColumnField, (val) => setActiveCreateColumn(val));
 
     
-    // Exposed variable for current grid configuration (includes user edits)
-    // This can be stored and passed back to viewConfiguration to restore state
-    const { value: currentConfig, setValue: setCurrentConfig } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "currentConfig",
-        type: "object",
-        defaultValue: {
-          sizes: {},
-          filters: {},
-          sorting: [],
-          columnsOrder: [],
-          hiddenColumns: [],
-        },
-        readonly: true,
-      });
-    
-    // Exposed variable for the configured column definitions (mirrors props.content.columns)
-    const { value: columnDefsVar, setValue: setColumnDefsVar } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "columnDefs",
-        type: "array",
-        defaultValue: [],
-        readonly: true,
-      });
 
     // Clear column caches when major dependencies change to prevent stale memoized functions
     watch(
@@ -883,13 +858,6 @@ export default {
       { deep: true }
     );
 
-    watch(
-      () => props.content?.columns,
-      (newCols) => {
-        setColumnDefsVar(Array.isArray(newCols) ? newCols : []);
-      },
-      { immediate: true, deep: true }
-    );
 
 
     // Composable: infinite-scroll datasource (single-grid + per-group), upfront
@@ -919,158 +887,40 @@ export default {
       return colDef?.__virtualColumn === true;
     };
 
-    const getCurrentColumnWidths = () => {
-      if (!gridApi.value) return {};
+    // Composable: view configuration — owns currentConfig / columnDefs WeWeb
+    // variables, applyViewConfiguration, gridReady & viewConfiguration watchers,
+    // and the one-time initialState seeding (incl. grouping bootstrap).
+    // filterValue / sortValue come via thunks because useFiltersAndSort is
+    // created AFTER useViewConfig.
+    const {
+      currentConfig, setCurrentConfig,
+      columnDefsVar, setColumnDefsVar,
+      getCurrentColumnWidths,
+      updateCurrentConfig,
+      updateViewEditedVariable,
+      suppressEditedUntil,
+      lastAppliedViewConfig,
+      isApplyingViewConfig,
+      applyViewConfiguration,
+      initialState,
+    } = useViewConfig(cfg, props, ctx, {
+      gridApi, gridReady, debugLog,
+      getFilterValue: () => filterValue,
+      getSortValue: () => sortValue,
+      groupingState, groupGridApis, groupSelections,
+      getStoredCollapsedForView, isValidGroupColumn,
+      setSelectedRows,
+      columnOrder, setColumnOrder,
+      hiddenColumns, setHiddenColumns,
+      chooserColumnOrder, chooserHiddenState,
+      isVirtualColumn,
+      isEmptyConfigValue,
+    });
 
-      const columns = gridApi.value.getAllGridColumns();
-      const widths = {};
 
-      columns?.forEach((col) => {
-        if (isVirtualColumn(col)) return; // Skip virtual columns
-        const colId = col.getColId();
-        const actualWidth = col.getActualWidth();
-        if (colId && actualWidth) {
-          widths[colId] = actualWidth;
-        }
-      });
 
-      return widths;
-    };
 
-    // Helper function to update the currentConfig exposed variable
-    const updateCurrentConfig = () => {
-      if (!gridApi.value) return;
 
-      const columns = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col));
-      // collapsed is intentionally omitted — it lives in a dedicated WeWeb variable
-      // keyed by view id, not in viewConfiguration.
-      const grouping = groupingState?.value
-        ? {
-            columnId: groupingState.value.columnId ?? null,
-            order: Array.isArray(groupingState.value.order) ? [...groupingState.value.order] : [],
-            showUnassigned: groupingState.value.showUnassigned !== false,
-          }
-        : { columnId: null, order: [], showUnassigned: true };
-      const config = {
-        sizes: getCurrentColumnWidths(),
-        filters: filterValue.value || {},
-        sorting: sortValue.value || [],
-        columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
-        hiddenColumns: hiddenColumns.value || [],
-        grouping,
-      };
-
-      setCurrentConfig(config);
-      updateViewEditedVariable(config);
-    };
-
-    // Deep-equal helper restricted to the view-state keys
-    const isViewConfigEdited = (current, baseline) => {
-      if (!baseline || typeof baseline !== 'object') return false;
-
-      const keysToCheck = ['sizes', 'filters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping'];
-
-      for (const key of keysToCheck) {
-        const baseVal = baseline[key];
-        const curVal = current?.[key];
-
-        // If baseline is absent/empty, any non-empty current value means edited
-        if (isEmptyConfigValue(baseVal)) {
-          if (!isEmptyConfigValue(curVal)) return true;
-          continue;
-        }
-
-        // Special case: grouping is a structured object { columnId, order, showUnassigned }.
-        // collapsed is excluded — it's tracked in a separate WeWeb variable, not viewConfiguration.
-        if (key === 'grouping') {
-          if (!curVal || typeof curVal !== 'object') return true;
-          if ((baseVal.columnId ?? null) !== (curVal.columnId ?? null)) return true;
-          const bOrder = Array.isArray(baseVal.order) ? baseVal.order : [];
-          const cOrder = Array.isArray(curVal.order) ? curVal.order : [];
-          if (bOrder.length !== cOrder.length) return true;
-          for (let i = 0; i < bOrder.length; i++) if (bOrder[i] !== cOrder[i]) return true;
-          // showUnassigned defaults to true when absent
-          if ((baseVal.showUnassigned !== false) !== (curVal.showUnassigned !== false)) return true;
-          continue;
-        }
-
-        if (Array.isArray(baseVal)) {
-          if (!Array.isArray(curVal)) return true;
-          // For columnsOrder: live grid may have extra columns added after the config was saved.
-          // Only compare the relative order of columns present in the baseline.
-          const effectiveCurVal = (key === 'columnsOrder')
-            ? curVal.filter(id => baseVal.includes(id))
-            : curVal;
-          if (baseVal.length !== effectiveCurVal.length) return true;
-          for (let i = 0; i < baseVal.length; i++) {
-            const b = baseVal[i];
-            const c = effectiveCurVal[i];
-            if (typeof b === 'object' && b !== null) {
-              // For sorting: compare colId + sort directly to avoid JSON key-order sensitivity
-              const sortMatch = (key === 'sorting') && typeof c === 'object' && c !== null
-                && b.colId === c.colId && b.sort === c.sort;
-              if (!sortMatch && JSON.stringify(b) !== JSON.stringify(c)) return true;
-            } else if (b !== c) {
-              return true;
-            }
-          }
-        } else if (typeof baseVal === 'object') {
-          if (typeof curVal !== 'object' || curVal === null) return true;
-          // Only compare keys present in the baseline — extra columns in the live grid are ignored
-          const bKeys = Object.keys(baseVal);
-          for (const k of bKeys) {
-            const bv = baseVal[k];
-            const cv = curVal[k];
-            // For sizes (numeric widths) allow ±1px rounding tolerance
-            const numericMatch = (key === 'sizes') && typeof bv === 'number' && typeof cv === 'number' && Math.abs(bv - cv) <= 1;
-            if (!numericMatch && bv !== cv) return true;
-          }
-        } else {
-          if (baseVal !== curVal) return true;
-        }
-      }
-
-      return false;
-    };
-
-    // Suppression window for the edited variable. Any time the viewConfiguration
-    // prop changes (e.g. navigating between pages/tables), the grid and the new
-    // baseline can be briefly out of sync as AG Grid rebuilds columns/data and
-    // emits late events. While this window is active, we refuse to flip the
-    // edited variable to `true` — we only allow `false`. Extended on each
-    // viewConfiguration change.
-    const suppressEditedUntil = ref(0);
-
-    // Update external WeWeb variable when view-edited state changes
-    const updateViewEditedVariable = (config) => {
-      const variableId = cfg.value?.viewEditedVariableId;
-      if (!variableId) return;
-
-      // Skip during programmatic view config application — grid is mid-transition
-      // The watcher resets the variable to false once the config is fully applied
-      if (isApplyingViewConfig?.value) {
-        debugLog(`[ViewEditedVariable] Skipping update — viewConfiguration is being applied`);
-        return;
-      }
-
-      const baseline = cfg.value?.viewConfiguration;
-      const edited = isViewConfigEdited(config, baseline);
-
-      // During the suppression window after a viewConfiguration change, do not
-      // let late grid events mark the view as edited. Allow `false` through so
-      // state converges correctly once the grid settles.
-      if (edited && Date.now() < suppressEditedUntil.value) {
-        debugLog(`[ViewEditedVariable] Suppressed true → view just changed, ignoring late grid event`);
-        return;
-      }
-
-      try {
-        wwLib.wwVariable.updateValue(variableId, edited);
-        debugLog(`[ViewEditedVariable] Set variable "${variableId}" →`, edited);
-      } catch (e) {
-        debugLog('[ViewEditedVariable] Could not update variable:', variableId, e);
-      }
-    };
 
     const onGridReady = (params) => {
       gridApi.value = params.api;
@@ -1179,15 +1029,6 @@ export default {
       }, 50);
     };
 
-    // Track last applied view configuration to detect changes
-    const lastAppliedViewConfig = ref(null);
-    
-    // Flag to track when view configuration is being applied programmatically
-    // This prevents filter/sort changed events from being triggered during view config changes
-    const isApplyingViewConfig = ref(false);
-    // Generation counter to handle concurrent applyViewConfiguration calls.
-    // Only the last apply's cleanup timeout should clear the flag.
-    let applyViewConfigGeneration = 0;
 
     // Composable: filters / sort WeWeb variables + onFilterChanged / onSortChanged
     // event handlers (single-grid mode). Group-mode handlers in useGrouping (S3)
@@ -1204,417 +1045,9 @@ export default {
       fetchSupabaseData, updateRecordsFromGrid,
     });
 
-    // Helper function to apply view configuration to the grid
-    const applyViewConfiguration = (viewConfig, isInitial = false) => {
-      if (!gridApi.value) return;
-      
-      debugLog('[ViewConfiguration] Applying view configuration:', viewConfig, 'isInitial:', isInitial);
 
-      // Set flag to indicate we're applying view config programmatically
-      isApplyingViewConfig.value = true;
-      // Increment generation so previous apply's cleanup timeout won't clear the flag
-      const myGeneration = ++applyViewConfigGeneration;
 
-      // Defer API calls to prevent error #252 during render cycle
-      setTimeout(() => {
-        if (!gridApi.value) {
-          if (myGeneration === applyViewConfigGeneration) {
-            isApplyingViewConfig.value = false;
-          }
-          return;
-        }
-        
-        try {
-          // 1. Apply filters if key is present (even if empty {} - which clears all filters)
-          // Only skip if the key is completely absent from viewConfig
-          if (viewConfig && 'filters' in viewConfig) {
-            const filters = viewConfig.filters;
-            gridApi.value.setFilterModel(isEmptyConfigValue(filters) ? null : filters);
-            debugLog('[ViewConfiguration] Applied filters:', filters, '(empty clears all filters)');
-          } else {
-            debugLog('[ViewConfiguration] Skipped filters (key not present, keeping current state)');
-          }
-          
-          // 2. Apply sorting if key is present (even if empty [] - which clears all sorting)
-          // Only skip if the key is completely absent from viewConfig
-          if (viewConfig && 'sorting' in viewConfig) {
-            const sorting = viewConfig.sorting;
-            if (isEmptyConfigValue(sorting)) {
-              // Clear all sorting
-              gridApi.value.applyColumnState({
-                defaultState: { sort: null },
-              });
-              debugLog('[ViewConfiguration] Cleared all sorting (empty array)');
-            } else {
-              gridApi.value.applyColumnState({
-                state: sorting,
-                defaultState: { sort: null },
-              });
-              debugLog('[ViewConfiguration] Applied sorting:', sorting);
-            }
-          } else {
-            debugLog('[ViewConfiguration] Skipped sorting (key not present, keeping current state)');
-          }
-          
-          // 3. Apply column order if key is present (even if empty [] - which resets to default order)
-          // Only skip if the key is completely absent from viewConfig
-          if (viewConfig && 'columnsOrder' in viewConfig) {
-            const columnsOrder = viewConfig.columnsOrder;
-            if (isEmptyConfigValue(columnsOrder) || !Array.isArray(columnsOrder)) {
-              // Reset to default column order (from column definitions)
-              const defaultOrder = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col)).map(col => col.getColId()) || [];
-              setColumnOrder([...defaultOrder]);
-              debugLog('[ViewConfiguration] Reset columns order to default:', defaultOrder);
-            } else {
-              gridApi.value.applyColumnState({
-                state: columnsOrder.map((colId) => ({ colId })),
-                applyOrder: true,
-              });
-              setColumnOrder([...columnsOrder]);
-              debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
-            }
-          } else {
-            debugLog('[ViewConfiguration] Skipped columns order (key not present, keeping current state)');
-          }
-          
-          // 4. Apply column sizes if key is present (even if empty {} - which resets to default widths)
-          // Only skip if the key is completely absent from viewConfig
-          if (viewConfig && 'sizes' in viewConfig) {
-            const sizes = viewConfig.sizes;
-            const columns = gridApi.value.getAllGridColumns();
-            
-            if (isEmptyConfigValue(sizes)) {
-              // Reset to default column widths from column configuration
-              // Build column state with default widths (or null for flex columns)
-              const columnState = [];
-              const contentColumns = props.content?.columns || [];
-              
-              for (const col of columns) {
-                const colId = col.getColId();
-                // Find the column config to get default width
-                const colConfig = contentColumns.find(c => 
-                  (c?.actionName || c?.field) === colId
-                );
-                
-                if (colConfig) {
-                  // For flex columns, clear width to let flex take over
-                  // For fixed columns, use the configured width
-                  if (colConfig.widthAlgo === 'flex') {
-                    columnState.push({ colId, width: null, flex: colConfig.flex ?? 1 });
-                  } else if (colConfig.width && colConfig.width !== 'auto') {
-                    const defaultWidth = wwLib.wwUtils.getLengthUnit(colConfig.width)?.[0];
-                    if (defaultWidth) {
-                      columnState.push({ colId, width: defaultWidth, flex: null });
-                    }
-                  }
-                }
-              }
-              
-              if (columnState.length > 0) {
-                gridApi.value.applyColumnState({ state: columnState });
-              }
-              debugLog('[ViewConfiguration] Reset column sizes to default:', columnState);
-            } else if (typeof sizes === 'object') {
-              // Apply specific column widths
-              const columnState = columns.map(col => {
-                const colId = col.getColId();
-                const width = sizes[colId];
-                return width !== undefined ? { colId, width } : { colId };
-              }).filter(state => state.width !== undefined);
-              
-              if (columnState.length > 0) {
-                gridApi.value.applyColumnState({
-                  state: columnState,
-                });
-                debugLog('[ViewConfiguration] Applied column sizes:', sizes);
-              }
-            }
-          } else {
-            debugLog('[ViewConfiguration] Skipped column sizes (key not present, keeping current state)');
-          }
-          
-          // 5. Apply hidden columns if key is present
-          if (viewConfig && 'hiddenColumns' in viewConfig) {
-            const hidden = viewConfig.hiddenColumns;
-            if (isEmptyConfigValue(hidden)) {
-              // Show all columns (clear hidden state), but keep virtual columns hidden
-              setHiddenColumns([]);
-              chooserHiddenState.value = [];
-              const allCols = gridApi.value.getAllGridColumns();
-              const colIds = allCols?.filter(c => !isVirtualColumn(c)).map(c => c.getColId()).filter(Boolean) || [];
-              if (colIds.length > 0) {
-                gridApi.value.setColumnsVisible(colIds, true);
-              }
-              debugLog('[ViewConfiguration] Cleared all hidden columns (empty array)');
-            } else if (Array.isArray(hidden)) {
-              setHiddenColumns([...hidden]);
-              chooserHiddenState.value = [...hidden];
-              const hiddenSet = new Set(hidden);
-              const allCols = gridApi.value.getAllGridColumns();
-              const toShow = [];
-              const toHide = [];
-              allCols?.forEach(col => {
-                const cid = col.getColId();
-                if (!cid) return;
-                // Virtual columns (sort/filter-only) must always stay hidden
-                if (isVirtualColumn(col)) {
-                  toHide.push(cid);
-                  return;
-                }
-                (hiddenSet.has(cid) ? toHide : toShow).push(cid);
-              });
-              if (toShow.length) gridApi.value.setColumnsVisible(toShow, true);
-              if (toHide.length) gridApi.value.setColumnsVisible(toHide, false);
-              debugLog('[ViewConfiguration] Applied hidden columns:', hidden);
-            }
-          } else {
-            debugLog('[ViewConfiguration] Skipped hidden columns (key not present, keeping current state)');
-          }
 
-          // 6. Apply grouping config. Unlike the other keys above, an absent
-          // 'grouping' key is treated as "disable grouping" — removing the key
-          // from a view configuration must clear the grouped layout.
-          {
-            const groupingPresent = viewConfig && 'grouping' in viewConfig;
-            const g = groupingPresent ? viewConfig.grouping : null;
-            if (!groupingPresent || isEmptyConfigValue(g) || !g || !g.columnId) {
-              groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
-              groupGridApis.value = new Map();
-              groupSelections.value = new Map();
-              debugLog(
-                groupingPresent
-                  ? '[ViewConfiguration] Disabled grouping (empty or no columnId)'
-                  : '[ViewConfiguration] Disabled grouping (key not present)'
-              );
-            } else if (isValidGroupColumn(g.columnId)) {
-              groupingState.value = {
-                columnId: g.columnId,
-                order: Array.isArray(g.order) ? [...g.order] : [],
-                collapsed: getStoredCollapsedForView(),
-                showUnassigned: g.showUnassigned !== false,
-              };
-              // When grouping activates, we unmount the single grid and mount per-group grids.
-              // Clear any stale per-group caches so fresh grid-ready events register them.
-              groupGridApis.value = new Map();
-              groupSelections.value = new Map();
-              debugLog('[ViewConfiguration] Applied grouping:', groupingState.value);
-            } else {
-              console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);
-              groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
-            }
-          }
-
-          // 7. Clear row selections when view changes (not on initial load)
-          if (!isInitial) {
-            try { gridApi.value.deselectAll(); } catch (_) { /* noop */ }
-            groupGridApis.value.forEach(api => { try { api.deselectAll(); } catch (_) { /* noop */ } });
-            groupSelections.value = new Map();
-            setSelectedRows([]);
-            debugLog('[ViewConfiguration] Cleared row selections');
-          }
-          
-          // Store the applied config
-          lastAppliedViewConfig.value = JSON.stringify(viewConfig);
-          
-          // Reset flag after a short delay to allow AG Grid events to settle
-          // AG Grid events are triggered asynchronously after API calls
-          setTimeout(() => {
-            // Only the latest applyViewConfiguration call should clear the flag.
-            // If a newer call was made, let that one handle cleanup.
-            if (myGeneration !== applyViewConfigGeneration) {
-              debugLog('[ViewConfiguration] Skipping cleanup for superseded apply (generation', myGeneration, 'vs', applyViewConfigGeneration + ')');
-              return;
-            }
-            // Update currentConfig while flag is still true so that
-            // updateViewEditedVariable() is skipped — the grid may report
-            // minor differences (e.g. pixel rounding) that don't represent
-            // a real user edit.
-            updateCurrentConfig();
-            // Sync chooser order and hidden state so the column management menu is up to date
-            if (gridApi.value) {
-              const gridCols = gridApi.value.getAllGridColumns()?.filter(c => !isVirtualColumn(c));
-              chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
-              chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
-            }
-            // Re-enable events AFTER config sync so the edited variable isn't
-            // falsely set to true by the post-application snapshot
-            isApplyingViewConfig.value = false;
-            debugLog('[ViewConfiguration] View config application complete, events re-enabled');
-          }, 100);
-          
-        } catch (e) {
-          debugLog('[ViewConfiguration] Error applying view configuration:', e);
-          if (myGeneration === applyViewConfigGeneration) {
-            isApplyingViewConfig.value = false;
-          }
-          // Retry after a short delay if it's an AG Grid timing issue
-          if (e.message && e.message.includes('#252')) {
-            setTimeout(() => {
-              applyViewConfiguration(viewConfig, isInitial);
-            }, 100);
-          }
-        }
-      }, 0);
-    };
-
-    // Watch for grid ready to apply initial view configuration
-    watch(
-      () => gridReady.value,
-      (ready) => {
-        if (!ready || !gridApi.value) return;
-        
-        // Apply initial view configuration when grid is ready
-        if (cfg.value?.viewConfiguration) {
-          applyViewConfiguration(cfg.value.viewConfiguration, true);
-          // Grid now matches the initial config — reset the edited variable
-          const variableId = cfg.value?.viewEditedVariableId;
-          if (variableId) {
-            try {
-              wwLib.wwVariable.updateValue(variableId, false);
-              debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (initial config applied)`);
-            } catch (e) {
-              debugLog('[ViewEditedVariable] Could not reset variable on init:', variableId, e);
-            }
-          }
-        }
-      },
-      { immediate: true }
-    );
-
-    // Watch for viewConfiguration changes with optimized comparison
-    watch(
-      () => cfg.value?.viewConfiguration,
-      (newConfig, oldConfig) => {
-        if (!gridApi.value || !gridReady.value) return;
-        
-        // Use lightweight comparison instead of full JSON.stringify
-        // Check if the config reference changed or key properties changed
-        const isConfigChanged = newConfig !== oldConfig;
-        let hasContentChanged = false;
-        
-        if (isConfigChanged && newConfig && oldConfig) {
-          // Quick check of key properties instead of deep stringify
-          const keys = ['filters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping'];
-          hasContentChanged = keys.some(key => {
-            const newVal = newConfig[key];
-            const oldVal = oldConfig[key];
-            // Simple reference and length comparison
-            if (newVal !== oldVal) {
-              // grouping needs a structural compare on { columnId, order, collapsed, showUnassigned }
-              if (key === 'grouping') {
-                const a = newVal || {}; const b = oldVal || {};
-                if ((a.columnId ?? null) !== (b.columnId ?? null)) return true;
-                const aOrder = Array.isArray(a.order) ? a.order : [];
-                const bOrder = Array.isArray(b.order) ? b.order : [];
-                if (aOrder.length !== bOrder.length || aOrder.some((v, i) => v !== bOrder[i])) return true;
-                const aCol = Array.isArray(a.collapsed) ? a.collapsed : [];
-                const bCol = Array.isArray(b.collapsed) ? b.collapsed : [];
-                if (aCol.length !== bCol.length) return true;
-                const bSet = new Set(bCol);
-                if (aCol.some(v => !bSet.has(v))) return true;
-                if ((a.showUnassigned !== false) !== (b.showUnassigned !== false)) return true;
-                return false;
-              }
-              if (Array.isArray(newVal) && Array.isArray(oldVal)) {
-                return newVal.length !== oldVal.length || newVal.some((item, idx) => item !== oldVal[idx]);
-              }
-              if (typeof newVal === 'object' && typeof oldVal === 'object') {
-                const newKeys = newVal ? Object.keys(newVal) : [];
-                const oldKeys = oldVal ? Object.keys(oldVal) : [];
-                return newKeys.length !== oldKeys.length || newKeys.some(k => newVal[k] !== oldVal[k]);
-              }
-              return true;
-            }
-            return false;
-          });
-        } else if (isConfigChanged) {
-          hasContentChanged = true;
-        }
-        
-        // Always reset the edited variable whenever viewConfiguration changes,
-        // regardless of whether the grid was re-synced — the new config is the new baseline.
-        // We schedule the reset AFTER applyViewConfiguration has settled so that any
-        // AG Grid events fired during/after the apply (which can arrive asynchronously,
-        // e.g. due to pixel-rounding on sizes) cannot flip the variable back to true.
-        const resetEditedVariable = (reason) => {
-          const variableId = cfg.value?.viewEditedVariableId;
-          if (!variableId) return;
-          try {
-            wwLib.wwVariable.updateValue(variableId, false);
-            debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (${reason})`);
-          } catch (e) {
-            debugLog('[ViewEditedVariable] Could not reset variable:', variableId, e);
-          }
-        };
-
-        // Open a suppression window so late grid events (from columns/data
-        // rebuilding on page/table change) can't flip the edited variable to
-        // true before the grid has settled on the new baseline.
-        if (isConfigChanged) {
-          suppressEditedUntil.value = Date.now() + 2000;
-        }
-
-        // Only apply grid changes if the configuration content actually changed
-        if (hasContentChanged) {
-          debugLog('[ViewConfiguration] Configuration changed, applying new view');
-          applyViewConfiguration(newConfig, false);
-
-          // Reset once apply settles. applyViewConfiguration clears its flag at ~100ms;
-          // we reset just after that, and again a bit later to catch any late grid events.
-          if (isConfigChanged) {
-            setTimeout(() => resetEditedVariable('viewConfiguration changed'), 150);
-            setTimeout(() => resetEditedVariable('viewConfiguration changed — late settle'), 400);
-            setTimeout(() => resetEditedVariable('viewConfiguration changed — final settle'), 1000);
-          }
-        } else if (isConfigChanged) {
-          // No grid apply needed — safe to reset immediately; no events will fire.
-          resetEditedVariable('viewConfiguration changed');
-        }
-      }
-      // Removed deep: true for better performance
-    );
-
-    // CRITICAL FIX: initialState should only be set once on mount, not reactive
-    // If it's reactive, it will reset filters/sorting whenever props change
-    // We use a ref to ensure it's set only once and never changes
-    const initialState = ref(null);
-    
-    // Set initial state only once when component mounts
-    // After the grid is ready and applies this state, we don't use it again
-    // This prevents overriding user-applied filters and sorts
-    if (!initialState.value) {
-      const state = {
-        partialColumnState: true,
-      };
-      // NOTE: Filters, sorts, and sizes are applied via watcher when viewConfiguration changes
-      // We only set column order in initialState for AG Grid's initial render
-      // At initialization, both "key absent" and "empty array []" use default column order
-      // The distinction between absent vs empty matters for runtime changes (handled by applyViewConfiguration)
-      const viewConfig = cfg.value?.viewConfiguration;
-      const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
-      const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
-      
-      // Only set initial column order if explicitly provided with values
-      if (viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0) {
-        state.columnOrder = {
-          orderedColIds: viewColumnsOrder,
-        };
-      }
-      initialState.value = state;
-
-      // Seed groupingState from initial viewConfiguration so the component
-      // mounts directly into multi-grid mode when grouping is pre-configured.
-      // collapsed is hydrated from the dedicated WeWeb variable (keyed by view id).
-      const initialGrouping = viewConfig && typeof viewConfig === 'object' ? viewConfig.grouping : null;
-      if (initialGrouping && typeof initialGrouping === 'object' && initialGrouping.columnId) {
-        groupingState.value = {
-          columnId: initialGrouping.columnId,
-          order: Array.isArray(initialGrouping.order) ? [...initialGrouping.order] : [],
-          collapsed: getStoredCollapsedForView(),
-          showUnassigned: initialGrouping.showUnassigned !== false,
-        };
-      }
-    }
 
 
     const onPaginationChanged = (event) => {
