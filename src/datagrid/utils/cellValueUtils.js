@@ -7,7 +7,7 @@ import {
   createFakeJunctionRecord,
   normalizeUserColumnOldValue,
   valuesEqual
-} from './sharedHelpers.js';
+} from '../../shared/utils/sharedHelpers.js';
 
 /**
  * Detect column type and configuration from the columns array

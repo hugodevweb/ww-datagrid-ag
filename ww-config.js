@@ -3000,10 +3000,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId: string|null, order: [groupValue], collapsed: [groupValue] } }. The grouping.columnId must reference a select-type column. Empty values ({} or []) are ignored.",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId: string|null, order: [groupValue], showUnassigned: boolean } }. The grouping.columnId must reference a select-type column. Group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, collapsed } }. Set grouping.columnId to a select-column field to split records into colored, collapsible groups; set to null to disable grouping. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
+        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned } }. Set grouping.columnId to a select-column field to split records into colored, collapsible groups; set to null to disable grouping. Group collapsed state is no longer part of this object — it is persisted in a dedicated WeWeb object variable keyed by view id. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
       },
       /* wwEditor:end */
     },

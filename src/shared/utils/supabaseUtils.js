@@ -144,7 +144,7 @@ export async function fetchSupabaseDataPaginated(config) {
 }
 
 /**
- * Wrapper for infinite scroll mode  
+ * Wrapper for infinite scroll mode
  * @param {Object} config - Configuration (same as fetchSupabaseDataUnified but with startRow/endRow)
  * @returns {Promise<Object>} Result with data and totalCount
  */
@@ -157,4 +157,50 @@ export async function fetchSupabaseDataInfinite(config) {
       endRow: config.endRow
     }
   });
+}
+
+/**
+ * Count-only fetch (head:true). Use when you need just the total — e.g.
+ * group badges that should display before opening the group's grid.
+ * Skips select payload: cheaper than fetchSupabaseDataUnified.
+ */
+export async function fetchSupabaseDataCount(config) {
+  const {
+    supabaseInstance,
+    tableName,
+    manualFilters,
+    searchValue,
+    searchableColumns,
+    filterModel,
+    applyManualFilters,
+    applySearchToSupabase,
+    convertFilterToSupabase,
+    formatFiltersForLog,
+  } = config;
+
+  if (!supabaseInstance || !tableName) {
+    throw new Error('Supabase instance and table name are required');
+  }
+
+  let query = supabaseInstance
+    .from(tableName)
+    .select('*', { count: 'exact', head: true });
+
+  if (manualFilters && Array.isArray(manualFilters) && manualFilters.length > 0) {
+    query = applyManualFilters(query, manualFilters);
+  }
+  if (searchValue && searchValue.trim() && searchableColumns) {
+    query = applySearchToSupabase(query, searchValue, searchableColumns);
+  }
+  if (filterModel && Object.keys(filterModel).length > 0) {
+    query = convertFilterToSupabase(filterModel, query);
+  }
+
+  const filtersText = formatFiltersForLog ? formatFiltersForLog(filterModel) : 'unknown';
+  const searchText = (searchValue && searchValue.trim()) ? `"${searchValue}"` : 'none';
+  console.log(`[Supabase Count] Table: ${tableName} | Filters: ${filtersText} | Search: ${searchText}`);
+
+  const { error, count } = await query;
+  if (error) throw error;
+  return count || 0;
 }
