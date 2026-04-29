@@ -509,7 +509,6 @@ import {
 } from "./utils/columnFactories.js";
 import {
   findRowNode,
-  waitForRowInGrid,
   getAvailableRowIds
 } from "./utils/rowLookup.js";
 import {
@@ -525,13 +524,6 @@ import {
   debounce
 } from "../shared/utils/sharedHelpers.js";
 import {
-  GridApiQueue,
-  GridApiUtils,
-  globalGridApiQueue,
-  globalGridApiUtils
-} from "./utils/gridApiQueue.js";
-import {
-  fetchSupabaseDataUnified,
   fetchSupabaseDataPaginated,
   fetchSupabaseDataInfinite,
   fetchSupabaseDataCount,
@@ -556,7 +548,15 @@ import {
   processValueByType,
   getRowId
 } from "./utils/cellValueUtils.js";
-import { createGridMonitor } from "./utils/performanceMonitor.js";
+import {
+  getSupabaseFilterField as _getSupabaseFilterField,
+  getSupabaseSortField as _getSupabaseSortField,
+  findColumnByField as _findColumnByField,
+  findUserColumn as _findUserColumn,
+} from "./utils/supabaseFieldMappings.js";
+import { convertFilterToSupabase as _convertFilterToSupabase } from "./utils/convertFilterToSupabase.js";
+import { useGridApi } from "./composables/useGridApi.js";
+import { useSelection } from "./composables/useSelection.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -610,15 +610,21 @@ export default {
 
     // Use shared translation utility
 
-    // Debug logging helper
-    const debugLog = (...args) => {
-      if (cfg.value?.enableDebugLogs) {
-        console.log(...args);
-      }
-    };
-
-    // Performance monitor — all recording is no-ops unless enableDebugLogs is on
-    const gridMonitor = createGridMonitor(() => !!cfg.value?.enableDebugLogs);
+    // Foundation: grid API, queue, ready/rendering flags, debug logging, gridMonitor
+    const {
+      debugLog,
+      gridMonitor,
+      gridApi,
+      gridApiQueue,
+      gridApiUtils,
+      gridReady,
+      dataRendered,
+      dataLoadingTimeout,
+      isGridRendering,
+      safeGridApiCall,
+      waitForGridReady,
+      waitForRowInGridLocal,
+    } = useGridApi(cfg, props, resolveMappingFormula);
 
     // Helper to check if a viewConfiguration value is effectively empty
     // Returns true if value is null, undefined, empty object {}, or empty array []
@@ -629,97 +635,13 @@ export default {
       return false;
     };
 
-    // Helper function to get the Supabase field path for filtering a column
-    // Only used when dataSource is 'supabase'
-    const getSupabaseFilterField = (columnId) => {
-      // Only use Supabase-specific fields when dataSource is 'supabase'
-      if (props.content?.dataSource !== 'supabase') {
-        return columnId;
-      }
-      
-      const column = props.content?.columns?.find(col => {
-        const colId = col?.actionName || col?.field;
-        return colId === columnId || col?.field === columnId;
-      });
-      
-      // Return supabaseFilterField if provided and not empty, otherwise fall back to columnId
-      const supabaseField = column?.supabaseFilterField?.trim();
-      return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
-    };
-
-    // Helper function to get the Supabase field path for sorting a column
-    // Only used when dataSource is 'supabase'
-    const getSupabaseSortField = (columnId) => {
-      // Only use Supabase-specific fields when dataSource is 'supabase'
-      if (props.content?.dataSource !== 'supabase') {
-        return columnId;
-      }
-      
-      const column = props.content?.columns?.find(col => {
-        const colId = col?.actionName || col?.field;
-        return colId === columnId || col?.field === columnId;
-      });
-      
-      // Return supabaseSortField if provided and not empty, otherwise fall back to columnId
-      const supabaseField = column?.supabaseSortField?.trim();
-      return supabaseField && supabaseField.length > 0 ? supabaseField : columnId;
-    };
-
-    // Helper function to find a column by columnId (general purpose, not limited to user columns)
-    const findColumnByField = (columnId) => {
-      if (!columnId || !props.content?.columns) return null;
-      
-      // First, try standard lookup
-      let column = props.content.columns.find(col => {
-        const colId = col?.actionName || col?.field;
-        return colId === columnId || col?.field === columnId;
-      });
-      
-      return column || null;
-    };
-
-    // Helper function to find a user column by columnId (improved lookup for many-to-many relationships)
-    const findUserColumn = (columnId) => {
-      if (!columnId || !props.content?.columns) return null;
-      
-      // First, try standard lookup
-      let column = props.content.columns.find(col => {
-        const colId = col?.actionName || col?.field;
-        return colId === columnId || col?.field === columnId;
-      });
-      
-      // If not found, try matching by supabaseFilterField (for many-to-many relationships)
-      if (!column) {
-        column = props.content.columns.find(col => {
-          if (col?.cellDataType !== 'user') return false;
-          const supabaseField = col?.supabaseFilterField?.trim();
-          if (!supabaseField) return false;
-          // Check if columnId matches the supabaseFilterField or its base path
-          // e.g., columnId="case_owners" matches supabaseFilterField="case_owners.profile.id"
-          return supabaseField === columnId || supabaseField.startsWith(columnId + '.') || columnId.startsWith(supabaseField + '.');
-        });
-      }
-      
-      // If still not found, try a more flexible match (check if columnId contains field or vice versa)
-      if (!column) {
-        column = props.content.columns.find(col => {
-          if (col?.cellDataType !== 'user') return false;
-          const field = col?.field;
-          if (!field) return false;
-          // Check if columnId contains field or field contains columnId (case-insensitive)
-          const fieldLower = String(field).toLowerCase();
-          const columnIdLower = String(columnId).toLowerCase();
-          return fieldLower.includes(columnIdLower) || columnIdLower.includes(fieldLower);
-        });
-      }
-      
-      // Return column only if it's a user column with users array
-      if (column && column.cellDataType === 'user' && Array.isArray(column.users)) {
-        return column;
-      }
-      
-      return null;
-    };
+    // Bound wrappers around the pure helpers in utils/supabaseFieldMappings.js.
+    // Keep the same single-arg signature so existing call sites in setup() and
+    // in convertFilterToSupabase below don't need to change.
+    const getSupabaseFilterField = (columnId) => _getSupabaseFilterField(props.content, columnId);
+    const getSupabaseSortField = (columnId) => _getSupabaseSortField(props.content, columnId);
+    const findColumnByField = (columnId) => _findColumnByField(props.content, columnId);
+    const findUserColumn = (columnId) => _findUserColumn(props.content, columnId);
 
     // Helper function to format filters for logging
     const formatFiltersForLog = (filterModel) => {
@@ -767,401 +689,10 @@ export default {
       return filterStrings.length > 0 ? filterStrings.join(' | ') : 'none';
     };
 
-    // Convert AG Grid filter model to Supabase filter chain
-    const convertFilterToSupabase = (filterModel, query) => {
-      if (!filterModel || Object.keys(filterModel).length === 0) {
-        return query;
-      }
-
-      // Use the refactored filter utilities for better maintainability
-      // TODO: Complete refactoring to use convertSingleFilterToSupabase utility
-      // For now, keeping the original implementation but showing the approach
-      // return convertSingleFilterToSupabase(filterModel, query, props.content?.columns, resolveMappingFormula);
-
-      let currentQuery = query;
-
-      // Process each column filter
-      for (const [columnId, filter] of Object.entries(filterModel)) {
-        if (!filter) continue;
-
-        // Get the Supabase field path for this column (supports nested relationships)
-        // This will return the supabaseFilterField if set, otherwise columnId
-        // For non-Supabase data sources, it just returns columnId
-        const supabaseField = getSupabaseFilterField(columnId);
-
-        // Handle user filters (custom filter type)
-        if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // User filter now stores user IDs directly in filter.values, not names
-          // Use the IDs directly for Supabase filtering
-          // CRITICAL FIX: Use improved column lookup for many-to-many relationships
-          const column = findUserColumn(columnId);
-
-          if (column) {
-            // Separate __empty__ sentinel from real user IDs
-            const wantsEmpty = filter.values.includes('__empty__');
-            const selectedUserIds = filter.values.filter(id => id != null && id !== '__empty__'); // Remove null/undefined and __empty__
-
-            if (selectedUserIds.length > 0 || wantsEmpty) {
-              // Determine user column type: check userColumnType first, fall back to isManyToMany for backward compatibility
-              const userColumnType = column?.userColumnType || (column?.isManyToMany === true ? 'manyToMany' : 'directFK');
-
-              // Get the appropriate filter field
-              // For many-to-many, use supabaseFilterField if provided, otherwise use supabaseField
-              // For direct FK and JSONB, use supabaseField (which is the column field)
-              const filterField = (userColumnType === 'manyToMany' && column?.supabaseFilterField?.trim())
-                ? column.supabaseFilterField.trim()
-                : supabaseField;
-
-              // If only filtering for empty (no user), just check for null/empty
-              if (wantsEmpty && selectedUserIds.length === 0) {
-                if (userColumnType === 'jsonbArray') {
-                  // JSONB: null or empty array — use ->0 to check first element
-                  // For null columns and empty arrays [], accessing index 0 returns null
-                  currentQuery = currentQuery.is(`${filterField}->0`, null);
-                } else if (userColumnType === 'manyToMany') {
-                  // Many-to-many: filter field is null
-                  currentQuery = currentQuery.is(filterField, null);
-                } else {
-                  // Direct FK: field is null
-                  currentQuery = currentQuery.is(filterField, null);
-                }
-              } else if (wantsEmpty && selectedUserIds.length > 0) {
-                // Both empty and specific users selected: use OR to combine
-                const orConditions = [];
-
-                // Add null/empty condition
-                if (userColumnType === 'jsonbArray') {
-                  // Use ->0.is.null to match both null and empty JSONB arrays
-                  orConditions.push(`${filterField}->0.is.null`);
-                } else {
-                  orConditions.push(`${filterField}.is.null`);
-                }
-
-                // Add user ID conditions
-                if (userColumnType === 'jsonbArray') {
-                  selectedUserIds.forEach(id => {
-                    orConditions.push(`${filterField}.cs.{${id}}`);
-                  });
-                } else if (userColumnType === 'manyToMany') {
-                  selectedUserIds.forEach(id => {
-                    orConditions.push(`${filterField}.eq.${id}`);
-                  });
-                } else {
-                  // Direct FK
-                  if (selectedUserIds.length === 1) {
-                    orConditions.push(`${filterField}.eq.${selectedUserIds[0]}`);
-                  } else {
-                    orConditions.push(`${filterField}.in.(${selectedUserIds.join(',')})`);
-                  }
-                }
-
-                currentQuery = currentQuery.or(orConditions.join(','));
-              } else {
-              // Only specific users selected (no __empty__)
-              // Apply filter based on user column type
-              if (userColumnType === 'jsonbArray') {
-                // JSONB Array: Use contains operator for Supabase JSONB arrays
-                // Supabase .contains() checks if the JSONB array contains the specified value(s)
-                // Note: .contains() requires ALL values to be present, so for "any of" we use OR
-                if (selectedUserIds.length === 1) {
-                  // Single user: check if array contains this user ID
-                  // For JSONB arrays, we pass an array with the single ID
-                  currentQuery = currentQuery.contains(filterField, [selectedUserIds[0]]);
-                } else {
-                  // Multiple users: check if array contains ANY of the selected user IDs
-                  // Use OR condition with individual contains checks for each ID
-                  // PostgREST syntax for JSONB containment uses curly braces for array values
-                  // Format: field.cs.{value} for checking if JSONB array contains the value
-                  const orConditions = selectedUserIds.map(id => {
-                    // Use curly braces for PostgREST array containment syntax
-                    // This checks if the JSONB column contains the specified value
-                    return `${filterField}.cs.{${id}}`;
-                  }).join(',');
-                  currentQuery = currentQuery.or(orConditions);
-                }
-              } else if (userColumnType === 'manyToMany') {
-                // Many-to-Many: Use eq/in with supabaseFilterField (e.g., "case_owners.profile.id")
-                if (selectedUserIds.length === 1) {
-                  currentQuery = currentQuery.eq(filterField, selectedUserIds[0]);
-                } else {
-                  currentQuery = currentQuery.in(filterField, selectedUserIds);
-                }
-
-                // For many-to-many with nested paths, exclude null values at each level
-                const isNestedPath = filterField.includes('.');
-
-                if (isNestedPath) {
-                  // For nested paths in junction tables, we need to check each level of the path
-                  // to ensure the entire relationship chain exists
-                  // Example: for "case_owners.profile.id", check:
-                  // - case_owners is not null (junction table exists)
-                  // - case_owners.profile is not null (nested relationship exists)
-                  // - case_owners.profile.id is not null (field exists)
-                  const pathParts = filterField.split('.');
-
-                  // Build and check each intermediate path level
-                  // This ensures that if any part of the relationship chain is null, the row is excluded
-                  let currentPath = '';
-                  for (let i = 0; i < pathParts.length; i++) {
-                    if (i === 0) {
-                      currentPath = pathParts[i];
-                    } else {
-                      currentPath += '.' + pathParts[i];
-                    }
-                    // Exclude rows where this path level is null
-                    // Note: If this doesn't work for junction tables, we may need to use
-                    // an inner join in the select statement (e.g., 'case_owners!inner(*)')
-                    currentQuery = currentQuery.not(currentPath, 'is', null);
-                  }
-                } else {
-                  // For direct fields, just exclude null values
-                  // Supabase syntax: .not(field, 'is', null)
-                  currentQuery = currentQuery.not(filterField, 'is', null);
-                }
-              } else {
-                // Direct Foreign Key (default): Use eq/in operators
-                if (selectedUserIds.length === 1) {
-                  currentQuery = currentQuery.eq(filterField, selectedUserIds[0]);
-                } else {
-                  currentQuery = currentQuery.in(filterField, selectedUserIds);
-                }
-
-                // For direct FK, exclude null values
-                currentQuery = currentQuery.not(filterField, 'is', null);
-              }
-              }
-
-            } else {
-              debugLog('[Supabase Filter] Warning: No valid user IDs found for names:', filter.values);
-            }
-          } else {
-            // Enhanced error logging to help diagnose the issue
-            debugLog('[Supabase Filter] Warning: Could not find user column or users array for:', columnId);
-            debugLog('[Supabase Filter] Available columns:', props.content?.columns?.map(col => ({
-              field: col?.field,
-              actionName: col?.actionName,
-              cellDataType: col?.cellDataType,
-              userColumnType: col?.userColumnType,
-              isManyToMany: col?.isManyToMany,
-              supabaseFilterField: col?.supabaseFilterField,
-              hasUsers: Array.isArray(col?.users),
-              usersCount: Array.isArray(col?.users) ? col.users.length : 0
-            })));
-            debugLog('[Supabase Filter] Searching for columnId:', columnId);
-          }
-          continue;
-        }
-
-        // Handle different filter types
-        if (filter.filterType === 'text') {
-          // Check if this is a boolean column (AG Grid uses Text Filter for boolean with True/False dropdown)
-          const column = findColumnByField(columnId);
-          const isBoolean = column?.cellDataType === 'boolean';
-          
-          // For boolean columns, handle True/False string values
-          if (isBoolean) {
-            // AG Grid's Text Filter for boolean uses type: "true" or type: "false" as strings
-            // Also check filter.filter for the value
-            let booleanValue = null;
-            let isNotEqual = false;
-            
-            // Check if it's a notEqual operation first
-            if (filter.type === 'notEqual' || filter.type === 'notEquals') {
-              isNotEqual = true;
-              // Get the value from filter.filter for notEqual
-              const filterValue = filter.filter;
-              if (filterValue === 'true' || filterValue === true || filterValue === 'True' || filterValue === '1' || filterValue === 1) {
-                booleanValue = true;
-              } else if (filterValue === 'false' || filterValue === false || filterValue === 'False' || filterValue === '0' || filterValue === 0) {
-                booleanValue = false;
-              }
-            }
-            // Check filter.type for direct true/false (AG Grid boolean text filter uses this)
-            else if (filter.type === 'true' || filter.type === true) {
-              booleanValue = true;
-            } else if (filter.type === 'false' || filter.type === false) {
-              booleanValue = false;
-            } 
-            // Also check filter.filter (fallback)
-            else if (filter.filter === 'true' || filter.filter === true || filter.filter === 'True') {
-              booleanValue = true;
-            } else if (filter.filter === 'false' || filter.filter === false || filter.filter === 'False') {
-              booleanValue = false;
-            }
-            // Handle equals type with string values
-            else if (filter.type === 'equals') {
-              const filterValue = filter.filter;
-              if (filterValue === 'true' || filterValue === true || filterValue === 'True' || filterValue === '1' || filterValue === 1) {
-                booleanValue = true;
-              } else if (filterValue === 'false' || filterValue === false || filterValue === 'False' || filterValue === '0' || filterValue === 0) {
-                booleanValue = false;
-              }
-            }
-            
-            // Apply boolean filter if we have a valid boolean value
-            if (booleanValue !== null) {
-              if (isNotEqual) {
-                currentQuery = currentQuery.neq(supabaseField, booleanValue);
-              } else {
-                // For equals, true, false, or any other type, use eq
-                currentQuery = currentQuery.eq(supabaseField, booleanValue);
-              }
-            }
-          } else {
-            // Regular text filters for non-boolean columns
-            if (filter.type === 'equals') {
-              currentQuery = currentQuery.eq(supabaseField, filter.filter);
-            } else if (filter.type === 'notEqual') {
-              currentQuery = currentQuery.neq(supabaseField, filter.filter);
-            } else if (filter.type === 'contains') {
-              currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}%`);
-            } else if (filter.type === 'notContains') {
-              currentQuery = currentQuery.not('ilike', supabaseField, `%${filter.filter}%`);
-            } else if (filter.type === 'startsWith') {
-              currentQuery = currentQuery.ilike(supabaseField, `${filter.filter}%`);
-            } else if (filter.type === 'endsWith') {
-              currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}`);
-            }
-          }
-        } else if (filter.filterType === 'number') {
-          // Check if this is a currency column - need to convert display value back to cents
-          const column = findColumnByField(columnId);
-          const isCurrency = column?.cellDataType === 'currency';
-          
-          // Helper to convert filter value - multiply by 100 for currency columns
-          const getFilterValue = (value) => {
-            const numValue = Number(value);
-            return isCurrency ? Math.round(numValue * 100) : numValue;
-          };
-          
-          // Number filters
-          if (filter.type === 'equals') {
-            currentQuery = currentQuery.eq(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'notEqual') {
-            currentQuery = currentQuery.neq(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'greaterThan') {
-            currentQuery = currentQuery.gt(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'greaterThanOrEqual') {
-            currentQuery = currentQuery.gte(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'lessThan') {
-            currentQuery = currentQuery.lt(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'lessThanOrEqual') {
-            currentQuery = currentQuery.lte(supabaseField, getFilterValue(filter.filter));
-          } else if (filter.type === 'inRange') {
-            currentQuery = currentQuery.gte(supabaseField, getFilterValue(filter.filter))
-              .lte(supabaseField, getFilterValue(filter.filterTo));
-          }
-        } else if (filter.filterType === 'date') {
-          // Date filters
-          const filterDate = filter.dateFrom || filter.filter;
-          const filterToDate = filter.dateTo || filter.filterTo;
-          
-          if (filter.type === 'equals') {
-            // For date equals, we need to check the entire day
-            const startOfDay = new Date(filterDate);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(filterDate);
-            endOfDay.setHours(23, 59, 59, 999);
-            currentQuery = currentQuery.gte(supabaseField, startOfDay.toISOString())
-              .lte(supabaseField, endOfDay.toISOString());
-          } else if (filter.type === 'notEqual') {
-            // Not equal for dates: filter out the specific day
-            // We'll use a workaround: filter for dates less than start of day OR greater than end of day
-            const startOfDay = new Date(filterDate);
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(filterDate);
-            endOfDay.setHours(23, 59, 59, 999);
-            // Use .or() with proper Supabase syntax
-            currentQuery = currentQuery.or(`and(${supabaseField}.lt.${startOfDay.toISOString()},${supabaseField}.gt.${endOfDay.toISOString()})`);
-          } else if (filter.type === 'greaterThan') {
-            currentQuery = currentQuery.gt(supabaseField, new Date(filterDate).toISOString());
-          } else if (filter.type === 'greaterThanOrEqual') {
-            currentQuery = currentQuery.gte(supabaseField, new Date(filterDate).toISOString());
-          } else if (filter.type === 'lessThan') {
-            currentQuery = currentQuery.lt(supabaseField, new Date(filterDate).toISOString());
-          } else if (filter.type === 'lessThanOrEqual') {
-            currentQuery = currentQuery.lte(supabaseField, new Date(filterDate).toISOString());
-          } else if (filter.type === 'inRange') {
-            currentQuery = currentQuery.gte(supabaseField, new Date(filterDate).toISOString())
-              .lte(supabaseField, new Date(filterToDate).toISOString());
-          }
-        } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Select filters store values (IDs) directly in filter.values, not labels.
-          // Supports the `__empty__` sentinel for null/empty matching — used by the
-          // grouping feature to query the "Unassigned" group (rows with null select value).
-          const wantsEmpty = filter.values.includes('__empty__');
-          const optionValues = filter.values.filter(val => val != null && val !== '__empty__');
-
-          if (wantsEmpty && optionValues.length === 0) {
-            // Only null/empty match requested — use .is(null)
-            currentQuery = currentQuery.is(supabaseField, null);
-          } else if (wantsEmpty && optionValues.length > 0) {
-            // Mixed: match null OR any of the provided values
-            const orConditions = [`${supabaseField}.is.null`];
-            if (optionValues.length === 1) {
-              orConditions.push(`${supabaseField}.eq.${optionValues[0]}`);
-            } else {
-              orConditions.push(`${supabaseField}.in.(${optionValues.join(',')})`);
-            }
-            currentQuery = currentQuery.or(orConditions.join(','));
-          } else if (optionValues.length > 0) {
-            if (optionValues.length === 1) {
-              currentQuery = currentQuery.eq(supabaseField, optionValues[0]);
-            } else {
-              currentQuery = currentQuery.in(supabaseField, optionValues);
-            }
-          }
-        } else if (filter.type === 'recordFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          const wantsEmpty = filter.values.includes('__empty__');
-          const recordValues = filter.values.filter(val => val != null && val !== '__empty__');
-
-          if (wantsEmpty && recordValues.length === 0) {
-            currentQuery = currentQuery.is(supabaseField, null);
-          } else if (wantsEmpty && recordValues.length > 0) {
-            const orConditions = [`${supabaseField}.is.null`];
-            if (recordValues.length === 1) {
-              orConditions.push(`${supabaseField}.eq.${recordValues[0]}`);
-            } else {
-              orConditions.push(`${supabaseField}.in.(${recordValues.join(',')})`);
-            }
-            currentQuery = currentQuery.or(orConditions.join(','));
-          } else if (recordValues.length > 0) {
-            if (recordValues.length === 1) {
-              currentQuery = currentQuery.eq(supabaseField, recordValues[0]);
-            } else {
-              currentQuery = currentQuery.in(supabaseField, recordValues);
-            }
-          }
-        } else if (filter.filterType === 'set') {
-          // Set filters (for boolean and other column types)
-          if (filter.values && filter.values.length > 0) {
-            // Check if this is a boolean column
-            const column = findColumnByField(columnId);
-            const isBoolean = column?.cellDataType === 'boolean';
-            
-            // Convert values to proper types
-            let convertedValues = filter.values;
-            if (isBoolean) {
-              // Convert string booleans to actual booleans for Supabase
-              convertedValues = filter.values.map(val => {
-                // Handle various boolean representations
-                if (val === 'true' || val === true || val === 1 || val === '1') return true;
-                if (val === 'false' || val === false || val === 0 || val === '0') return false;
-                return val;
-              });
-            }
-            
-            if (convertedValues.length === 1) {
-              currentQuery = currentQuery.eq(supabaseField, convertedValues[0]);
-            } else {
-              currentQuery = currentQuery.in(supabaseField, convertedValues);
-            }
-          }
-        }
-      }
-
-      return currentQuery;
-    };
+    // Convert AG Grid filter model to Supabase filter chain.
+    // Bound wrapper - pure implementation lives in utils/convertFilterToSupabase.js.
+    const convertFilterToSupabase = (filterModel, query) =>
+      _convertFilterToSupabase(filterModel, query, props.content, debugLog);
 
     // Apply search filter to Supabase query
     const applySearchToSupabase = (query, searchValue, searchableColumns) => {
@@ -1455,25 +986,16 @@ export default {
       }
     };
 
-    const gridApi = shallowRef(null);
-    
-    // Initialize grid API queue for this component instance
-    const gridApiQueue = new GridApiQueue();
-    const gridApiUtils = new GridApiUtils(gridApiQueue);
+    // Selection: selectedRows variable + row selection / drag event handlers
+    const {
+      selectedRows,
+      setSelectedRows,
+      onRowSelected,
+      onRowDragged,
+      onRowDragEnter,
+      onSelectionChanged,
+    } = useSelection(props, ctx, { gridApi });
 
-    // Cleanup queue on component unmount
-    onBeforeUnmount(() => {
-      gridApiQueue.clear();
-    });
-    
-    const { value: selectedRows, setValue: setSelectedRows } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "selectedRows",
-        type: "array",
-        defaultValue: [],
-        readonly: true,
-      });
     const { value: filterValue, setValue: setFilters } =
       wwLib.wwVariable.useComponentVariable({
         uid: props.uid,
@@ -2122,83 +1644,11 @@ export default {
       }
     };
 
-    const gridReady = ref(false);
-    const dataRendered = ref(false);
-    const dataLoadingTimeout = ref(null);
+    // DOM container ref for the grid wrapper (used for scroll detection and
+    // group-mode horizontal scrollbar metrics). Stays in setup() — not part
+    // of useGridApi since it's a template ref, not API plumbing.
     const gridContainerRef = ref(null);
-    
-    // CRITICAL FIX: Track when the grid is actively rendering to prevent error #252
-    // "cannot get grid to draw rows when it is in the middle of drawing rows"
-    const isGridRendering = ref(false);
-    
-    // Helper to safely call grid API methods - defers to next tick if grid is rendering
-    const safeGridApiCall = (callback, delay = 0) => {
-      return new Promise((resolve) => {
-        const executeCall = () => {
-          if (!gridApi.value) {
-            resolve(false);
-            return;
-          }
-          
-          // If grid is rendering, defer the call
-          if (isGridRendering.value) {
-            setTimeout(() => executeCall(), 10);
-            return;
-          }
-          
-          try {
-            const result = callback();
-            resolve(result);
-          } catch (error) {
-            // If we still get the error, retry with a longer delay
-            if (error.message && error.message.includes('#252')) {
-              setTimeout(() => executeCall(), 50);
-            } else {
-              console.error('[Datagrid] Safe API call error:', error);
-              resolve(false);
-            }
-          }
-        };
-        
-        if (delay > 0) {
-          setTimeout(executeCall, delay);
-        } else {
-          executeCall();
-        }
-      });
-    };
-    
-    // Helper to wait for grid to be fully ready (not just initialized, but ready for API calls)
-    const waitForGridReady = (timeout = 5000) => {
-      return new Promise((resolve, reject) => {
-        const startTime = Date.now();
-        
-        const checkReady = () => {
-          // Check if grid API is available and grid is marked as ready
-          if (gridApi.value && gridReady.value && !isGridRendering.value) {
-            resolve(true);
-            return;
-          }
-          
-          // Check timeout
-          if (Date.now() - startTime > timeout) {
-            reject(new Error('[Datagrid] Timeout waiting for grid to be ready'));
-            return;
-          }
-          
-          // Check again in a short interval
-          setTimeout(checkReady, 50);
-        };
-        
-        checkReady();
-      });
-    };
-    
-    // Helper to wait for a specific row to appear in the grid (using unified utility)
-    const waitForRowInGridLocal = (rowId, timeout = 10000) => {
-      return waitForRowInGrid(gridApi.value, rowId, resolveMappingFormula, props.content, timeout);
-    };
-    
+
     // Supabase data state
     const supabaseData = ref([]);
     const supabaseTotalCount = ref(0);
@@ -2776,46 +2226,6 @@ export default {
         };
       }
     }
-
-    const onRowSelected = (event) => {
-      const name = event.node.isSelected() ? "rowSelected" : "rowDeselected";
-      ctx.emit("trigger-event", {
-        name,
-        event: { row: event.data },
-      });
-    };
-
-    const onRowDragged = (event) => {
-      const rows = [];
-      event.api.forEachNode((node) => {
-        rows.push(node.data);
-      });
-      ctx.emit("trigger-event", {
-        name: "rowDragged",
-        event: {
-          row: event.node.data,
-          id: event.node.id,
-          targetIndex: event.overIndex,
-          rows,
-        },
-      });
-    };
-
-    const onRowDragEnter = (event) => {
-      ctx.emit("trigger-event", {
-        name: "rowDragStart",
-        event: {
-          row: event.node.data,
-          id: event.node.id,
-        },
-      });
-    };
-
-    const onSelectionChanged = (event) => {
-      if (!gridApi.value) return;
-      const selected = gridApi.value.getSelectedRows() || [];
-      setSelectedRows(selected);
-    };
 
     const onFilterChanged = (event) => {
       if (!gridApi.value) return;

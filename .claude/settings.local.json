@@ -14,7 +14,13 @@
       "Read(//mnt/c/Users/hugo4/**)",
       "Read(//c/Users/hugo4/.claude/**)",
       "Bash(git checkout *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "PowerShell($path = \"src\\\\datagrid\\\\Datagrid.vue\"; $lines = [System.IO.File]::ReadAllLines\\($path\\); $before = $lines[0..699]; $after = $lines[1095..\\($lines.Length-1\\)]; $replacement = @\\( \"    // Convert AG Grid filter model to Supabase filter chain.\", \"    // Bound wrapper - pure implementation lives in utils/convertFilterToSupabase.js.\", \"    const convertFilterToSupabase = \\(filterModel, query\\) =>\", \"      _convertFilterToSupabase\\(filterModel, query, props.content, debugLog\\);\" \\); $newLines = $before + $replacement + $after; [System.IO.File]::WriteAllLines\\(\\(Resolve-Path $path\\), $newLines\\); \"Done. Old length: $\\($lines.Length\\). New length: $\\($newLines.Length\\).\")",
+      "Bash(node --check src/datagrid/composables/useGridApi.js)",
+      "Bash(node --check src/datagrid/composables/useSelection.js)",
+      "Bash(node --check src/datagrid/utils/supabaseFieldMappings.js)",
+      "Bash(node --check src/datagrid/utils/convertFilterToSupabase.js)",
+      "Bash(taskkill //F //PID 12424)"
     ]
   }
 }
