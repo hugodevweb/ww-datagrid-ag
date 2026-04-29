@@ -557,6 +557,10 @@ import {
 import { convertFilterToSupabase as _convertFilterToSupabase } from "./utils/convertFilterToSupabase.js";
 import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
+import { useDataFetch } from "./composables/useDataFetch.js";
+import { useFiltersAndSort } from "./composables/useFiltersAndSort.js";
+import { useInfiniteScroll } from "./composables/useInfiniteScroll.js";
+import { useGrouping } from "./composables/useGrouping.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -635,356 +639,7 @@ export default {
       return false;
     };
 
-    // Bound wrappers around the pure helpers in utils/supabaseFieldMappings.js.
-    // Keep the same single-arg signature so existing call sites in setup() and
-    // in convertFilterToSupabase below don't need to change.
-    const getSupabaseFilterField = (columnId) => _getSupabaseFilterField(props.content, columnId);
-    const getSupabaseSortField = (columnId) => _getSupabaseSortField(props.content, columnId);
     const findColumnByField = (columnId) => _findColumnByField(props.content, columnId);
-    const findUserColumn = (columnId) => _findUserColumn(props.content, columnId);
-
-    // Helper function to format filters for logging
-    const formatFiltersForLog = (filterModel) => {
-      if (!filterModel || Object.keys(filterModel).length === 0) {
-        return 'none';
-      }
-      
-      const filterStrings = [];
-      for (const [columnId, filter] of Object.entries(filterModel)) {
-        if (!filter) continue;
-        
-        let filterDesc = `${columnId}: `;
-        
-        if (filter.type === 'userFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // User filters now store user IDs directly in filter.values, not names
-          // Use the IDs directly for logging
-          filterDesc += `in [${filter.values.join(', ')}]`;
-        } else if (filter.filterType === 'text') {
-          filterDesc += `${filter.type} "${filter.filter}"`;
-        } else if (filter.filterType === 'number') {
-          if (filter.type === 'inRange') {
-            filterDesc += `${filter.filter} to ${filter.filterTo}`;
-          } else {
-            filterDesc += `${filter.type} ${filter.filter}`;
-          }
-        } else if (filter.filterType === 'date') {
-          if (filter.type === 'inRange') {
-            filterDesc += `${filter.dateFrom} to ${filter.dateTo}`;
-          } else {
-            filterDesc += `${filter.type} ${filter.dateFrom || filter.filter}`;
-          }
-        } else if (filter.type === 'selectFilter' && filter.values && Array.isArray(filter.values) && filter.values.length > 0) {
-          // Select filters now store values (IDs) directly, not labels
-          // Use the values directly for logging
-          filterDesc += `in [${filter.values.join(', ')}]`;
-        } else if (filter.filterType === 'set' && filter.values) {
-          filterDesc += `in [${filter.values.join(', ')}]`;
-        } else {
-          filterDesc += `${filter.type || filter.filterType || 'unknown'}`;
-        }
-        
-        filterStrings.push(filterDesc);
-      }
-      
-      return filterStrings.length > 0 ? filterStrings.join(' | ') : 'none';
-    };
-
-    // Convert AG Grid filter model to Supabase filter chain.
-    // Bound wrapper - pure implementation lives in utils/convertFilterToSupabase.js.
-    const convertFilterToSupabase = (filterModel, query) =>
-      _convertFilterToSupabase(filterModel, query, props.content, debugLog);
-
-    // Apply search filter to Supabase query
-    const applySearchToSupabase = (query, searchValue, searchableColumns) => {
-      if (!searchValue || !searchValue.trim() || !searchableColumns || !Array.isArray(searchableColumns) || searchableColumns.length === 0) {
-        return query;
-      }
-
-      const searchTerm = searchValue.trim();
-      const validColumns = searchableColumns.filter(col => col && typeof col === 'string' && col.trim().length > 0);
-
-      if (validColumns.length === 0) {
-        return query;
-      }
-
-      // Map searchable columns to their Supabase field paths
-      // This allows searchableColumns to contain either column IDs or direct Supabase paths
-      const supabaseSearchFields = validColumns.map(col => {
-        // Check if this is a column ID that has a supabaseFilterField
-        const column = props.content?.columns?.find(c => {
-          const colId = c?.actionName || c?.field;
-          return colId === col || c?.field === col;
-        });
-        // Use supabaseFilterField if provided and not empty, otherwise use the column ID as-is
-        // This allows searchableColumns to contain either column IDs or direct Supabase paths
-        const supabaseField = column?.supabaseFilterField?.trim();
-        return (supabaseField && supabaseField.length > 0) ? supabaseField : col;
-      });
-
-      // Build OR condition for all searchable columns
-      // For Supabase, we need to use .or() with proper syntax
-      // Format: or('col1.ilike.%term%,col2.ilike.%term%,...')
-      if (supabaseSearchFields.length === 1) {
-        // Single column: just use ilike
-        return query.ilike(supabaseSearchFields[0], `%${searchTerm}%`);
-      } else {
-        // Multiple columns: use OR condition
-        // Supabase OR syntax: or('col1.ilike.%term%,col2.ilike.%term%')
-        // Note: The pattern needs to be properly escaped for special characters
-        const escapedTerm = searchTerm.replace(/'/g, "''"); // Escape single quotes
-        const orConditions = supabaseSearchFields
-          .map(col => `${col}.ilike.%${escapedTerm}%`)
-          .join(',');
-        return query.or(orConditions);
-      }
-    };
-
-    // Apply manual filters to Supabase query
-    const applyManualFilters = (query, manualFilters) => {
-      if (!manualFilters || !Array.isArray(manualFilters) || manualFilters.length === 0) {
-        return query;
-      }
-
-      let currentQuery = query;
-
-      for (const filter of manualFilters) {
-        if (!filter?.field || !filter?.operator) {
-          continue;
-        }
-
-        const field = filter.field;
-        const operator = filter.operator;
-        const value = filter.value;
-
-        // Handle different operators
-        switch (operator) {
-          case 'eq':
-            currentQuery = currentQuery.eq(field, value);
-            break;
-          case 'neq':
-            currentQuery = currentQuery.neq(field, value);
-            break;
-          case 'gt':
-            currentQuery = currentQuery.gt(field, value);
-            break;
-          case 'gte':
-            currentQuery = currentQuery.gte(field, value);
-            break;
-          case 'lt':
-            currentQuery = currentQuery.lt(field, value);
-            break;
-          case 'lte':
-            currentQuery = currentQuery.lte(field, value);
-            break;
-          case 'like':
-            currentQuery = currentQuery.like(field, value);
-            break;
-          case 'ilike':
-            currentQuery = currentQuery.ilike(field, value);
-            break;
-          case 'is':
-            // Handle 'is' for null/boolean checks
-            if (value === 'null' || value === null) {
-              currentQuery = currentQuery.is(field, null);
-            } else if (value === 'true') {
-              currentQuery = currentQuery.is(field, true);
-            } else if (value === 'false') {
-              currentQuery = currentQuery.is(field, false);
-            }
-            break;
-          case 'in':
-            // Handle 'in' for arrays - value should be comma-separated or array
-            if (Array.isArray(value)) {
-              currentQuery = currentQuery.in(field, value);
-            } else if (typeof value === 'string' && value.includes(',')) {
-              const values = value.split(',').map(v => v.trim());
-              currentQuery = currentQuery.in(field, values);
-            } else if (value) {
-              currentQuery = currentQuery.in(field, [value]);
-            }
-            break;
-          case 'contains':
-            currentQuery = currentQuery.contains(field, value);
-            break;
-          case 'containedBy':
-            currentQuery = currentQuery.containedBy(field, value);
-            break;
-          default:
-            // Default to eq if unknown operator
-            currentQuery = currentQuery.eq(field, value);
-        }
-      }
-
-      return currentQuery;
-    };
-
-    // Helper function to wait for Supabase instance to become available
-    // Retries with exponential backoff up to a maximum wait time
-    // This function is defined in setup scope but can be used in methods via closure
-    const waitForSupabaseInstance = async (maxWaitTime = 10000, initialDelay = 100) => {
-      const startTime = Date.now();
-      let delay = initialDelay;
-      const maxDelay = 2000; // Maximum delay between retries (2 seconds)
-      
-      while (Date.now() - startTime < maxWaitTime) {
-        const supabase = wwLib.wwPlugins.supabase.instance;
-        if (supabase) {
-          return supabase;
-        }
-        
-        // Wait before retrying with exponential backoff
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay = Math.min(delay * 1.5, maxDelay); // Exponential backoff, capped at maxDelay
-      }
-      
-      // If we've waited the maximum time, return null
-      return null;
-    };
-
-    // waitForSupabaseInstance is already defined as a const function, 
-    // it will be exposed from setup for methods to access
-
-    // Fetch data from Supabase for infinite scrolling (returns data directly)
-    const fetchSupabaseDataForInfinite = async (startRow, endRow, filterModel = null, sortModel = null, searchValue = null) => {
-      if (props.content?.dataSource !== 'supabase') {
-        return { data: [], totalCount: 0 };
-      }
-
-      const tableName = props.content?.supabaseTable;
-      const queryString = props.content?.supabaseQuery || '*';
-
-      if (!tableName) {
-        supabaseError.value = 'Supabase table name is required';
-        return { data: [], totalCount: 0 };
-      }
-
-      try {
-        supabaseLoading.value = true;
-        supabaseError.value = null;
-
-        // Wait for Supabase instance to become available (with retry logic)
-        const supabase = await waitForSupabaseInstance(10000, 100);
-        if (!supabase) {
-          throw new Error('Supabase instance not available after waiting');
-        }
-
-        // Use unified fetch function
-        return await fetchSupabaseDataInfinite({
-          supabaseInstance: supabase,
-          tableName,
-          queryString,
-          manualFilters: props.content?.supabaseFilters,
-          searchValue: props.content?.enableSearch ? searchValue : null,
-          searchableColumns: props.content?.searchableColumns || [],
-          filterModel,
-          sortModel,
-          startRow,
-          endRow,
-          applyManualFilters,
-          applySearchToSupabase,
-          convertFilterToSupabase,
-          getSupabaseSortField,
-          formatFiltersForLog
-        });
-      } catch (error) {
-        console.error('[Supabase Infinite] Error fetching data:', error);
-        supabaseError.value = error.message || 'Failed to fetch data from Supabase';
-        return { data: [], totalCount: 0 };
-      } finally {
-        supabaseLoading.value = false;
-      }
-    };
-
-    // Fetch data from Supabase
-    const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
-      // Skip fetch if we're updating data locally
-      if (isUpdatingDataLocally.value) {
-        return;
-      }
-      
-      if (props.content?.dataSource !== 'supabase') {
-        return;
-      }
-
-      const tableName = props.content?.supabaseTable;
-      const queryString = props.content?.supabaseQuery || '*';
-
-      if (!tableName) {
-        supabaseError.value = 'Supabase table name is required';
-        return;
-      }
-
-      // Create a unique key for this fetch request
-      const fetchKey = createFetchKey({ page, pageSize, filterModel, sortModel, searchValue, tableName, queryString });
-      
-      // Prevent duplicate/recursive calls
-      if (isFetchingData.value) {
-        return;
-      }
-      
-      // Check if this is the same request as the last one
-      if (lastFetchParams.value === fetchKey) {
-        return;
-      }
-
-      // Set fetching flag and store params
-      isFetchingData.value = true;
-      lastFetchParams.value = fetchKey;
-
-      try {
-        supabaseLoading.value = true;
-        supabaseError.value = null;
-
-        // Wait for Supabase instance to become available (with retry logic)
-        const supabase = await waitForSupabaseInstance(10000, 100);
-        if (!supabase) {
-          throw new Error('Supabase instance not available after waiting');
-        }
-
-        // Query building is now handled by the unified function
-
-        // Use unified fetch function
-        const result = await fetchSupabaseDataPaginated({
-          supabaseInstance: supabase,
-          tableName,
-          queryString,
-          manualFilters: props.content?.supabaseFilters,
-          searchValue: props.content?.enableSearch ? searchValue : null,
-          searchableColumns: props.content?.searchableColumns || [],
-          filterModel,
-          sortModel,
-          page,
-          pageSize,
-          applyManualFilters,
-          applySearchToSupabase,
-          convertFilterToSupabase,
-          getSupabaseSortField,
-          formatFiltersForLog
-        });
-
-        supabaseData.value = result.data;
-        supabaseTotalCount.value = result.totalCount;
-
-        // Update records after data is fetched (records will also be updated via rowData watch, but this ensures it's immediate)
-        nextTick(() => {
-          setTimeout(() => {
-            updateRecordsFromGrid();
-          }, 100);
-        });
-      } catch (error) {
-        console.error('[Supabase] Error fetching data:', error);
-        supabaseError.value = error.message || 'Failed to fetch data from Supabase';
-        supabaseData.value = [];
-        supabaseTotalCount.value = 0;
-        setRecords([]);
-      } finally {
-        supabaseLoading.value = false;
-        // Clear fetching flag after a short delay to allow grid to update
-        setTimeout(() => {
-          isFetchingData.value = false;
-        }, 100);
-      }
-    };
 
     // Selection: selectedRows variable + row selection / drag event handlers
     const {
@@ -996,22 +651,77 @@ export default {
       onSelectionChanged,
     } = useSelection(props, ctx, { gridApi });
 
-    const { value: filterValue, setValue: setFilters } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "filters",
-        type: "object",
-        defaultValue: {},
-        readonly: true,
-      });
-    const { value: sortValue, setValue: setSort } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "sort",
-        type: "object",
-        defaultValue: {},
-        readonly: true,
-      });
+    // Composable: Supabase data fetching, filter helpers, records/isFetching variables,
+    // removed-row tracking, isInfiniteScrollEnabled.
+    const {
+      records, setRecords,
+      isFetching, setIsFetching,
+      supabaseData, supabaseTotalCount, supabaseLoading, supabaseError,
+      isFetchingData, lastFetchParams,
+      isUpdatingDataLocally, setUpdatingDataLocally, getUpdatingDataLocally,
+      removedRowIds, cleanupRemovedIds, clearRemovedIds,
+      isInfiniteScrollEnabled,
+      formatFiltersForLog, applySearchToSupabase, applyManualFilters,
+      convertFilterToSupabase, getSupabaseSortField,
+      waitForSupabaseInstance,
+      fetchSupabaseDataForInfinite, fetchSupabaseData,
+      updateRecordsFromGrid,
+    } = useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering });
+
+    // DOM container ref for the grid wrapper (used for scroll detection and
+    // group-mode horizontal scrollbar metrics). Hoisted above useGrouping
+    // since useGrouping reads it for the multi-grid scrollbar sync.
+    const gridContainerRef = ref(null);
+
+    // Composable: grouping feature — multi-grid layout, persisted collapsed state,
+    // group event handlers, drag-reorder, horizontal scrollbar sync. Cycle-deps
+    // (updateCurrentConfig, scheduleRefreshGroupCounts, single-grid handlers, etc.)
+    // are passed as thunks that resolve at call time, after the orchestrator has
+    // finished wiring all composables.
+    const {
+      UNASSIGNED_GROUP,
+      groupingState, pendingGroupingColumnId, isGroupingTransitionLoading,
+      groupGridApis, groupSelections, groupInfiniteCounts,
+      groupHorizontalScrollRef, groupHorizontalScrollWidth,
+      groupHorizontalViewportWidth, groupHorizontalScrollLeft,
+      groupDragValue, groupDragOverValue,
+      groupingColumnId, isGroupingActive, groupingSourceRows, groupedRowData,
+      orderedGroups, hasGroupHorizontalOverflow, selectableGroupingColumns,
+      isSelectColumn, isValidGroupColumn,
+      getGroupColor, getGroupLabel, rowGroupKey, groupRowData,
+      alignedGridApisForGroup, findGroupForRowId,
+      getStoredCollapsedForView, persistCollapsedForView,
+      getGroupHorizontalScrollViewports, updateGroupHorizontalScrollbarMetrics,
+      onGroupHorizontalScrollbarScroll, onGroupBodyScroll,
+      onGroupGridReady, onGroupGridUnmounted,
+      onGroupFilterChanged, onGroupSortChanged,
+      onGroupColumnResized, onGroupColumnMoved,
+      onGroupSelectionChanged, onGroupRowSelected,
+      onGroupDragStart, onGroupDragOver, onGroupDrop, onGroupDragEnd,
+      toggleGroupCollapsed, collapseAllGroups, expandAllGroups,
+      applyGroupingWithLoading, setGroupingColumn, setShowUnassigned,
+      writeGroupingToViewConfig,
+    } = useGrouping(cfg, props, ctx, resolveMappingFormula, {
+      gridApi, gridReady, debugLog,
+      gridContainerRef,
+      findColumnByField,
+      setSelectedRows,
+      isInfiniteScrollEnabled, supabaseData,
+      // Thunks resolve at call time:
+      getIsVirtualColumn: () => isVirtualColumn,
+      getUpdateCurrentConfig: () => updateCurrentConfig,
+      getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
+      getGroupDatasourceFor: () => groupDatasourceFor,
+      getOnFilterChanged: () => onFilterChanged,
+      getOnSortChanged: () => onSortChanged,
+      getOnColumnMoved: () => onColumnMoved,
+      getOnColumnResized: () => onColumnResized,
+      getFilterValue: () => filterValue,
+      getSortValue: () => sortValue,
+      getColumnOrder: () => columnOrder,
+      getCurrentConfig: () => currentConfig,
+    });
+
     const { value: columnOrder, setValue: setColumnOrder } =
       wwLib.wwVariable.useComponentVariable({
         uid: props.uid,
@@ -1130,22 +840,6 @@ export default {
     // Keep the ref and the component variable in sync
     watch(activeCreateColumnField, (val) => setActiveCreateColumn(val));
 
-    const { value: records, setValue: setRecords } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "records",
-        type: "array",
-        defaultValue: [],
-        readonly: true,
-      });
-    const { value: isFetching, setValue: setIsFetching } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "isFetching",
-        type: "boolean",
-        defaultValue: false,
-        readonly: true,
-      });
     
     // Exposed variable for current grid configuration (includes user edits)
     // This can be stored and passed back to viewConfiguration to restore state
@@ -1197,256 +891,26 @@ export default {
       { immediate: true, deep: true }
     );
 
-    // ========== GROUPING FEATURE ==========
-    // Sentinel used as the key for rows whose grouping column value is null/empty.
-    const UNASSIGNED_GROUP = '__unassigned__';
 
-    // Group collapsed state lives outside viewConfiguration in a dedicated WeWeb
-    // object variable keyed by view id: { [viewId]: [groupValue, ...] }. The view
-    // id comes from a separate WeWeb variable that exposes the current view.
-    const VIEW_VARIABLE_ID = '23742aed-c957-4a20-b9ac-df6642c96015';
-    const GROUP_COLLAPSED_VARIABLE_ID = '48f1f1e8-79c5-4adc-8b9f-909c5c75e605';
-
-    const getCurrentViewId = () => {
-      try {
-        const view = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID);
-        return view?.id ?? null;
-      } catch (e) {
-        return null;
-      }
-    };
-
-    const getStoredCollapsedForView = () => {
-      const viewId = getCurrentViewId();
-      if (!viewId) return [];
-      try {
-        const map = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
-        if (!map || typeof map !== 'object') return [];
-        const arr = map[viewId];
-        return Array.isArray(arr) ? [...arr] : [];
-      } catch (e) {
-        return [];
-      }
-    };
-
-    const persistCollapsedForView = (collapsed) => {
-      const viewId = getCurrentViewId();
-      if (!viewId) return;
-      try {
-        const current = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
-        const next = current && typeof current === 'object' ? { ...current } : {};
-        next[viewId] = Array.isArray(collapsed) ? [...collapsed] : [];
-        wwLib.wwVariable.updateValue(GROUP_COLLAPSED_VARIABLE_ID, next);
-      } catch (e) {
-        debugLog('[GroupCollapsed] Could not persist collapsed state:', e);
-      }
-    };
-
-    // Grouping state — source of truth for grouping. columnId/order/showUnassigned
-    // are mirrored into viewConfiguration.grouping; collapsed is persisted in the
-    // dedicated WeWeb variable above (keyed by view id) instead.
-    const groupingState = ref({ columnId: null, order: [], collapsed: [], showUnassigned: true });
-    const pendingGroupingColumnId = ref(null);
-    const isGroupingTransitionLoading = ref(false);
-    const groupingTransitionStartedAt = ref(0);
-    let groupingTransitionTimer = null;
-
-    // Map<groupValue, GridApi> — populated from each group grid's grid-ready event.
-    const groupGridApis = shallowRef(new Map());
-
-    // AG Grid `alignedGrids` feed — returns every currently-mounted group grid
-    // wrapped as { api } so all siblings auto-sync column widths, column order,
-    // visibility, pinning, and horizontal scroll natively (v34 feature).
-    // AG Grid self-excludes the calling grid, so returning all APIs is safe.
-    // Passed as a function so it re-reads the live Map on every call.
-    const alignedGridApisForGroup = () => {
-      if (!isGroupingActive.value) return [];
-      const apis = Array.from(groupGridApis.value.values()).filter(Boolean);
-      return apis.map(api => ({ api }));
-    };
-
-    // Map<groupValue, row[]> — aggregated selection across group grids.
-    const groupSelections = ref(new Map());
-
-    // Reentry guards for cross-grid synchronization.
-    const isSyncingLayout = ref(false);
-    const isSyncingFilters = ref(false);
-    const isSyncingSort = ref(false);
-    const isSyncingGroupHorizontalScroll = ref(false);
-    const groupHorizontalScrollRef = ref(null);
-    const groupHorizontalScrollWidth = ref(0);
-    const groupHorizontalViewportWidth = ref(0);
-    const groupHorizontalScrollLeft = ref(0);
-
-    // Drag-reorder state for group headers.
-    const groupDragValue = ref(null);
-    const groupDragOverValue = ref(null);
-
-    // Track which invalid-columnId warning has already been logged (avoid log spam).
-    const warnedInvalidGroupingColumn = ref(null);
-
-    const isSelectColumn = (colId) => {
-      const col = findColumnByField(colId);
-      return !!col && col.cellDataType === 'select';
-    };
-
-    const isValidGroupColumn = (colId) => {
-      if (!colId) return false;
-      return isSelectColumn(colId);
-    };
-
-    const groupingColumnId = computed(() => groupingState.value?.columnId || null);
-
-    // Grouping is active only when a valid select column is configured.
-    // Works across local, Supabase paginated, and Supabase infinite-scroll modes.
-    // In infinite-scroll mode each group gets its own IDatasource — see
-    // groupDatasourceFor(groupValue) below.
-    const isGroupingActive = computed(() => {
-      const colId = groupingColumnId.value;
-      if (!colId) return false;
-      if (!isValidGroupColumn(colId)) {
-        if (warnedInvalidGroupingColumn.value !== colId) {
-          warnedInvalidGroupingColumn.value = colId;
-          console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${colId}" is invalid or not a select column — grouping disabled.`);
-        }
-        return false;
-      }
-      if (warnedInvalidGroupingColumn.value === colId) {
-        warnedInvalidGroupingColumn.value = null;
-      }
-      return true;
+    // Composable: infinite-scroll datasource (single-grid + per-group), upfront
+    // group counts, and the row-model-type / cacheBlockSize / paginationEnabled
+    // computeds. Depends on useDataFetch + the inline grouping refs above.
+    const {
+      rowModelType, rowDragManaged, paginationEnabled, cacheBlockSize,
+      datasource, delayedDatasource,
+      groupDatasourceFor, refreshGroupInfiniteCache,
+      fetchSupabaseGroupCount, scheduleRefreshGroupCounts,
+    } = useInfiniteScroll(cfg, props, resolveMappingFormula, {
+      gridApi, gridReady, isGridRendering,
+      isInfiniteScrollEnabled, isUpdatingDataLocally,
+      supabaseData, supabaseTotalCount, removedRowIds,
+      fetchSupabaseDataForInfinite, waitForSupabaseInstance,
+      updateRecordsFromGrid,
+      formatFiltersForLog, applySearchToSupabase, applyManualFilters, convertFilterToSupabase,
+      UNASSIGNED_GROUP,
+      isGroupingActive, groupingColumnId, orderedGroups,
+      groupGridApis, groupInfiniteCounts,
     });
-
-    // Extract an option's color for a given group value from the select column's options.
-    const getGroupColor = (colId, groupValue) => {
-      if (groupValue === UNASSIGNED_GROUP) return '#9ca3af';
-      const col = findColumnByField(colId);
-      const options = Array.isArray(col?.options) ? col.options : [];
-      const match = options.find(o => String(o?.value) === String(groupValue));
-      return match?.color || '#e5e7eb';
-    };
-
-    const getGroupLabel = (colId, groupValue) => {
-      if (groupValue === UNASSIGNED_GROUP) return 'Unassigned';
-      const col = findColumnByField(colId);
-      const options = Array.isArray(col?.options) ? col.options : [];
-      const match = options.find(o => String(o?.value) === String(groupValue));
-      return match?.label ?? String(groupValue);
-    };
-
-    // Normalize a raw cell value to a group key string.
-    const rowGroupKey = (row, colId) => {
-      const raw = row?.[colId];
-      if (raw === null || raw === undefined || raw === '') return UNASSIGNED_GROUP;
-      return String(raw);
-    };
-
-    // Source data for grouping — unified across data sources.
-    // Local: rowData. Supabase paginated: supabaseData.
-    // Infinite scroll: empty — each group grid owns its own IDatasource via
-    // groupDatasourceFor(). Counts come from groupInfiniteCounts instead.
-    const groupingSourceRows = computed(() => {
-      if (!isGroupingActive.value) return [];
-      // In infinite-scroll mode, supabaseData only holds the last-fetched block,
-      // which would produce wrong partitions. Per-group datasources handle fetching.
-      if (isInfiniteScrollEnabled.value) return [];
-      if (cfg.value?.dataSource === 'supabase') {
-        return Array.isArray(supabaseData.value) ? supabaseData.value : [];
-      }
-      const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
-      return Array.isArray(data) ? data : [];
-    });
-
-    // Map<groupValue, row[]>
-    const groupedRowData = computed(() => {
-      if (!isGroupingActive.value) return new Map();
-      const colId = groupingColumnId.value;
-      const out = new Map();
-      for (const row of groupingSourceRows.value) {
-        const key = rowGroupKey(row, colId);
-        let arr = out.get(key);
-        if (!arr) { arr = []; out.set(key, arr); }
-        arr.push(row);
-      }
-      return out;
-    });
-
-    const groupRowData = (groupValue) => groupedRowData.value.get(groupValue) || [];
-
-    // Row counts for badge display in infinite-scroll mode — populated by each
-    // per-group datasource's getRows on successful fetch. Map<groupValue, totalCount>
-    const groupInfiniteCounts = ref(new Map());
-
-    // Compute the ordered list of groups to render.
-    const orderedGroups = computed(() => {
-      if (!isGroupingActive.value) return [];
-      const colId = groupingColumnId.value;
-      const col = findColumnByField(colId);
-      const options = Array.isArray(col?.options) ? col.options : [];
-      const orderArr = Array.isArray(groupingState.value?.order) ? groupingState.value.order : [];
-      const collapsedSet = new Set(Array.isArray(groupingState.value?.collapsed) ? groupingState.value.collapsed : []);
-      const dataMap = groupedRowData.value;
-      const infiniteCounts = isInfiniteScrollEnabled.value ? groupInfiniteCounts.value : null;
-
-      // Count resolution:
-      //  - Infinite-scroll: use totalCount reported by each group's datasource (null if unknown yet).
-      //  - Local / paginated: partition the in-memory dataset.
-      const countFor = (value) => {
-        if (infiniteCounts) {
-          return infiniteCounts.has(value) ? infiniteCounts.get(value) : null;
-        }
-        return dataMap.get(value)?.length || 0;
-      };
-
-      const base = options.map((o) => {
-        const value = String(o.value);
-        return {
-          value,
-          label: o.label ?? value,
-          color: o.color || '#e5e7eb',
-          count: countFor(value),
-          collapsed: collapsedSet.has(value),
-        };
-      });
-
-      // Unassigned group:
-      //  - User-toggleable via groupingState.showUnassigned (default true).
-      //  - Local / paginated: only show when it has rows (we know the full set).
-      //  - Infinite-scroll: always show — we can't cheaply know upfront if null
-      //    rows exist, and the group's datasource will report 0 if not.
-      const unassignedCount = countFor(UNASSIGNED_GROUP);
-      const userShowUnassigned = groupingState.value?.showUnassigned !== false;
-      const showUnassigned = userShowUnassigned && (
-        infiniteCounts
-          ? true
-          : (unassignedCount || 0) > 0
-      );
-      if (showUnassigned) {
-        base.push({
-          value: UNASSIGNED_GROUP,
-          label: 'Unassigned',
-          color: '#9ca3af',
-          count: unassignedCount,
-          collapsed: collapsedSet.has(UNASSIGNED_GROUP),
-        });
-      }
-
-      // Apply custom order (listed first), then append any unlisted groups at the end.
-      if (orderArr.length === 0) return base;
-      const byValue = new Map(base.map(g => [g.value, g]));
-      const ordered = [];
-      for (const v of orderArr) {
-        if (byValue.has(v)) { ordered.push(byValue.get(v)); byValue.delete(v); }
-      }
-      byValue.forEach(g => ordered.push(g));
-      return ordered;
-    });
-
-    const hasGroupHorizontalOverflow = computed(() => (
-      isGroupingActive.value &&
-      groupHorizontalScrollWidth.value > groupHorizontalViewportWidth.value + 1
-    ));
-    // ========== /GROUPING FEATURE ==========
 
     // Helper function to get current column widths from the grid
     // Helper to check if a column is a virtual (sort/filter-only) column
@@ -1608,96 +1072,6 @@ export default {
       }
     };
 
-    // Function to update records variable from grid API (gets displayed rows)
-    // Defined early so it can be used in onGridReady and other handlers
-    // CRITICAL FIX: This function can trigger error #252 if called during render
-    // Always call via safeUpdateRecordsFromGrid to ensure it runs outside render cycle
-    const updateRecordsFromGrid = () => {
-      if (!gridApi.value) {
-        setRecords([]);
-        return;
-      }
-      
-      // Don't update records if grid is in the middle of rendering
-      if (isGridRendering.value) {
-        return;
-      }
-
-      try {
-        const displayedRows = [];
-        // Get all displayed row nodes from the grid
-        gridApi.value.forEachNode((node) => {
-          if (node.data) {
-            displayedRows.push(node.data);
-          }
-        });
-        setRecords(displayedRows);
-      } catch (error) {
-        // Check if this is the #252 error and silently retry later
-        if (error.message && error.message.includes('#252')) {
-          // Defer the update to avoid the render conflict
-          setTimeout(() => updateRecordsFromGrid(), 100);
-        } else {
-          console.error('[Records] Error updating records from grid:', error);
-          setRecords([]);
-        }
-      }
-    };
-
-    // DOM container ref for the grid wrapper (used for scroll detection and
-    // group-mode horizontal scrollbar metrics). Stays in setup() — not part
-    // of useGridApi since it's a template ref, not API plumbing.
-    const gridContainerRef = ref(null);
-
-    // Supabase data state
-    const supabaseData = ref([]);
-    const supabaseTotalCount = ref(0);
-    const supabaseLoading = ref(false);
-    const supabaseError = ref(null);
-    const filterDebounceTimer = ref(null);
-    const searchDebounceTimer = ref(null);
-    
-    // Guard to prevent duplicate/recursive fetches
-    const isFetchingData = ref(false);
-    const lastFetchParams = ref(null);
-    
-    // Flag to prevent data fetching when we're updating data locally (e.g., fake junction records)
-    const isUpdatingDataLocally = ref(false);
-    
-    // Track removed row IDs for infinite scroll mode (so datasource can filter them out)
-    const removedRowIds = ref(new Set());
-    const MAX_REMOVED_IDS = 1000; // Prevent unbounded memory growth
-    
-    // Cleanup mechanism for removedRowIds Set
-    const cleanupRemovedIds = () => {
-      const currentSize = removedRowIds.value.size;
-      if (currentSize > MAX_REMOVED_IDS) {
-        // Convert to array, remove oldest entries, keep most recent
-        const idsArray = Array.from(removedRowIds.value);
-        const keepCount = Math.floor(MAX_REMOVED_IDS * 0.7); // Keep 70% of max
-        const idsToKeep = idsArray.slice(-keepCount); // Keep most recent
-        removedRowIds.value = new Set(idsToKeep);
-        debugLog(`[Cleanup] Reduced removedRowIds from ${currentSize} to ${idsToKeep.length} entries`);
-      }
-    };
-    
-    // Clear removed IDs when data source changes or major refresh occurs
-    const clearRemovedIds = () => {
-      const size = removedRowIds.value.size;
-      if (size > 0) {
-        removedRowIds.value.clear();
-        debugLog(`[Cleanup] Cleared ${size} removed row IDs`);
-      }
-    };
-    
-    // Helper functions to set/get the flag from methods
-    const setUpdatingDataLocally = (value) => {
-      isUpdatingDataLocally.value = value;
-    };
-    const getUpdatingDataLocally = () => {
-      return isUpdatingDataLocally.value;
-    };
-
     const onGridReady = (params) => {
       gridApi.value = params.api;
       gridReady.value = true;
@@ -1814,6 +1188,21 @@ export default {
     // Generation counter to handle concurrent applyViewConfiguration calls.
     // Only the last apply's cleanup timeout should clear the flag.
     let applyViewConfigGeneration = 0;
+
+    // Composable: filters / sort WeWeb variables + onFilterChanged / onSortChanged
+    // event handlers (single-grid mode). Group-mode handlers in useGrouping (S3)
+    // delegate back to these.
+    const {
+      filterValue, setFilters,
+      sortValue, setSort,
+      filterDebounceTimer, searchDebounceTimer,
+      onFilterChanged, onSortChanged,
+    } = useFiltersAndSort(props, ctx, {
+      gridApi, debugLog,
+      isInfiniteScrollEnabled, isApplyingViewConfig,
+      updateCurrentConfig,
+      fetchSupabaseData, updateRecordsFromGrid,
+    });
 
     // Helper function to apply view configuration to the grid
     const applyViewConfiguration = (viewConfig, isInitial = false) => {
@@ -2227,128 +1616,6 @@ export default {
       }
     }
 
-    const onFilterChanged = (event) => {
-      if (!gridApi.value) return;
-
-      const filterModel = gridApi.value.getFilterModel();
-      if (
-        JSON.stringify(filterModel || {}) !==
-        JSON.stringify(filterValue.value || {})
-      ) {
-        setFilters(filterModel);
-        
-        // Update currentConfig to reflect the new filter state
-        updateCurrentConfig();
-        
-        // Only emit event if this is a user-initiated change (not from view configuration)
-        if (!isApplyingViewConfig.value) {
-          ctx.emit("trigger-event", {
-            name: "filterChanged",
-            event: filterModel,
-          });
-        } else {
-          debugLog('[FilterChanged] Skipping event emission - change is from view configuration');
-        }
-
-        // If using Supabase, debounce filter changes to avoid excessive API calls
-        if (props.content?.dataSource === 'supabase') {
-          // Clear existing debounce timer
-          if (filterDebounceTimer.value) {
-            clearTimeout(filterDebounceTimer.value);
-          }
-
-          // Debounce filter changes (300ms)
-          filterDebounceTimer.value = setTimeout(() => {
-            if (isInfiniteScrollEnabled.value) {
-              // For infinite scrolling, AG Grid automatically handles filter changes
-              // when filterChangedCallback() is called by the filter component.
-              // It resets its cache and calls getRows with the new filterModel.
-              // We do NOT need to manually set the datasource - that causes duplicate queries.
-              // Just update records after the grid has refreshed.
-              // AG Grid handles this automatically - just update records after refresh
-              nextTick(() => {
-                setTimeout(() => {
-                  updateRecordsFromGrid();
-                }, 200);
-              });
-            } else {
-              // For pagination mode, fetch data
-              const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
-              const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
-              const state = gridApi.value.getState();
-              const sortModel = state?.sort?.sortModel || [];
-              const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-              fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
-              // Records will be updated when rowData changes (via watch)
-            }
-          }, 300);
-        } else {
-          // For non-Supabase, update records after filter change
-          nextTick(() => {
-            setTimeout(() => {
-              updateRecordsFromGrid();
-            }, 100);
-          });
-        }
-      }
-    };
-
-    const onSortChanged = (event) => {
-      if (!gridApi.value) return;
-
-      const state = gridApi.value.getState();
-      if (
-        JSON.stringify(state.sort?.sortModel || []) !==
-        JSON.stringify(sortValue.value || [])
-      ) {
-        setSort(state.sort?.sortModel || []);
-        
-        // Update currentConfig to reflect the new sort state
-        updateCurrentConfig();
-        
-        // Only emit event if this is a user-initiated change (not from view configuration)
-        if (!isApplyingViewConfig.value) {
-          ctx.emit("trigger-event", {
-            name: "sortChanged",
-            event: state.sort?.sortModel || [],
-          });
-        } else {
-          debugLog('[SortChanged] Skipping event emission - change is from view configuration');
-        }
-
-        // If using Supabase, refetch data with new sort
-        if (props.content?.dataSource === 'supabase') {
-          if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, AG Grid automatically handles sort changes.
-            // It resets its cache and calls getRows with the new sortModel.
-            // We do NOT need to manually set the datasource - that causes duplicate queries.
-            // Just update records after the grid has refreshed.
-            // AG Grid handles this automatically - just update records after refresh
-            nextTick(() => {
-              setTimeout(() => {
-                updateRecordsFromGrid();
-              }, 200);
-            });
-          } else {
-            // For pagination mode, fetch data
-            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
-            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
-            const filterModel = gridApi.value.getFilterModel();
-            const sortModel = state.sort?.sortModel || [];
-            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
-            // Records will be updated when rowData changes (via watch)
-          }
-        } else {
-          // For non-Supabase, update records after sort change
-          nextTick(() => {
-            setTimeout(() => {
-              updateRecordsFromGrid();
-            }, 100);
-          });
-        }
-      }
-    };
 
     const onPaginationChanged = (event) => {
       if (!gridApi.value) return;
@@ -2442,491 +1709,6 @@ export default {
       });
     };
 
-    // ========== GROUPING EVENT HANDLERS ==========
-
-    const getGroupHorizontalScrollViewports = () => {
-      if (!gridContainerRef.value) return [];
-      return Array.from(
-        gridContainerRef.value.querySelectorAll('.ww-group__grid .ag-body-horizontal-scroll-viewport')
-      );
-    };
-
-    const runAfterGroupLayout = (callback) => {
-      nextTick(() => {
-        if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(callback);
-        } else {
-          setTimeout(callback, 0);
-        }
-      });
-    };
-
-    const updateGroupHorizontalScrollbarMetrics = () => {
-      runAfterGroupLayout(() => {
-        const viewport = getGroupHorizontalScrollViewports().find(el => el.scrollWidth > 0);
-        groupHorizontalScrollWidth.value = viewport?.scrollWidth || 0;
-        groupHorizontalViewportWidth.value = viewport?.clientWidth || 0;
-        if (viewport && gridContainerRef.value) {
-          const containerRect = gridContainerRef.value.getBoundingClientRect();
-          const viewportRect = viewport.getBoundingClientRect();
-          groupHorizontalScrollLeft.value = Math.max(0, viewportRect.left - containerRect.left);
-        } else {
-          groupHorizontalScrollLeft.value = 0;
-        }
-
-        if (viewport && groupHorizontalScrollRef.value) {
-          groupHorizontalScrollRef.value.scrollLeft = viewport.scrollLeft || 0;
-        }
-      });
-    };
-
-    const syncGroupHorizontalScrollLeft = (left) => {
-      if (isSyncingGroupHorizontalScroll.value) return;
-      isSyncingGroupHorizontalScroll.value = true;
-
-      const nextLeft = Number.isFinite(left) ? left : 0;
-      getGroupHorizontalScrollViewports().forEach((viewport) => {
-        if (Math.abs((viewport.scrollLeft || 0) - nextLeft) > 1) {
-          viewport.scrollLeft = nextLeft;
-          viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
-        }
-      });
-
-      if (groupHorizontalScrollRef.value && Math.abs(groupHorizontalScrollRef.value.scrollLeft - nextLeft) > 1) {
-        groupHorizontalScrollRef.value.scrollLeft = nextLeft;
-      }
-
-      const releaseSync = () => {
-        isSyncingGroupHorizontalScroll.value = false;
-      };
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(releaseSync);
-      } else {
-        setTimeout(releaseSync, 0);
-      }
-    };
-
-    const onGroupHorizontalScrollbarScroll = (event) => {
-      syncGroupHorizontalScrollLeft(event?.target?.scrollLeft || 0);
-    };
-
-    const onGroupBodyScroll = (event) => {
-      if (isSyncingGroupHorizontalScroll.value) return;
-      const left = typeof event?.left === 'number'
-        ? event.left
-        : (getGroupHorizontalScrollViewports()[0]?.scrollLeft || 0);
-      if (groupHorizontalScrollRef.value && Math.abs(groupHorizontalScrollRef.value.scrollLeft - left) > 1) {
-        groupHorizontalScrollRef.value.scrollLeft = left;
-      }
-    };
-
-    const handleGroupHorizontalResize = () => {
-      if (isGroupingActive.value) {
-        updateGroupHorizontalScrollbarMetrics();
-      }
-    };
-
-    watch(
-      () => [isGroupingActive.value, orderedGroups.value.length],
-      ([active]) => {
-        if (active) {
-          updateGroupHorizontalScrollbarMetrics();
-        } else {
-          groupHorizontalScrollWidth.value = 0;
-          groupHorizontalViewportWidth.value = 0;
-          groupHorizontalScrollLeft.value = 0;
-        }
-      },
-      { flush: 'post' }
-    );
-
-    onMounted(() => {
-      const frontWindow = wwLib?.getFrontWindow?.() || window;
-      frontWindow.addEventListener('resize', handleGroupHorizontalResize);
-      updateGroupHorizontalScrollbarMetrics();
-    });
-
-    // Called when each group grid fires grid-ready. Registers the api and
-    // applies current shared state (filter / sort / widths) so a newly-expanded
-    // group picks up the live view.
-    const onGroupGridReady = (groupValue, params) => {
-      groupGridApis.value.set(groupValue, params.api);
-      // Trigger reactivity
-      groupGridApis.value = new Map(groupGridApis.value);
-
-      // Promote the first group's api to the primary `gridApi` so existing
-      // code paths that reference gridApi.value keep working.
-      if (!gridApi.value || !Array.from(groupGridApis.value.values()).includes(gridApi.value)) {
-        gridApi.value = params.api;
-        gridReady.value = true;
-      }
-
-      // Apply any already-active filter / sort / widths to this new grid
-      try {
-        const filterModel = filterValue.value || {};
-        if (filterModel && Object.keys(filterModel).length > 0) {
-          params.api.setFilterModel(filterModel);
-        }
-        const sortModel = Array.isArray(sortValue.value) ? sortValue.value : [];
-        if (sortModel.length > 0) {
-          params.api.applyColumnState({ state: sortModel, defaultState: { sort: null } });
-        }
-        // Apply widths from currentConfig.sizes if available
-        const sizes = currentConfig.value?.sizes;
-        if (sizes && typeof sizes === 'object' && Object.keys(sizes).length > 0) {
-          const state = Object.entries(sizes).map(([colId, width]) => ({ colId, width }));
-          params.api.applyColumnState({ state });
-        }
-        // Apply column order if available
-        const order = Array.isArray(columnOrder.value) ? columnOrder.value : [];
-        if (order.length > 0) {
-          params.api.applyColumnState({
-            state: order.map(colId => ({ colId })),
-            applyOrder: true,
-          });
-        }
-      } catch (e) {
-        debugLog('[Grouping] Error applying initial state to new group grid:', e);
-      }
-
-      updateGroupHorizontalScrollbarMetrics();
-
-      // In infinite-scroll mode, assign this group's datasource — but stagger
-      // the assignment across groups so N grids don't fire getRows in the same
-      // tick (which can trigger AG Grid error #252 on initial mount and also
-      // hammer Supabase with N parallel requests). Stagger = 100ms + 50ms × index.
-      if (isInfiniteScrollEnabled.value && isGroupingActive.value) {
-        const idx = orderedGroups.value.findIndex(g => g.value === groupValue);
-        const delay = 100 + Math.max(0, idx) * 50;
-        setTimeout(() => {
-          // Guard: grid might have been unmounted (collapsed) or grouping disabled
-          // before the timer fires.
-          const stillMounted = groupGridApis.value.get(groupValue) === params.api;
-          if (!stillMounted || !isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
-          const ds = groupDatasourceFor(groupValue);
-          if (!ds) return;
-          try {
-            params.api.setGridOption('datasource', ds);
-            debugLog(`[Group Infinite] Assigned datasource for "${groupValue}" after ${delay}ms`);
-          } catch (e) {
-            console.warn(`[Group Infinite] Failed to set datasource for "${groupValue}":`, e?.message);
-          }
-        }, delay);
-      }
-    };
-
-    const onGroupGridUnmounted = (groupValue) => {
-      groupGridApis.value.delete(groupValue);
-      groupGridApis.value = new Map(groupGridApis.value);
-      groupSelections.value.delete(groupValue);
-      updateGroupHorizontalScrollbarMetrics();
-    };
-
-    // Route a single-grid event to every group grid, then run the legacy handler
-    // with the firing grid set as `gridApi.value`.
-    const withFiringGrid = (event, handler) => {
-      const prev = gridApi.value;
-      try {
-        if (event?.api) gridApi.value = event.api;
-        return handler(event);
-      } finally {
-        gridApi.value = prev;
-      }
-    };
-
-    const onGroupFilterChanged = (groupValue, event) => {
-      if (isSyncingFilters.value) return;
-      if (!event?.api) return;
-      isSyncingFilters.value = true;
-      try {
-        const model = event.api.getFilterModel();
-        groupGridApis.value.forEach((api, gv) => {
-          if (gv === groupValue) return;
-          try { api.setFilterModel(model); } catch (_) { /* noop */ }
-        });
-      } finally {
-        nextTick(() => { isSyncingFilters.value = false; });
-      }
-      withFiringGrid(event, onFilterChanged);
-      // Refresh the per-group badge counts to reflect the new filter — counts
-      // would otherwise stay stale until each group's grid is opened.
-      scheduleRefreshGroupCounts();
-    };
-
-    const onGroupSortChanged = (groupValue, event) => {
-      if (isSyncingSort.value) return;
-      if (!event?.api) return;
-      isSyncingSort.value = true;
-      try {
-        const sortModel = event.api.getState()?.sort?.sortModel || [];
-        groupGridApis.value.forEach((api, gv) => {
-          if (gv === groupValue) return;
-          try { api.applyColumnState({ state: sortModel, defaultState: { sort: null } }); } catch (_) { /* noop */ }
-        });
-      } finally {
-        nextTick(() => { isSyncingSort.value = false; });
-      }
-      withFiringGrid(event, onSortChanged);
-    };
-
-    const onGroupColumnResized = (groupValue, event) => {
-      if (!event?.finished || event.source !== 'uiColumnResized') return;
-      if (isSyncingLayout.value) return;
-      isSyncingLayout.value = true;
-      try {
-        const columns = event.api.getAllGridColumns() || [];
-        const state = columns.map(col => ({ colId: col.getColId(), width: col.getActualWidth() }));
-        groupGridApis.value.forEach((api, gv) => {
-          if (gv === groupValue) return;
-          try { api.applyColumnState({ state }); } catch (_) { /* noop */ }
-        });
-      } finally {
-        nextTick(() => {
-          isSyncingLayout.value = false;
-          updateGroupHorizontalScrollbarMetrics();
-        });
-      }
-      withFiringGrid(event, onColumnResized);
-    };
-
-    const onGroupColumnMoved = (groupValue, event) => {
-      if (!event?.finished || event.source !== 'uiColumnMoved') return;
-      if (isSyncingLayout.value) return;
-      isSyncingLayout.value = true;
-      try {
-        const columns = event.api.getAllGridColumns().filter(col => !isVirtualColumn(col));
-        const newOrder = columns.map(col => col.getColId());
-        groupGridApis.value.forEach((api, gv) => {
-          if (gv === groupValue) return;
-          try { api.applyColumnState({ state: newOrder.map(colId => ({ colId })), applyOrder: true }); } catch (_) { /* noop */ }
-        });
-      } finally {
-        nextTick(() => {
-          isSyncingLayout.value = false;
-          updateGroupHorizontalScrollbarMetrics();
-        });
-      }
-      withFiringGrid(event, onColumnMoved);
-    };
-
-    const onGroupSelectionChanged = (groupValue, event) => {
-      if (!event?.api) return;
-      const selected = event.api.getSelectedRows() || [];
-      groupSelections.value.set(groupValue, selected);
-      const all = [];
-      groupSelections.value.forEach(rows => { all.push(...rows); });
-      setSelectedRows(all);
-    };
-
-    // Per-group selection event emits (rowSelected/rowDeselected)
-    const onGroupRowSelected = (groupValue, event) => {
-      const name = event.node.isSelected() ? 'rowSelected' : 'rowDeselected';
-      ctx.emit('trigger-event', {
-        name,
-        event: { row: event.data },
-      });
-    };
-
-    // Drag-and-drop reorder for group headers
-    const resetGroupDrag = () => {
-      groupDragValue.value = null;
-      groupDragOverValue.value = null;
-    };
-
-    const onGroupDragStart = (groupValue) => {
-      groupDragValue.value = groupValue;
-    };
-
-    const onGroupDragOver = (groupValue) => {
-      if (groupDragValue.value && groupValue !== groupDragValue.value) {
-        groupDragOverValue.value = groupValue;
-      }
-    };
-
-    const onGroupDrop = (targetValue) => {
-      const from = groupDragValue.value;
-      if (!from || from === targetValue) { resetGroupDrag(); return; }
-      const currentOrder = orderedGroups.value.map(g => g.value);
-      const fi = currentOrder.indexOf(from);
-      const ti = currentOrder.indexOf(targetValue);
-      if (fi === -1 || ti === -1) { resetGroupDrag(); return; }
-      const next = [...currentOrder];
-      next.splice(fi, 1);
-      next.splice(ti, 0, from);
-      writeGroupingToViewConfig({ order: next });
-      resetGroupDrag();
-    };
-
-    const onGroupDragEnd = () => {
-      resetGroupDrag();
-    };
-
-    // Toggle a single group's collapsed state and persist
-    const toggleGroupCollapsed = (groupValue) => {
-      const collapsed = Array.isArray(groupingState.value?.collapsed) ? [...groupingState.value.collapsed] : [];
-      const idx = collapsed.indexOf(groupValue);
-      if (idx >= 0) collapsed.splice(idx, 1);
-      else collapsed.push(groupValue);
-      writeGroupingToViewConfig({ collapsed });
-      updateGroupHorizontalScrollbarMetrics();
-    };
-
-    const collapseAllGroups = () => {
-      const all = orderedGroups.value.map(g => g.value);
-      writeGroupingToViewConfig({ collapsed: all });
-      updateGroupHorizontalScrollbarMetrics();
-    };
-
-    const expandAllGroups = () => {
-      writeGroupingToViewConfig({ collapsed: [] });
-      updateGroupHorizontalScrollbarMetrics();
-    };
-
-    // Merge a partial grouping update into groupingState and refresh currentConfig.
-    // When `collapsed` is part of the update, persist it to the dedicated WeWeb
-    // variable (keyed by view id) — collapsed state is no longer part of
-    // viewConfiguration. Collapsed-only updates never refresh currentConfig or
-    // touch the view-edited variable, so toggling groups never marks the view
-    // as edited.
-    const writeGroupingToViewConfig = (partial) => {
-      const prev = groupingState.value || {};
-      const next = {
-        columnId: prev.columnId ?? null,
-        order: Array.isArray(prev.order) ? [...prev.order] : [],
-        collapsed: Array.isArray(prev.collapsed) ? [...prev.collapsed] : [],
-        showUnassigned: prev.showUnassigned !== false,
-        ...partial,
-      };
-      groupingState.value = next;
-
-      const partialKeys = Object.keys(partial || {});
-      const onlyCollapsed = partialKeys.length === 1 && partialKeys[0] === 'collapsed';
-
-      if ('collapsed' in partial) {
-        persistCollapsedForView(next.collapsed);
-      }
-
-      if (onlyCollapsed) return;
-      updateCurrentConfig();
-    };
-
-    const afterNextPaint = (callback) => {
-      const schedule = () => setTimeout(callback, 0);
-      if (typeof requestAnimationFrame === 'function') {
-        requestAnimationFrame(schedule);
-      } else {
-        schedule();
-      }
-    };
-
-    const startGroupingTransition = () => {
-      if (groupingTransitionTimer) {
-        clearTimeout(groupingTransitionTimer);
-        groupingTransitionTimer = null;
-      }
-      groupingTransitionStartedAt.value = Date.now();
-      isGroupingTransitionLoading.value = true;
-    };
-
-    const finishGroupingTransition = () => {
-      if (groupingTransitionTimer) {
-        clearTimeout(groupingTransitionTimer);
-      }
-      const elapsed = Date.now() - groupingTransitionStartedAt.value;
-      const delay = Math.max(180 - elapsed, 0);
-      groupingTransitionTimer = setTimeout(() => {
-        isGroupingTransitionLoading.value = false;
-        pendingGroupingColumnId.value = null;
-        groupingTransitionTimer = null;
-      }, delay);
-    };
-
-    const applyGroupingWithLoading = (partial) => {
-      startGroupingTransition();
-      afterNextPaint(() => {
-        try {
-          writeGroupingToViewConfig(partial);
-        } finally {
-          nextTick(() => afterNextPaint(finishGroupingTransition));
-        }
-      });
-    };
-
-    // Re-hydrate collapsed state when the active view changes (e.g. user switches
-    // views) or when the external collapsed-state variable is mutated elsewhere.
-    // Reading both inside the watch source ensures Vue tracks them as deps.
-    watch(
-      () => {
-        let viewId = null;
-        let mapEntry;
-        try { viewId = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID)?.id ?? null; } catch (e) { viewId = null; }
-        try {
-          const map = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
-          mapEntry = map && typeof map === 'object' && viewId ? map[viewId] : undefined;
-        } catch (e) { mapEntry = undefined; }
-        return { viewId, mapEntry };
-      },
-      () => {
-        const stored = getStoredCollapsedForView();
-        const cur = Array.isArray(groupingState.value?.collapsed) ? groupingState.value.collapsed : [];
-        const sameLength = cur.length === stored.length;
-        const sameSet = sameLength && cur.every(v => stored.includes(v));
-        if (sameSet) return;
-        groupingState.value = { ...groupingState.value, collapsed: stored };
-        updateGroupHorizontalScrollbarMetrics();
-      },
-      { deep: true }
-    );
-
-    // Columns that qualify as a grouping target (cellDataType === 'select').
-    // Drives the dropdown inside the chooser panel's Grouping tab.
-    // displayName prefers the user-facing label (headerName) and falls back to
-    // displayName / field so it stays readable even if headerName is unset.
-    const selectableGroupingColumns = computed(() => {
-      const cols = Array.isArray(props.content?.columns) ? props.content.columns : [];
-      return cols
-        .filter(c => c?.field && c?.cellDataType === 'select')
-        .map(c => ({
-          field: c.field,
-          displayName: c.headerName || c.displayName || c.field,
-        }));
-    });
-
-    // Switch (or clear) the grouping column. Clearing also resets order/collapsed.
-    const setGroupingColumn = (colId) => {
-      const next = colId || null;
-      pendingGroupingColumnId.value = next || '';
-      if (!next) {
-        applyGroupingWithLoading({ columnId: null, order: [], collapsed: [] });
-        return;
-      }
-      // Changing to a different column — wipe order/collapsed since they referenced
-      // the previous column's option values.
-      const prev = groupingState.value?.columnId;
-      if (prev !== next) {
-        applyGroupingWithLoading({ columnId: next, order: [], collapsed: [] });
-      } else {
-        applyGroupingWithLoading({ columnId: next });
-      }
-    };
-
-    // Toggle visibility of the Unassigned group (rows whose grouping value is null/empty).
-    const setShowUnassigned = (show) => {
-      writeGroupingToViewConfig({ showUnassigned: !!show });
-    };
-
-    // Locate the group grid that contains a given rowId.
-    const findGroupForRowId = (rowId) => {
-      if (!isGroupingActive.value) return null;
-      for (const [gv, api] of groupGridApis.value.entries()) {
-        try {
-          const node = findRowNode(api, rowId, resolveMappingFormula, props.content);
-          if (node) return { groupValue: gv, api, node };
-        } catch (_) { /* continue */ }
-      }
-      return null;
-    };
-    // ========== /GROUPING EVENT HANDLERS ==========
 
     // Track scroll debounce timer
     const scrollDebounceTimer = ref(null);
@@ -2936,18 +1718,6 @@ export default {
       if (scrollDebounceTimer.value) {
         clearTimeout(scrollDebounceTimer.value);
       }
-      if (filterDebounceTimer.value) {
-        clearTimeout(filterDebounceTimer.value);
-      }
-      if (searchDebounceTimer.value) {
-        clearTimeout(searchDebounceTimer.value);
-      }
-      if (groupingTransitionTimer) {
-        clearTimeout(groupingTransitionTimer);
-        groupingTransitionTimer = null;
-      }
-      const frontWindow = wwLib?.getFrontWindow?.() || window;
-      frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
     });
 
     const onBodyScroll = (event) => {
@@ -3015,384 +1785,11 @@ export default {
       }
     );
 
-    // Determine if infinite scrolling is enabled
-    const isInfiniteScrollEnabled = computed(() => {
-      return cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll === true;
-    });
 
-    // Row model type - 'infinite' if enabled, otherwise undefined (defaults to client-side)
-    const rowModelType = computed(() => {
-      return isInfiniteScrollEnabled.value ? 'infinite' : undefined;
-    });
 
-    // Row drag managed - disabled for infinite row model (not supported by AG Grid)
-    const rowDragManaged = computed(() => {
-      return !isInfiniteScrollEnabled.value;
-    });
 
-    // Pagination should be disabled when infinite scrolling is enabled
-    const paginationEnabled = computed(() => {
-      if (isInfiniteScrollEnabled.value) {
-        return false;
-      }
-      return props.content?.pagination;
-    });
 
-    // Cache block size for infinite scrolling
-    const cacheBlockSize = computed(() => {
-      if (isInfiniteScrollEnabled.value) {
-        return cfg.value?.infiniteBlockSize || 200;
-      }
-      return undefined;
-    });
 
-    // Create datasource for infinite scrolling
-    const datasource = computed(() => {
-      if (!isInfiniteScrollEnabled.value) {
-        return undefined;
-      }
-
-      return {
-        rowCount: undefined, // Will be determined dynamically
-        getRows: async (params) => {
-          const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
-
-          // Skip fetching if we're updating data locally (e.g., removing a row)
-          // This prevents unnecessary re-fetches when we're making local modifications
-          // For infinite scroll, AG Grid will automatically try to refetch when rows are removed
-          // We prevent this by checking the flag and using the current supabaseData cache
-          if (isUpdatingDataLocally.value) {
-            // IMPORTANT: We need to check if the requested block matches our cached block
-            // If it doesn't, we should return empty data to force AG Grid to hide those rows
-            // Otherwise, return filtered cached data
-            
-            let cachedData = Array.isArray(supabaseData.value) ? [...supabaseData.value] : [];
-            let cachedTotal = supabaseTotalCount.value || 0;
-            
-            // CRITICAL: Filter out any removed rows (tracked in removedRowIds ref)
-            // This ensures removed rows don't appear when datasource is refreshed
-            if (removedRowIds.value && removedRowIds.value.size > 0) {
-              const beforeFilter = cachedData.length;
-              cachedData = cachedData.filter(row => {
-                if (!row) return false; // Skip null/undefined rows
-                // Get row ID using idFormula
-                const rowId = resolveMappingFormula(props.content?.idFormula, row);
-                const rowIdStr = rowId != null ? String(rowId) : '';
-                // Keep row if it's not in the removed set
-                return !removedRowIds.value.has(rowIdStr);
-              });
-              const afterFilter = cachedData.length;
-              // Adjust total count if we filtered out rows
-              if (beforeFilter > afterFilter && cachedTotal > 0) {
-                cachedTotal = Math.max(0, cachedTotal - (beforeFilter - afterFilter));
-              }
-            }
-            
-            // Return filtered cached data
-            // If cached data is empty or we filtered everything out, return empty with adjusted total
-            // This tells AG Grid there's no data for this block, which will hide empty rows
-            const finalTotal = cachedData.length > 0 ? cachedTotal : (cachedTotal > 0 ? cachedTotal : 0);
-            // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
-            // This ensures the callback is called outside the render cycle
-            isGridRendering.value = true;
-            setTimeout(() => {
-              try {
-                successCallback(cachedData, finalTotal > 0 ? finalTotal : (cachedData.length > 0 ? undefined : 0));
-              } finally {
-                // Clear the rendering flag after a small delay
-                setTimeout(() => {
-                  isGridRendering.value = false;
-                }, 50);
-              }
-            }, 0);
-            return;
-          }
-          const requestedBlockSize = endRow - startRow;
-
-          try {
-            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-            
-            const { data, totalCount } = await fetchSupabaseDataForInfinite(
-              startRow,
-              endRow,
-              filterModel,
-              sortModel,
-              searchValue
-            );
-
-            // Determine if this is the last row
-            // If we got fewer rows than requested, or if we've reached the total count, we're done
-            const rowCount = data.length;
-            
-            // CRITICAL FIX: Handle 0 rows case
-            // If totalCount is 0, we're definitely done (no rows to show)
-            // If we got fewer rows than requested, we're done (last block)
-            // If we've reached or exceeded totalCount, we're done
-            const isLastBlock = totalCount === 0 || 
-                                rowCount < requestedBlockSize || 
-                                (totalCount > 0 && endRow >= totalCount);
-            
-            // CRITICAL FIX: Set lastRow to 0 when totalCount is 0 (no rows)
-            // This tells AG Grid to stop fetching and show "no rows" message
-            const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
-
-            // Update supabaseData for records variable first (before callback)
-            // Note: In infinite scroll mode, supabaseData will only contain the current block
-            // The grid manages the full dataset internally
-            supabaseData.value = data;
-            supabaseTotalCount.value = totalCount;
-
-            // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
-            // This ensures the callback is called outside the current render cycle
-            isGridRendering.value = true;
-            setTimeout(() => {
-              try {
-                // Call success callback with the data
-                successCallback(data, lastRow);
-              } catch (error) {
-                console.error('[Infinite Scroll] Error in successCallback:', error);
-              } finally {
-                // Clear the rendering flag after a small delay to allow grid to finish
-                setTimeout(() => {
-                  isGridRendering.value = false;
-                  // Update records from grid after rendering is complete
-                  nextTick(() => {
-                    setTimeout(() => {
-                      updateRecordsFromGrid();
-                    }, 50);
-                  });
-                }, 50);
-              }
-            }, 0);
-          } catch (error) {
-            console.error('[Infinite Scroll] Error in getRows:', error);
-            isGridRendering.value = false;
-            setTimeout(() => {
-              failCallback();
-            }, 0);
-          }
-        },
-      };
-    });
-
-    // CRITICAL FIX: Delay datasource initialization to prevent error #252
-    // AG Grid can call getRows during its initial render cycle, causing conflicts
-    // We use a ref that's set after grid is ready, not a computed, to have better control
-    const delayedDatasource = ref(undefined);
-    
-    // Watch for grid ready to set the datasource after a delay
-    watch(
-      () => [gridReady.value, isInfiniteScrollEnabled.value, datasource.value],
-      ([ready, infiniteEnabled, ds]) => {
-        if (ready && infiniteEnabled && ds && !delayedDatasource.value) {
-          // Delay setting the datasource to allow grid to finish initial render
-          setTimeout(() => {
-            delayedDatasource.value = ds;
-          }, 100);
-        } else if (!infiniteEnabled) {
-          delayedDatasource.value = undefined;
-        }
-      },
-      { immediate: true }
-    );
-
-    // ========== PER-GROUP INFINITE-SCROLL DATASOURCES ==========
-    // Each group grid gets its own IDatasource whose getRows injects a filter
-    // for its group value. Datasources are memoized by groupValue so the prop
-    // identity is stable across renders — AG Grid only resets its cache when
-    // the datasource reference itself changes.
-
-    // Map<groupValue, IDatasource> — memoized factory cache.
-    const groupDatasourceCache = new Map();
-
-    // Build a filter model that forces the grouping column to match `groupValue`.
-    // For UNASSIGNED_GROUP we use the `__empty__` sentinel which convertFilterToSupabase
-    // now translates to `IS NULL`.
-    const buildGroupFilterModel = (baseFilterModel, groupValue) => {
-      const colId = groupingColumnId.value;
-      if (!colId) return baseFilterModel || {};
-      const merged = { ...(baseFilterModel || {}) };
-      const values = groupValue === UNASSIGNED_GROUP ? ['__empty__'] : [groupValue];
-      merged[colId] = { type: 'selectFilter', values };
-      return merged;
-    };
-
-    // Returns a memoized IDatasource for the given group value.
-    // Returns undefined when not in grouping + infinite-scroll mode.
-    const groupDatasourceFor = (groupValue) => {
-      if (!isGroupingActive.value || !isInfiniteScrollEnabled.value) return undefined;
-      const key = String(groupValue);
-      const existing = groupDatasourceCache.get(key);
-      if (existing) return existing;
-
-      const ds = {
-        rowCount: undefined,
-        getRows: async (params) => {
-          const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
-          const mergedFilter = buildGroupFilterModel(filterModel, groupValue);
-          const requestedBlockSize = endRow - startRow;
-
-          try {
-            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-            const { data, totalCount } = await fetchSupabaseDataForInfinite(
-              startRow,
-              endRow,
-              mergedFilter,
-              sortModel,
-              searchValue
-            );
-
-            // Cache per-group total so badge counts stay accurate.
-            if (typeof totalCount === 'number' && totalCount >= 0) {
-              const next = new Map(groupInfiniteCounts.value);
-              next.set(groupValue, totalCount);
-              groupInfiniteCounts.value = next;
-            }
-
-            const rowCount = data.length;
-            const isLastBlock =
-              totalCount === 0 ||
-              rowCount < requestedBlockSize ||
-              (totalCount > 0 && endRow >= totalCount);
-            const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
-
-            // Defer to avoid AG Grid error #252 (callback during render cycle).
-            setTimeout(() => {
-              try { successCallback(data, lastRow); }
-              catch (e) { console.error(`[Group Infinite] successCallback error for "${groupValue}":`, e); }
-            }, 0);
-          } catch (error) {
-            console.error(`[Group Infinite] getRows error for "${groupValue}":`, error);
-            setTimeout(() => { try { failCallback(); } catch (_) { /* noop */ } }, 0);
-          }
-        },
-      };
-      groupDatasourceCache.set(key, ds);
-      return ds;
-    };
-
-    // Invalidate the datasource cache (and counts) when grouping column changes
-    // or infinite-scroll toggles. A new cache entry produces a new reference,
-    // which causes AG Grid to rebuild its infinite cache for each group.
-    watch(
-      () => [groupingColumnId.value, isInfiniteScrollEnabled.value],
-      () => {
-        groupDatasourceCache.clear();
-        groupInfiniteCounts.value = new Map();
-      }
-    );
-
-    // Refresh a specific group's infinite cache (e.g. after a cross-group cell edit).
-    const refreshGroupInfiniteCache = (groupValue) => {
-      if (!isInfiniteScrollEnabled.value) return;
-      const api = groupGridApis.value.get(groupValue);
-      if (!api) return;
-      try { api.purgeInfiniteCache(); }
-      catch (e) { console.warn(`[Group Infinite] purge failed for "${groupValue}":`, e?.message); }
-    };
-
-    // ========== UPFRONT GROUP COUNTS ==========
-    // Without this, group badges only display once a group's grid is opened
-    // (the count is a side-effect of the rows fetch in groupDatasourceFor).
-    // Here we fire a count-only Supabase request per group up front so badges
-    // are populated even while groups are collapsed.
-
-    const fetchSupabaseGroupCount = async (filterModel) => {
-      if (props.content?.dataSource !== 'supabase') return null;
-      const tableName = props.content?.supabaseTable;
-      if (!tableName) return null;
-      try {
-        const supabase = await waitForSupabaseInstance(10000, 100);
-        if (!supabase) return null;
-        return await fetchSupabaseDataCount({
-          supabaseInstance: supabase,
-          tableName,
-          manualFilters: props.content?.supabaseFilters,
-          searchValue: props.content?.enableSearch ? props.content?.searchValue : null,
-          searchableColumns: props.content?.searchableColumns || [],
-          filterModel,
-          applyManualFilters,
-          applySearchToSupabase,
-          convertFilterToSupabase,
-          formatFiltersForLog,
-        });
-      } catch (error) {
-        console.error('[Group Count] fetch error:', error);
-        return null;
-      }
-    };
-
-    // Pull the AG Grid filter model that's currently active. In multi-grid mode
-    // all group grids share the same filter (synced by onGroupFilterChanged), so
-    // any one will do. Falls back to viewConfiguration.filters if grids aren't
-    // mounted yet (initial load).
-    const getCurrentFilterModelForCount = () => {
-      for (const api of groupGridApis.value.values()) {
-        try {
-          const m = api.getFilterModel();
-          if (m) return m;
-        } catch (_) { /* noop */ }
-      }
-      const vc = cfg.value?.viewConfiguration;
-      if (vc && vc.filters && typeof vc.filters === 'object') return vc.filters;
-      return null;
-    };
-
-    // Generation counter so a stale set of in-flight requests can't stomp on a
-    // newer one (e.g. user changes filter while previous counts are still loading).
-    let groupCountsGeneration = 0;
-    let groupCountsTimer = null;
-
-    const refreshGroupCounts = async () => {
-      if (!isGroupingActive.value || !isInfiniteScrollEnabled.value) return;
-      const myGen = ++groupCountsGeneration;
-      const baseFilter = getCurrentFilterModelForCount();
-      const groups = orderedGroups.value.map(g => g.value);
-      if (groups.length === 0) return;
-
-      const results = await Promise.all(
-        groups.map(async (groupValue) => {
-          const filter = buildGroupFilterModel(baseFilter, groupValue);
-          const count = await fetchSupabaseGroupCount(filter);
-          return [groupValue, count];
-        })
-      );
-
-      // Bail if a newer refresh started while this one was in flight.
-      if (myGen !== groupCountsGeneration) return;
-
-      const next = new Map(groupInfiniteCounts.value);
-      for (const [gv, count] of results) {
-        if (typeof count === 'number') next.set(gv, count);
-      }
-      groupInfiniteCounts.value = next;
-    };
-
-    // Debounce so that bursts of triggers (e.g. grouping + filter applied in the
-    // same tick from view configuration) collapse into a single request batch.
-    const scheduleRefreshGroupCounts = () => {
-      if (groupCountsTimer) clearTimeout(groupCountsTimer);
-      groupCountsTimer = setTimeout(() => {
-        groupCountsTimer = null;
-        refreshGroupCounts();
-      }, 50);
-    };
-
-    // Re-fetch on any input that affects the count: grouping toggle, grouping
-    // column, search value, manual filters. AG Grid filter changes are picked
-    // up by onGroupFilterChanged below.
-    watch(
-      () => [
-        isGroupingActive.value,
-        isInfiniteScrollEnabled.value,
-        groupingColumnId.value,
-        props.content?.searchValue,
-        props.content?.supabaseFilters,
-      ],
-      () => { scheduleRefreshGroupCounts(); },
-      { immediate: true, deep: true }
-    );
-    // ========== /PER-GROUP INFINITE-SCROLL DATASOURCES ==========
 
     const rowData = computed(() => {
       // If using infinite scrolling, rowData should be undefined (grid uses datasource)

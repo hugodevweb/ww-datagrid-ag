@@ -20,7 +20,26 @@
       "Bash(node --check src/datagrid/composables/useSelection.js)",
       "Bash(node --check src/datagrid/utils/supabaseFieldMappings.js)",
       "Bash(node --check src/datagrid/utils/convertFilterToSupabase.js)",
-      "Bash(taskkill //F //PID 12424)"
+      "Bash(taskkill //F //PID 12424)",
+      "Bash(node --check src/datagrid/composables/useDataFetch.js)",
+      "Bash(node --check src/datagrid/composables/useFiltersAndSort.js)",
+      "Bash(node --check src/datagrid/composables/useInfiniteScroll.js)",
+      "Bash(tee /tmp/serve.log)",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(kill %1)",
+      "Bash(killall node *)",
+      "Bash(pkill -f \"weweb serve\")",
+      "Bash(tee /tmp/serve2.log)",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }; Start-Sleep -Seconds 1; \"Port 8080 status:\"; Get-NetTCPConnection -LocalPort 8080 -ErrorAction SilentlyContinue | Select-Object -First 3)",
+      "Bash(tee /tmp/serve3.log)",
+      "Bash(grep -n \"^    };$\" src/datagrid/Datagrid.vue)",
+      "PowerShell(Get-Process -Name \"node\" -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(\"killed\")",
+      "Bash(tee /tmp/serve4.log)",
+      "Bash(node --check src/datagrid/composables/useGrouping.js)",
+      "Bash(tee /tmp/serve_s3.log)"
     ]
   }
 }
