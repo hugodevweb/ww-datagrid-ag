@@ -7,10 +7,10 @@
     >
         <wwLayoutItemContext
             is-repeat
-            :index="params.node.sourceRowIndex"
-            :data="{ value: params.value, row: params.data, columnId: columnId }"
+            :index="activeParams.node.sourceRowIndex"
+            :data="{ value: activeParams.value, row: activeParams.data, columnId: columnId }"
         >
-            <wwElement v-bind="params.containerId" class="ww-cell-renderer-flexbox"></wwElement>
+            <wwElement v-bind="activeParams.containerId" class="ww-cell-renderer-flexbox"></wwElement>
         </wwLayoutItemContext>
     </div>
 </template>
@@ -29,21 +29,31 @@ export default {
             currentValue: null,
             originalValue: null,
             wasCancelled: false,
+            // ag-grid-vue3 does not update the params prop reactively after refresh().
+            // We cache the latest params received in refresh() here so the template
+            // and computeds pick up new cell values without needing the full
+            // destroy/recreate cycle (refresh() now returns true).
+            _refreshedParams: null,
         };
     },
     computed: {
+        // Prefer params received via refresh() over the initial prop, since
+        // ag-grid-vue3 doesn't propagate prop changes after refresh.
+        activeParams() {
+            return this._refreshedParams || this.params;
+        },
         // Detect if we're in edit mode - AG Grid creates a new instance when editing
         isEditMode() {
             // When AG Grid uses this as an editor, it's in edit mode
             // We detect this by checking if we're being used as a cell editor
-            return this.params?.api && this.params?.stopEditing;
+            return this.activeParams?.api && this.activeParams?.stopEditing;
         },
         // Get the column ID for mappable data
         columnId() {
             // Try multiple ways to get the column ID
-            return this.params?.column?.getColId() || 
-                   this.params?.colDef?.colId || 
-                   this.params?.colDef?.field || 
+            return this.activeParams?.column?.getColId() ||
+                   this.activeParams?.colDef?.colId ||
+                   this.activeParams?.colDef?.field ||
                    null;
         },
     },
@@ -93,10 +103,19 @@ export default {
     },
     methods: {
         // AG Grid interface: called when the cell needs to update without full recreate.
-        // Returning false forces AG Grid to destroy and recreate the component with
-        // fresh params, ensuring updated data is displayed after external changes.
-        refresh() {
-            return false;
+        // We cache the latest params (ag-grid-vue3 doesn't update the prop after
+        // refresh) and return true so AG Grid keeps this instance alive — much
+        // cheaper than tearing down and recreating the wwElement-wrapped tree
+        // every time a cell value changes.
+        refresh(params) {
+            this._refreshedParams = params;
+            // Do not overwrite editor-mode state during a live edit
+            if (!this.isEditMode) {
+                const actualValue = params?.data?.[params?.colDef?.field] ?? params?.value;
+                this.currentValue = actualValue;
+                this.originalValue = actualValue;
+            }
+            return true;
         },
         // AG Grid editor interface method
         // Returns the current cell value
@@ -162,7 +181,7 @@ export default {
     display: flex;
     flex-direction: column;
     line-height: normal;
-    
+
     &.edit-mode {
         outline: 2px solid rgba(0, 122, 255, 0.3);
         outline-offset: -2px;

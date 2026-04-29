@@ -6,14 +6,13 @@
         </div>
         <!-- Normal display - Read Mode -->
         <div v-else class="user-display">
-            <div 
-                v-for="(user, index) in displayUsers" 
+            <div
+                v-for="(user, index) in displayUsers"
                 :key="user.id || index"
-                :ref="el => setAvatarRef(el, user.id)"
                 class="user-avatar-container"
-                @mouseenter="showTooltipForUser(user)"
+                @mouseenter="showTooltipForUser(user, $event)"
                 @mouseleave="handleAvatarMouseLeave"
-                @mousemove="updateTooltipPosition(user.id)"
+                @mousemove="updateTooltipPosition()"
             >
                 <img
                     :src="user.avatar_variants?.sm || user.avatar_url || getDefaultAvatar(user)"
@@ -214,6 +213,33 @@
 </template>
 
 <script>
+// Module-level cache for the SVG data-URL fallback avatars.
+// Same display-name → same SVG, so we can skip the encodeURIComponent
+// and string assembly on every renderer mount.
+const defaultAvatarCache = new Map();
+const DEFAULT_AVATAR_CACHE_MAX = 500;
+const DEFAULT_AVATAR_PALETTE = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE'];
+
+function buildDefaultAvatarUrl(name) {
+    const colorIndex = name.charCodeAt(0) % DEFAULT_AVATAR_PALETTE.length;
+    const color = DEFAULT_AVATAR_PALETTE[colorIndex];
+    const initial = name.charAt(0).toUpperCase();
+    return `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='${encodeURIComponent(color)}'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-weight='bold'>${encodeURIComponent(initial)}</text></svg>`;
+}
+
+function getDefaultAvatarFor(name) {
+    if (!name) name = '?';
+    if (defaultAvatarCache.has(name)) {
+        return defaultAvatarCache.get(name);
+    }
+    if (defaultAvatarCache.size >= DEFAULT_AVATAR_CACHE_MAX) {
+        defaultAvatarCache.delete(defaultAvatarCache.keys().next().value);
+    }
+    const url = buildDefaultAvatarUrl(name);
+    defaultAvatarCache.set(name, url);
+    return url;
+}
+
 export default {
     name: "UserCellRenderer",
     props: {
@@ -230,7 +256,7 @@ export default {
         const rendererParams = this.params?.colDef?.cellRendererParams || {};
         const users = this.params?.users || editorParams?.users || rendererParams?.users || [];
         const usersAlreadyAvailable = Array.isArray(users) && users.length > 0;
-        
+
         return {
             selectedUserIds: [],
             originalUserIds: [],
@@ -242,32 +268,40 @@ export default {
             searchQuery: "",
             showTooltip: false,
             currentTooltipUser: null,
-            avatarRefs: new Map(),
             tooltipHideTimeout: null,
             tooltipShowTimeout: null,
             isMouseOverTooltip: false,
             copiedEmail: false,
             copiedPhone: false,
             showContactInfo: false,
+            // ag-grid-vue3 does not update the params prop reactively after refresh().
+            // Cache the latest params here so computeds re-read fresh values
+            // without forcing AG Grid to destroy and recreate this renderer.
+            _refreshedParams: null,
         };
     },
     computed: {
+        // Prefer params received via refresh() over the initial prop, since
+        // ag-grid-vue3 doesn't propagate prop changes after refresh.
+        activeParams() {
+            return this._refreshedParams || this.params;
+        },
         isEditMode() {
             // Check if stopEditing is present (indicates cell editor mode)
-            const hasStopEditing = this.params?.api && this.params?.stopEditing;
+            const hasStopEditing = this.activeParams?.api && this.activeParams?.stopEditing;
             if (!hasStopEditing) return false;
-            
+
             // Check if the column is editable
-            const colDef = this.params?.colDef;
+            const colDef = this.activeParams?.colDef;
             const isEditable = colDef?.editable !== false;
-            
+
             return isEditable;
         },
         isLoadingState() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
 
-            if (this.params?.isLoading || editorParams?.isLoading || rendererParams?.isLoading) {
+            if (this.activeParams?.isLoading || editorParams?.isLoading || rendererParams?.isLoading) {
                 return true;
             }
 
@@ -281,55 +315,55 @@ export default {
             return false;
         },
         availableUsers() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
-            const users = this.params?.users || 
-                         editorParams?.users || 
-                         rendererParams?.users || 
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
+
+            const users = this.activeParams?.users ||
+                         editorParams?.users ||
+                         rendererParams?.users ||
                          [];
-            
+
             return Array.isArray(users) ? users : [];
         },
         maxNumberOfUsers() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
-            return this.params?.maxNumberOfUsers || 
-                   editorParams?.maxNumberOfUsers || 
-                   rendererParams?.maxNumberOfUsers || 
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
+
+            return this.activeParams?.maxNumberOfUsers ||
+                   editorParams?.maxNumberOfUsers ||
+                   rendererParams?.maxNumberOfUsers ||
                    4;
         },
         isMultiple() {
             return this.maxNumberOfUsers > 1;
         },
         userIdFormula() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
-            return this.params?.userIdFormula || 
-                   editorParams?.userIdFormula || 
-                   rendererParams?.userIdFormula || 
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
+
+            return this.activeParams?.userIdFormula ||
+                   editorParams?.userIdFormula ||
+                   rendererParams?.userIdFormula ||
                    null;
         },
         resolveMappingFormula() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
-            return this.params?.resolveMappingFormula || 
-                   editorParams?.resolveMappingFormula || 
-                   rendererParams?.resolveMappingFormula || 
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
+
+            return this.activeParams?.resolveMappingFormula ||
+                   editorParams?.resolveMappingFormula ||
+                   rendererParams?.resolveMappingFormula ||
                    null;
         },
         currentValue() {
-            const field = this.params?.colDef?.field;
-            const rawValue = this.params?.data?.[field] ?? this.params?.value;
-            
+            const field = this.activeParams?.colDef?.field;
+            const rawValue = this.activeParams?.data?.[field] ?? this.activeParams?.value;
+
             // If no formula, return raw value directly
             if (!this.userIdFormula || !this.resolveMappingFormula) {
                 return rawValue;
             }
-            
+
             // Apply formula to extract user ID(s)
             const extractedValue = this.resolveMappingFormula(this.userIdFormula, rawValue);
             return extractedValue ?? rawValue; // Fallback to raw value if formula returns null/undefined
@@ -361,12 +395,12 @@ export default {
             });
         },
         userFocusColor() {
-            const editorParams = this.params?.colDef?.cellEditorParams || {};
-            const rendererParams = this.params?.colDef?.cellRendererParams || {};
-            
-            return this.params?.userFocusColor || 
-                   editorParams?.userFocusColor || 
-                   rendererParams?.userFocusColor || 
+            const editorParams = this.activeParams?.colDef?.cellEditorParams || {};
+            const rendererParams = this.activeParams?.colDef?.cellRendererParams || {};
+
+            return this.activeParams?.userFocusColor ||
+                   editorParams?.userFocusColor ||
+                   rendererParams?.userFocusColor ||
                    null;
         },
         iconColor() {
@@ -405,7 +439,7 @@ export default {
         },
         tooltipStyle() {
             // Get font family from content (passed via params or from grid theme)
-            const cellFontFamily = this.params?.cellFontFamily || null;
+            const cellFontFamily = this.activeParams?.cellFontFamily || null;
             
             return {
                 position: 'fixed',
@@ -468,20 +502,27 @@ export default {
             }
         },
         availableUsers: {
+            // immediate: false — the mounted() $nextTick already handles the
+            // "users available at mount" case. This watcher only needs to fire
+            // when users arrive asynchronously after the component is created,
+            // so running it synchronously on every mount is redundant overhead.
             handler(newUsers) {
                 if (!this.hasEverRendered && newUsers.length > 0) {
                     this.hasEverRendered = true;
                 }
             },
-            immediate: true,
+            immediate: false,
         },
     },
     methods: {
         // AG Grid interface: called when the cell needs to update without full recreate.
-        // Returning false forces AG Grid to destroy and recreate the component with
-        // fresh params, ensuring updated data is displayed after external changes.
-        refresh() {
-            return false;
+        // We cache the latest params (ag-grid-vue3 doesn't update the prop after
+        // refresh) and return true so AG Grid keeps this instance alive — much
+        // cheaper than rebuilding the renderer (with its tooltip + dropdown
+        // template) every time a cell value changes.
+        refresh(params) {
+            this._refreshedParams = params;
+            return true;
         },
         initializeValue() {
             const value = this.currentValue;
@@ -509,11 +550,9 @@ export default {
             return null;
         },
         getDefaultAvatar(user) {
-            // Generate a simple colored circle based on user name
-            const name = this.getUserName(user);
-            const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F', '#BB8FCE'];
-            const colorIndex = name.charCodeAt(0) % colors.length;
-            return `data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='16' fill='${encodeURIComponent(colors[colorIndex])}'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-weight='bold'>${encodeURIComponent(name.charAt(0).toUpperCase())}</text></svg>`;
+            // Memoized at module level (see getDefaultAvatarFor) so identical
+            // display names share the same SVG data URL across rows/scrolls.
+            return getDefaultAvatarFor(this.getUserName(user));
         },
         isUserSelected(userId) {
             return this.selectedUserIds.includes(userId);
@@ -705,31 +744,29 @@ export default {
                 };
             }
         },
-        setAvatarRef(el, userId) {
-            if (el && userId) {
-                this.avatarRefs.set(userId, el);
-            } else if (userId) {
-                this.avatarRefs.delete(userId);
-            }
-        },
-        showTooltipForUser(user) {
+        showTooltipForUser(user, event) {
             // Clear any existing show timeout
             if (this.tooltipShowTimeout) {
                 clearTimeout(this.tooltipShowTimeout);
                 this.tooltipShowTimeout = null;
             }
-            
+
             // Clear any pending hide timeout
             if (this.tooltipHideTimeout) {
                 clearTimeout(this.tooltipHideTimeout);
                 this.tooltipHideTimeout = null;
             }
-            
+
+            // Capture the hovered avatar element directly from the event so we
+            // don't need to track per-user refs (avoids inline `:ref` binding
+            // recreated on every render).
+            this._hoveredAvatarEl = event?.currentTarget || null;
+
             // Set a delay before showing the tooltip (500ms)
             this.tooltipShowTimeout = setTimeout(() => {
                 this.currentTooltipUser = user;
                 this.showContactInfo = false; // Reset to collapsed state
-                this.updateTooltipPosition(user.id);
+                this.updateTooltipPosition();
                 this.showTooltip = true;
                 this.tooltipShowTimeout = null;
             }, 500);
@@ -769,6 +806,7 @@ export default {
             this.currentTooltipUser = null;
             this.isMouseOverTooltip = false;
             this.showContactInfo = false; // Reset to collapsed state
+            this._hoveredAvatarEl = null;
             if (this.tooltipHideTimeout) {
                 clearTimeout(this.tooltipHideTimeout);
                 this.tooltipHideTimeout = null;
@@ -778,9 +816,9 @@ export default {
                 this.tooltipShowTimeout = null;
             }
         },
-        updateTooltipPosition(userId) {
+        updateTooltipPosition() {
             this.$nextTick(() => {
-                const avatarElement = this.avatarRefs.get(userId);
+                const avatarElement = this._hoveredAvatarEl;
                 if (!avatarElement) return;
                 
                 const avatarRect = avatarElement.getBoundingClientRect();

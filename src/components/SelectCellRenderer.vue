@@ -60,6 +60,11 @@ const formulaOptionsCache = new Map();
 // Limit the formula cache size to avoid unbounded growth.
 const FORMULA_CACHE_MAX = 50;
 
+// Stable style constant for cells with no matching option.
+// Returning the same frozen reference means Vue's :style binding sees no change
+// on re-render, avoiding unnecessary DOM updates for cells without a colour.
+const STYLE_TRANSPARENT = Object.freeze({ backgroundColor: 'transparent', color: 'inherit' });
+
 export default {
     name: "SelectCellRenderer",
     props: {
@@ -243,23 +248,24 @@ export default {
             return this.params?.value || '';
         },
         cellStyle() {
-            // Only apply colored background if we have a matching option
+            // Only apply colored background if we have a matching option.
             if (this.currentOption) {
                 const bgColor = this.currentOption.color || '#f0f0f0';
-                const textColor = '#ffffff';
-                
-                return {
-                    backgroundColor: bgColor,
-                    color: textColor,
-                };
+                // Cache the style object by (value, color) key so that repeat
+                // renders of the same selection return the same reference.
+                // Vue's :style binding skips the DOM update when the reference
+                // hasn't changed, which matters across thousands of scroll cells.
+                const key = `${this.currentOption.value}|${bgColor}`;
+                if (this._cellStyleKey === key) return this._cellStyleObj;
+                this._cellStyleKey = key;
+                this._cellStyleObj = { backgroundColor: bgColor, color: '#ffffff' };
+                return this._cellStyleObj;
             }
-            
-            // For cases without a matching option, use transparent background
+
+            // For cells without a matching option return the shared frozen constant.
             // This prevents the gray flash while options are loading/processing
-            return {
-                backgroundColor: 'transparent',
-                color: 'inherit',
-            };
+            // and always yields the same object reference → no DOM diffing churn.
+            return STYLE_TRANSPARENT;
         },
         dropdownColumns() {
             // Calculate columns: 1 column per 6 options

@@ -603,6 +603,143 @@ export function createImageColumnDef(col, commonProperties) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Select column helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a memoized label-from-value getter for a select column.
+ *
+ * The returned function `(value, options) => label` builds an O(1) Map from
+ * option-value → option-label the *first* time it sees a given `options`
+ * array reference, then returns cached results for every subsequent call.
+ * Each call with the same options reference is therefore O(1) instead of
+ * O(n_options) — critical when this runs inside AG Grid's valueGetter for
+ * every visible row.
+ *
+ * The internal WeakMap is scoped to the factory closure so that a formula
+ * change (which produces a new cacheKey → new closure) automatically starts
+ * with a fresh WeakMap, preventing stale label data.
+ *
+ * @param {object}   col                  - Column configuration
+ * @param {Function} resolveMappingFormula - Formula resolver from the component
+ * @returns {(value: any, options: any[]) => string}
+ */
+export function createSelectLabelGetter(col, resolveMappingFormula) {
+  const valueFormulaCode = col?.optionsValueFormula?.code ?? '';
+  const labelFormulaCode = col?.optionsLabelFormula?.code ?? '';
+  const cacheKey = `select-label-getter-${col.field}-${valueFormulaCode}-${labelFormulaCode}`;
+
+  return memoize(cacheKey, () => {
+    // Scoped to this closure: invalidated automatically when the memoize key
+    // changes (i.e. when formula config changes and clearColumnCache() is called).
+    const labelByOptions = new WeakMap();
+
+    return (value, options) => {
+      if (value == null || value === '') return '';
+      if (!options || !options.length) return String(value);
+
+      // Build or reuse the lookup map for this exact options array instance.
+      let lookupMap = labelByOptions.get(options);
+      if (!lookupMap) {
+        lookupMap = new Map();
+        for (const option of options) {
+          const optValue = resolveMappingFormula(col?.optionsValueFormula, option) ?? option.value;
+          const optLabel = resolveMappingFormula(col?.optionsLabelFormula, option) ?? option.label;
+          const k = optValue != null ? String(optValue) : '';
+          const v = optLabel != null ? String(optLabel) : (k || '');
+          lookupMap.set(k, v);
+        }
+        labelByOptions.set(options, lookupMap);
+      }
+
+      const strValue = String(value);
+      return lookupMap.has(strValue) ? lookupMap.get(strValue) : String(value);
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// User column helpers
+// ---------------------------------------------------------------------------
+
+// Module-level WeakMap: users array ref → Map<userId, displayName>.
+// userId→name mappings are intrinsic to the user objects, not formula-dependent,
+// so they can safely be shared across closures for the same users array.
+const userNameLookupCache = new WeakMap();
+
+/**
+ * Create a memoized user-name-from-id getter for a user column.
+ *
+ * The returned function `(userId, users) => name` builds an O(1) Map from
+ * userId → display-name the *first* time it sees a given `users` array
+ * reference, then returns cached results for every subsequent call.
+ *
+ * @param {object} col - Column configuration
+ * @returns {(userId: string, users: any[]) => string}
+ */
+export function createUserNameGetter(col) {
+  const cacheKey = `user-name-getter-${col.field}`;
+
+  return memoize(cacheKey, () => {
+    return (userId, users) => {
+      if (!userId) return '';
+      if (!users || !users.length) return String(userId);
+
+      // Build or reuse the lookup map for this exact users array instance.
+      let lookupMap = userNameLookupCache.get(users);
+      if (!lookupMap) {
+        lookupMap = new Map();
+        for (const user of users) {
+          if (!user?.id) continue;
+          let name;
+          if (user.name) {
+            name = user.name;
+          } else if (user.firstname || user.lastname) {
+            name = [user.firstname, user.lastname].filter(Boolean).join(' ');
+          } else {
+            name = user.email || String(user.id);
+          }
+          lookupMap.set(String(user.id), name);
+        }
+        userNameLookupCache.set(users, lookupMap);
+      }
+
+      const strId = String(userId);
+      return lookupMap.has(strId) ? lookupMap.get(strId) : strId;
+    };
+  });
+}
+
+/**
+ * Create a memoized user-IDs extractor for a user column.
+ *
+ * The returned function `(rawValue) => ids` applies the column's
+ * `userIdFormula` to extract user ID(s) from a potentially nested cell value
+ * (e.g. Supabase junction-table joins), falling back to the raw value when
+ * the formula returns nothing.
+ *
+ * The closure is memoized per (field, formula) so it is not recreated on
+ * every columnDefs recompute.
+ *
+ * @param {object}   col                  - Column configuration
+ * @param {Function} resolveMappingFormula - Formula resolver from the component
+ * @returns {(rawValue: any) => any}
+ */
+export function createUserIdsExtractor(col, resolveMappingFormula) {
+  const userIdFormula = col?.userIdFormula || { type: 'f', code: 'context.mapping' };
+  const formulaCode = userIdFormula?.code ?? '';
+  const cacheKey = `user-ids-extractor-${col.field}-${formulaCode}`;
+
+  return memoize(cacheKey, () => {
+    return (rawValue) => {
+      if (!rawValue) return null;
+      const extracted = resolveMappingFormula(userIdFormula, rawValue);
+      return extracted ?? rawValue;
+    };
+  });
+}
+
 // Clear all caches (call when major dependencies change)
 export function clearAllCaches() {
   clearColumnCache();

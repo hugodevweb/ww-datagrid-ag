@@ -504,7 +504,10 @@ import {
   createDateColumnDef,
   createCurrencyColumnDef,
   createImageColumnDef,
-  createValueSetter
+  createValueSetter,
+  createSelectLabelGetter,
+  createUserNameGetter,
+  createUserIdsExtractor,
 } from "./utils/columnFactories.js";
 import {
   findRowNode,
@@ -4918,25 +4921,10 @@ export default {
               get isLoading() { return false; },
             };
             
-            // Helper function to get label from value
-            const getLabelFromValue = (value) => {
-              const rawOptions = col?.options;
-              const options = Array.isArray(rawOptions) ? rawOptions : [];
-              
-              // Process options with formula mapping if needed
-              const processedOptions = options.map(option => {
-                const optionValue = this.resolveMappingFormula(col?.optionsValueFormula, option) ?? option.value;
-                const optionLabel = this.resolveMappingFormula(col?.optionsLabelFormula, option) ?? option.label;
-                return {
-                  value: optionValue || '',
-                  label: optionLabel || optionValue || '',
-                };
-              });
-              
-              const foundOption = processedOptions.find(opt => opt.value === value);
-              return foundOption?.label || value || '';
-            };
-            
+            // Memoized label getter: O(n_options) only on first call per unique
+            // options array reference, O(1) for all subsequent calls.
+            const getLabelFromValue = createSelectLabelGetter(col, this.resolveMappingFormula);
+
             return {
               ...commonProperties,
               headerName: col?.headerName,
@@ -4972,9 +4960,12 @@ export default {
                     },
                   }
                 : {}),
-              // Use label for filtering and sorting instead of value
+              // Use label for filtering and sorting instead of raw value.
+              // Pass the options array so the getter can cache by array reference.
               valueGetter: (params) => {
-                return getLabelFromValue(params.data?.[col?.field]);
+                const rawOptions = col?.options;
+                const options = Array.isArray(rawOptions) ? rawOptions : [];
+                return getLabelFromValue(params.data?.[col?.field], options);
               },
               // Ensure the raw value (ID) is stored, not the label
               valueSetter: getValueSetter(col, (params) => {
@@ -5006,35 +4997,13 @@ export default {
               get isLoading() { return false; },
             };
             
-            // Helper function to extract user ID(s) from raw cell value using userIdFormula
-            const extractUserIds = (rawValue, rowData) => {
-              if (!rawValue) return null;
-              
-              // Apply userIdFormula to extract user ID(s) from potentially nested structures
-              const extractedValue = this.resolveMappingFormula(userIdFormula, rawValue);
-              
-              // Return the extracted value, or fallback to raw value if formula returns null/undefined
-              return extractedValue ?? rawValue;
-            };
-            
-            // Helper function to get user name from ID
-            const getUserNameFromId = (userId) => {
-              if (!userId) return '';
-              const rawUsers = col?.users;
-              const users = Array.isArray(rawUsers) ? rawUsers : [];
-              const user = users.find(u => u.id === userId);
-              if (user) {
-                if (user.name) return user.name;
-                if (user.firstname || user.lastname) {
-                  return [user.firstname, user.lastname].filter(Boolean).join(' ');
-                }
-                return user.email || userId;
-              }
-              return userId;
-            };
-            
+            // Memoized closures — created once per unique (field, formula) config,
+            // not recreated on every columnDefs recompute.
+            const extractUserIds = createUserIdsExtractor(col, this.resolveMappingFormula);
+            const getUserNameFromId = createUserNameGetter(col);
+
             const isMultiple = (col?.maxNumberOfUsers ?? 4) > 1;
-            
+
             return {
               ...commonProperties,
               headerName: col?.headerName,
@@ -5076,20 +5045,23 @@ export default {
                     },
                   }
                 : {}),
-              // Use user name for filtering and sorting instead of ID
-              // Apply userIdFormula first to extract user IDs from the raw cell value
+              // Use user name for filtering and sorting instead of raw ID.
+              // Pass the users array so the getter can cache by array reference.
               valueGetter: (params) => {
                 const rawValue = params.data?.[col?.field];
-                const extractedValue = extractUserIds(rawValue, params.data);
+                const extractedValue = extractUserIds(rawValue);
                 if (!extractedValue) return '';
-                
+
+                const rawUsers = col?.users;
+                const users = Array.isArray(rawUsers) ? rawUsers : [];
+
                 if (isMultiple) {
                   // Multiple users: return comma-separated names
                   const userIds = Array.isArray(extractedValue) ? extractedValue : [extractedValue];
-                  return userIds.map(id => getUserNameFromId(id)).filter(Boolean).join(', ');
+                  return userIds.map(id => getUserNameFromId(id, users)).filter(Boolean).join(', ');
                 } else {
                   // Single user: return name
-                  return getUserNameFromId(extractedValue);
+                  return getUserNameFromId(extractedValue, users);
                 }
               },
               // Ensure the raw value (ID or array of IDs) is stored
@@ -5100,14 +5072,10 @@ export default {
                 }
                 return false;
               }),
-              // Return user ID(s) for filtering - filter model stores IDs
+              // Return user ID(s) for filtering — filter model stores IDs
               filterValueGetter: (params) => {
                 const rawValue = params.data?.[col?.field];
-                const extractedValue = extractUserIds(rawValue, params.data);
-                if (!extractedValue) return null;
-                
-                // Return the extracted user ID(s) directly
-                return extractedValue;
+                return extractUserIds(rawValue) ?? null;
               },
             };
           }
@@ -7601,6 +7569,41 @@ export default {
   :deep(.ag-center-cols-container) {
     min-height: 0 !important;
   }
+
+  // Skeleton shimmer overlay on cells while custom renderers (Vue or coded)
+  // mount their content. ag-grid creates the .ag-cell DOM synchronously on
+  // scroll, but renderer content paints on later ticks, leaving a brief white
+  // gap during fast scroll. The ::after sits on top, animates a subtle
+  // shimmer, then fades out — so cells that paint quickly only show a short
+  // flash, while slow ones stay covered until ready.
+  :deep(.ag-cell)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2;
+    background: linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.05) 0%,
+      rgba(0, 0, 0, 0.10) 50%,
+      rgba(0, 0, 0, 0.05) 100%
+    );
+    background-size: 200% 100%;
+    animation:
+      ww-datagrid-cell-shimmer 1.2s linear infinite,
+      ww-datagrid-cell-shimmer-fade 0.45s 0.25s forwards;
+  }
+}
+
+@keyframes ww-datagrid-cell-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@keyframes ww-datagrid-cell-shimmer-fade {
+  to { opacity: 0; }
+}
+
+.ww-datagrid {
   
   :deep(.ag-body-viewport) {
     overflow-y: auto !important;
