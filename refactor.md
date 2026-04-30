@@ -4,8 +4,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 
 ## Current state
 
-- **Datagrid.vue:** 5,970 lines (was 8,730 — total removed: 2,760, ~32% reduction; Session 4 removed 568).
-- **Composables created:** 7 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig).
+- **Datagrid.vue:** 5,449 lines (was 8,730 — total removed: 3,281, ~38% reduction; Session 5 removed 521).
+- **Composables created:** 9 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig, useColumnState, useColumnChooser).
 - **New utils created:** 2 of 2 (convertFilterToSupabase, supabaseFieldMappings).
 - **Build status:** `npm run serve` passes cleanly.
 - **Branch:** `create-groups` (uncommitted).
@@ -17,8 +17,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 1 | `composables/useGridApi.js` | setup 1000-1010, 1635-1793 | 122 actual | **DONE (S1)** |
 | 2 | `composables/useDataFetch.js` | setup 770-1208, 1611-1648, 1654-1702, 3022 | 416 actual | **DONE (S2)** — also owns `isInfiniteScrollEnabled` and inline filter helpers |
 | 3 | `composables/useViewConfig.js` | setup 845-870, 887-893, 923-1074, 1183-1191, 1208-1618 | 661 actual | **DONE (S4)** |
-| 4 | `composables/useColumnState.js` | setup 1011-1051, 1471-1523; computed 4732-5729 (columnDefs, defaultColDef, theme, rowStyle, cssVars, style, dataTypeDefinitions) | ~1,000 | not started |
-| 5 | `composables/useColumnChooser.js` | setup 1051-1065, 1523-1593; computed 4757-4811; methods 5773-5903 | ~400 | not started |
+| 4 | `composables/useColumnState.js` | setup 726-741, 885-888, 1087-1145; computed 1972-1996, 2714-2969 (defaultColDef, dataTypeDefinitions, rowSelection, style, cssVars, theme, rowStyle) | 438 actual | **DONE (S5)** — `columnDefs` computed deferred to S6 alongside cell-editing |
+| 5 | `composables/useColumnChooser.js` | setup 747-826; computed 1997-2051; methods 3013-3144 | 329 actual | **DONE (S5)** |
 | 6 | `composables/useFiltersAndSort.js` | setup 1002-1017, 1660-1661, 2233-2354 | 173 actual | **DONE (S2)** |
 | 7 | `composables/useSelection.js` | setup 1469-1492, 2780-2818; computed 5474-5497 | 69 actual | **DONE (S1)** — `rowSelection` computed deferred to S4 |
 | 8 | `composables/useGrouping.js` | setup 1220-1469, 2577-3550, 3142-3430, 3486-3541; methods 5781-5786 | 890 actual | **DONE (S3)** — `formatItemCount` (in `methods:`) deferred to S5 |
@@ -36,9 +36,9 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 2 | useDataFetch + useInfiniteScroll + useFiltersAndSort | `npm run serve` | **DONE** — build passes |
 | 3 | useGrouping (useViewConfig moved to S4 — cycle deps proved too tangled to do both at once) | `npm run serve` + WeWeb smoke test grouping | **DONE** — build passes |
 | 4 | useViewConfig (split off — useColumnState/useColumnChooser deferred to S5) | `npm run serve` + WeWeb smoke test view-config restore | **DONE** — build passes |
-| 5 | useColumnState + useColumnChooser (converts most of `computed:` block) | `npm run serve` | pending |
-| 6 | useCellEditing + useGridActions (converts most of `methods:` block) | `npm run serve` + cell edit smoke test | pending |
-| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks | `npm run serve` + full WeWeb smoke test | pending |
+| 5 | useColumnState (no columnDefs) + useColumnChooser | `npm run serve` + WeWeb smoke test column chooser + theme/rowStyle | **DONE** — build passes |
+| 6 | useCellEditing + useGridActions (converts the rest of `methods:` block — incl. `columnDefs` computed which depends on cell-editing methods) | `npm run serve` + cell edit smoke test | pending |
+| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks (cfg duplicate, formatItemCount, reportPerformance, resetPerformance) | `npm run serve` + full WeWeb smoke test | pending |
 
 Each session is committable independently. Run `npm run serve` and at least a quick WeWeb smoke test before committing.
 
@@ -157,6 +157,30 @@ No boundary issues this round — the surgery applied cleanly on first try.
 
 **Pre-existing bugs noticed (not fixed):** Same as previous sessions — `methods.removeRow` calls bare `cleanupRemovedIds()` without `this.`.
 
+### 2026-04-30 — Session 5: useColumnState + useColumnChooser
+**Shipped:**
+- `composables/useColumnState.js` (438 lines) — owns `columnOrder`/`hiddenColumns` WeWeb component variables, the `isVirtualColumn` helper, the simple visual computeds (`defaultColDef`, `dataTypeDefinitions`, `rowSelection`, `style`, `cssVars`, `theme`, `rowStyle`), the validation tracking refs (`_pendingValidationError`, `_validationFiredForCurrentEdit`), and the `onColumnMoved`/`onColumnResized` event handlers (single-grid mode). The `columnDefs` computed itself is **NOT** extracted in S5 — it depends on `this.onActionTrigger` and `this.onCustomCellEdit` (still in `methods:`) and on the validation refs above. It moves alongside cell-editing in S6.
+- `composables/useColumnChooser.js` (329 lines) — owns the chooser-panel UI state (`showColumnChooser`, `columnChooserRef`, `columnChooserSearch`, `chooserColumnOrder`, `chooserHiddenState`, `chooserDragColId`, `chooserDragOverColId`, `activeChooserTab`), the click-outside handler with bidirectional `cfg.columnChooserVariableId` sync (incl. its asynchronous attach + cleanup `onBeforeUnmount`), the column-list computeds (`allColumnsList`, `filteredColumnsList`, `allColumnsVisible`, `visibleColumnCount`, `someColumnsHidden`), and the chooser methods (`openColumnChooser`, `hideColumn`, `showColumn`, `toggleColumnVisibility`, `toggleAllColumns`, `onChooserDragStart`/`Over`/`Drop`/`End`).
+
+**Wired into Datagrid.vue:** Two consecutive composable destructure blocks inserted right after `useGrouping` (line ~728), with deps that match what each composable consumes. useColumnState uses lazy thunks for `getUpdateCurrentConfig` (resolves to useViewConfig's `updateCurrentConfig`, created later) and for `getShowColumnChooser`/`getChooserColumnOrder` (from useColumnChooser, also created later — needed by `onColumnMoved` to keep the chooser panel in sync). useColumnChooser uses a thunk for `getUpdateCurrentConfig` only. Setup return statement extended with 21 new entries (defaultColDef/dataTypeDefinitions/rowSelection/style/cssVars/theme/rowStyle/_pendingValidationError/_validationFiredForCurrentEdit + the 13 chooser-related list computeds and methods).
+
+**Surgery details:** Single PowerShell pass deleted 11 contiguous code regions: the inline columnOrder + hiddenColumns variables (728-743), the inline chooser state (749-757), the click-outside handler + showColumnChooser watcher + external-variable watcher + onBeforeUnmount cleanup (759-828), the inline `isVirtualColumn` definition (887-890), `onColumnMoved` (1089-1111), `onColumnResized` (1113-1145), `defaultColDef` + `dataTypeDefinitions` from computed: (1974-1998), the 5 chooser list computeds (1999-2053), `rowSelection` through `rowStyle` from computed: (2716-2971), `openColumnChooser` from methods: (3015-3017), and `hideColumn` through `onChooserDragEnd` from methods: (3029-3146). No boundary issues this round — surgery applied cleanly on first try (build green immediately after a follow-up Edit that added the new return entries).
+
+**Datagrid.vue:** 5,970 → 5,449 (521 lines removed; cumulative reduction since start: 8,730 → 5,449 = 38%).
+**Build:** `npm run serve` compiles cleanly. Only the pre-existing webpack-dev-server `https` deprecation warning.
+**Not committed yet** — user to review and commit when ready.
+
+**Judgment calls:**
+- **`columnDefs` deferred to S6.** The original plan had `columnDefs` going into useColumnState. On closer inspection, `columnDefs` calls `this.onActionTrigger` and `this.onCustomCellEdit` (Options-API methods) and writes `this._pendingValidationError`/`this._validationFiredForCurrentEdit`. Once S6 moves the cell-editing methods into a composable, those dependencies become composable-local — at which point columnDefs can be safely converted to a Composition-API `computed()` without resorting to `getCurrentInstance()` proxy hacks. The validation-tracking refs are exposed from useColumnState now so that S6 can consume them, and the still-in-Options-API `columnDefs` continues to write to them via `self._pendingValidationError = X` (the setup-returned ref auto-unwraps on assignment via `this`).
+- **Chooser state still spread into setup return.** The chooser state refs (`showColumnChooser` etc.) and methods (`hideColumn` etc.) are returned from setup so that the template (which references them by name) and Options-API methods that haven't moved yet can access them via `this.x`. No template changes needed.
+- **`_pendingValidationError` keeps its underscore prefix.** The Options-API code currently treats it as an ad-hoc instance property (`this._pendingValidationError = X`). Exposing it from setup return as a setup-returned ref means `this._pendingValidationError` now auto-unwraps on read and writes to `ref.value` on assignment — preserving the same call-site semantics without any Options-API code changes. The underscore name was kept verbatim to avoid touching cell-editing call sites until S6 absorbs them.
+- **Cycle deps via thunks.** `useColumnState`'s `onColumnMoved` reads from `chooserColumnOrder` (in useColumnChooser, created AFTER), and writes via `updateCurrentConfig` (from useViewConfig, created AFTER). useColumnChooser writes via `updateCurrentConfig` too. All three are thunks so the lookup happens at event-call time, after every composable is wired.
+- **`formatItemCount`, `reportPerformance`, `resetPerformance` stay in `methods:` for now.** All three are tiny single-line wrappers over already-exposed setup values (`this.gridMonitor`, `this.cfg`, `this.getTranslations`). The plan had them moving in S5; deferring to S7 cleanup keeps S5's diff focused on column state. They'll be inlined into setup as one-line lambdas in S7.
+- **Did not deduplicate the `cfg` Options-API computed.** It mirrors the setup `cfg` computed but is separately needed for `this.cfg` access from Options-API computeds/methods. Will collapse in S7 by adding `cfg` to the setup return (so `this.cfg` resolves to the setup version).
+
+**Pre-existing bugs noticed (not fixed):** Same as previous sessions.
+
 ## Next action
 
-Start Session 5: extract `useColumnState` (~1,000 lines target — covers the big `columnDefs` computed at original lines 4812-5473, `defaultColDef`, `dataTypeDefinitions`, `theme`, `rowStyle`, `cssVars`, `style`, plus `columnOrder`/`hiddenColumns` WeWeb variables and `isVirtualColumn`/`onColumnMoved`/`onColumnResized`) and `useColumnChooser` (~400 lines — chooser panel UI state, `allColumnsList`/`filteredColumnsList`/`allColumnsVisible`/`someColumnsHidden`, `hideColumn`/`showColumn`/`toggleColumnVisibility`/`toggleAllColumns`, `onChooserDragStart`/`Over`/`Drop`/`End`, `openColumnChooser`). Most of these live in the Options API `computed:`/`methods:` blocks and require the `this.x` → `x.value` mechanical conversion. After S5 ships, `useViewConfig`'s dep parameters (columnOrder/hiddenColumns/chooser*/isVirtualColumn) can be removed and consumed directly. Estimated ~1,400 line reduction.
+Start Session 6: extract `useCellEditing` (covers the meaty `onCellValueChanged` / `onCellEditRequest` / `onCellEditingStarted`/`Stopped` / `onRowEditingStarted`/`Stopped` / `onActionTrigger` / `onCustomCellEdit` / `onRowClicked` / `getRowId` methods, currently ~550 lines in `methods:`) AND extract `useGridActions` (covers `setCellValue` / `triggerCellValueChanged` / `refreshRow` / `refreshAllRows` / `removeRow` / etc. — the programmatic-action surface exposed to WeWeb workflows, ~1,200 lines). With `this.onActionTrigger`/`this.onCustomCellEdit`/`this._pendingValidationError`/`this._validationFiredForCurrentEdit` becoming composable-local at that point, **`columnDefs` can finally move into useColumnState** (or into useCellEditing if its tighter coupling there proves cleaner). Estimated reduction: ~1,500-1,800 lines. After S6 lands, only the `cfg` duplicate, `isEditing`/`invalidEditValueMode`/`paginationPageSizeSelector` Options-API computeds, `formatItemCount`/`reportPerformance`/`resetPerformance` methods, `checkIfColumnsStructureChanged` (editor-only), the `watch.columnDefs` editor-only block, and a thin orchestrator setup() body remain — easy S7 cleanup to land at ~700-900 lines as targeted.
+

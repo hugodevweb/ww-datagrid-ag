@@ -562,6 +562,8 @@ import { useFiltersAndSort } from "./composables/useFiltersAndSort.js";
 import { useInfiniteScroll } from "./composables/useInfiniteScroll.js";
 import { useGrouping } from "./composables/useGrouping.js";
 import { useViewConfig } from "./composables/useViewConfig.js";
+import { useColumnState } from "./composables/useColumnState.js";
+import { useColumnChooser } from "./composables/useColumnChooser.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -723,107 +725,73 @@ export default {
       getCurrentConfig: () => currentConfig,
     });
 
-    const { value: columnOrder, setValue: setColumnOrder } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "columnOrder",
-        type: "array",
-        defaultValue: [],
-        readonly: true,
-      });
-    const { value: hiddenColumns, setValue: setHiddenColumns } =
-      wwLib.wwVariable.useComponentVariable({
-        uid: props.uid,
-        name: "hiddenColumns",
-        type: "array",
-        defaultValue: [],
-        readonly: true,
-      });
+    // Composable: column state — owns columnOrder/hiddenColumns WeWeb
+    // variables, isVirtualColumn helper, the simple visual computeds
+    // (defaultColDef, dataTypeDefinitions, rowSelection, style, cssVars,
+    // theme, rowStyle), validation tracking refs (used by columnDefs +
+    // cell-editing in S6), and onColumnMoved/onColumnResized event handlers.
+    // columnDefs itself stays in `computed:` until S6 (it depends on
+    // `this.onActionTrigger`/`this.onCustomCellEdit` which are still in
+    // `methods:`).
+    const {
+      columnOrder, setColumnOrder,
+      hiddenColumns, setHiddenColumns,
+      isVirtualColumn,
+      defaultColDef, dataTypeDefinitions,
+      rowSelection, style, cssVars, theme, rowStyle,
+      _pendingValidationError, _validationFiredForCurrentEdit,
+      onColumnMoved, onColumnResized,
+    } = useColumnState(cfg, props, ctx, resolveMappingFormula, {
+      gridApi, debugLog,
+      // Late-bound — useViewConfig + useColumnChooser are created AFTER:
+      getUpdateCurrentConfig: () => updateCurrentConfig,
+      getShowColumnChooser: () => showColumnChooser,
+      getChooserColumnOrder: () => chooserColumnOrder,
+    });
+
+    // Composable: column chooser — owns the chooser-panel state + the
+    // click-outside handler with bidirectional `columnChooserVariableId`
+    // sync, the column-list computeds (allColumnsList /
+    // filteredColumnsList / allColumnsVisible / visibleColumnCount /
+    // someColumnsHidden), and the chooser methods (open / hide / show /
+    // toggle visibility / toggle all / drag-reorder).
+    const {
+      showColumnChooser,
+      columnChooserRef,
+      columnChooserSearch,
+      chooserColumnOrder,
+      chooserHiddenState,
+      chooserDragColId,
+      chooserDragOverColId,
+      activeChooserTab,
+      allColumnsList,
+      filteredColumnsList,
+      allColumnsVisible,
+      visibleColumnCount,
+      someColumnsHidden,
+      openColumnChooser,
+      hideColumn,
+      showColumn,
+      toggleColumnVisibility,
+      toggleAllColumns,
+      onChooserDragStart,
+      onChooserDragOver,
+      onChooserDrop,
+      onChooserDragEnd,
+    } = useColumnChooser(cfg, props, ctx, {
+      gridApi, debugLog,
+      hiddenColumns, setHiddenColumns,
+      isVirtualColumn,
+      // Late-bound — useViewConfig is created AFTER:
+      getUpdateCurrentConfig: () => updateCurrentConfig,
+    });
+
     const activeCreateColumnField = ref(null);
     const activeCreateRow = ref(null);
     const activeCreateRowId = ref(null);
     const createPopupTeleportTarget = ref(null);
 
-    const showColumnChooser = ref(false);
-    const columnChooserRef = ref(null);
-    const columnChooserSearch = ref('');
-    const chooserColumnOrder = ref([]); // local ordered list of colIds for the panel
-    const chooserHiddenState = ref([]); // local reactive hidden-columns list for the chooser UI
-    const chooserDragColId = ref(null);
-    const chooserDragOverColId = ref(null);
-    // Chooser panel active tab — 'columns' (default, existing UI) or 'grouping' (new UI).
-    const activeChooserTab = ref('columns');
 
-    const handleClickOutside = (event) => {
-      if (columnChooserRef.value && !columnChooserRef.value.contains(event.target)) {
-        showColumnChooser.value = false;
-      }
-    };
-
-    let clickOutsideTimer = null;
-    watch(showColumnChooser, (val) => {
-      if (val) {
-        // Initialize chooser order and hidden state from current grid state
-        if (gridApi.value) {
-          const gridCols = gridApi.value.getAllGridColumns()?.filter(c => !isVirtualColumn(c));
-          chooserColumnOrder.value = gridCols?.map(c => c.getColId()).filter(Boolean) || [];
-          chooserHiddenState.value = gridCols?.filter(c => !c.isVisible()).map(c => c.getColId()).filter(Boolean) || [];
-        }
-        columnChooserSearch.value = '';
-        // Delay so the current click that opened the panel doesn't immediately close it.
-        // Timer is tracked so it can be cancelled if the panel closes before it fires.
-        clickOutsideTimer = setTimeout(() => {
-          clickOutsideTimer = null;
-          wwLib.getFrontDocument().addEventListener('click', handleClickOutside);
-        }, 0);
-      } else {
-        // Cancel pending attach if panel closed before timer fired
-        if (clickOutsideTimer !== null) {
-          clearTimeout(clickOutsideTimer);
-          clickOutsideTimer = null;
-        }
-        wwLib.getFrontDocument().removeEventListener('click', handleClickOutside);
-        chooserDragColId.value = null;
-        chooserDragOverColId.value = null;
-      }
-
-      // Sync external variable with column chooser state
-      const ccVarId = cfg.value?.columnChooserVariableId;
-      if (ccVarId) {
-        try {
-          wwLib.wwVariable.updateValue(ccVarId, val);
-          debugLog(`[ColumnChooserVariable] Set variable "${ccVarId}" →`, val);
-        } catch (e) {
-          debugLog('[ColumnChooserVariable] Could not update variable:', ccVarId, e);
-        }
-      }
-    });
-
-    // Watch external variable to control column chooser visibility
-    watch(
-      () => {
-        const varId = cfg.value?.columnChooserVariableId;
-        if (!varId) return undefined;
-        try {
-          return wwLib.wwVariable.getValue(varId);
-        } catch (e) {
-          return undefined;
-        }
-      },
-      (newVal) => {
-        if (newVal === undefined) return;
-        const boolVal = !!newVal;
-        if (showColumnChooser.value !== boolVal) {
-          showColumnChooser.value = boolVal;
-          debugLog(`[ColumnChooserVariable] External variable changed → showColumnChooser =`, boolVal);
-        }
-      }
-    );
-
-    onBeforeUnmount(() => {
-      if (clickOutsideTimer !== null) clearTimeout(clickOutsideTimer);
-      wwLib.getFrontDocument().removeEventListener('click', handleClickOutside);
-    });
 
     // Resolve teleport target for the create record popup
     onMounted(() => {
@@ -882,10 +850,6 @@ export default {
 
     // Helper function to get current column widths from the grid
     // Helper to check if a column is a virtual (sort/filter-only) column
-    const isVirtualColumn = (col) => {
-      const colDef = col.getColDef?.();
-      return colDef?.__virtualColumn === true;
-    };
 
     // Composable: view configuration — owns currentConfig / columnDefs WeWeb
     // variables, applyViewConfiguration, gridReady & viewConfiguration watchers,
@@ -1084,63 +1048,7 @@ export default {
       }
     };
 
-    const onColumnMoved = (event) => {
-      if (!event.finished || event.source !== "uiColumnMoved") return;
-      const columns = event.api.getAllGridColumns().filter(col => !isVirtualColumn(col));
-      const newOrder = columns.map((col) => col.getColId());
-      setColumnOrder(newOrder);
 
-      // Keep chooser panel in sync so it doesn't show a stale order if open
-      if (showColumnChooser.value) {
-        chooserColumnOrder.value = newOrder.filter(Boolean);
-      }
-
-      // Update currentConfig to reflect the new column order
-      updateCurrentConfig();
-
-      ctx.emit("trigger-event", {
-        name: "columnMoved",
-        event: {
-          toIndex: event.toIndex,
-          columnId: event.column.getColId(),
-          columnsOrder: columns.map((col) => col.getColId()),
-        },
-      });
-    };
-
-    const onColumnResized = (event) => {
-      // Only emit on user-initiated resize that is finished
-      if (!event.finished || event.source !== "uiColumnResized") return;
-      
-      const columns = event.api.getAllGridColumns();
-      const columnsWidths = {};
-      
-      // Build an object of all column widths
-      columns.forEach((col) => {
-        const colId = col.getColId();
-        const actualWidth = col.getActualWidth();
-        if (colId && actualWidth) {
-          columnsWidths[colId] = actualWidth;
-        }
-      });
-      
-      // Update currentConfig to reflect the new column widths
-      updateCurrentConfig();
-      
-      // Get the resized column info
-      const resizedColumn = event.column;
-      const columnId = resizedColumn?.getColId();
-      const width = resizedColumn?.getActualWidth();
-      
-      ctx.emit("trigger-event", {
-        name: "columnResized",
-        event: {
-          columnId: columnId,
-          width: width,
-          columnsWidths: columnsWidths,
-        },
-      });
-    };
 
 
     // Track scroll debounce timer
@@ -1906,6 +1814,34 @@ export default {
       chooserDragOverColId,
       updateCurrentConfig,
       columnDefsVar,
+      // ========== COLUMN STATE EXPORTS (S5) ==========
+      defaultColDef,
+      dataTypeDefinitions,
+      rowSelection,
+      style,
+      cssVars,
+      theme,
+      rowStyle,
+      // Validation tracking refs — read/written by Options-API cell-editing
+      // methods (onCellEditingStarted/Stopped); will move into useCellEditing
+      // in Session 6.
+      _pendingValidationError,
+      _validationFiredForCurrentEdit,
+      // ========== COLUMN CHOOSER EXPORTS (S5) ==========
+      allColumnsList,
+      filteredColumnsList,
+      allColumnsVisible,
+      visibleColumnCount,
+      someColumnsHidden,
+      openColumnChooser,
+      hideColumn,
+      showColumn,
+      toggleColumnVisibility,
+      toggleAllColumns,
+      onChooserDragStart,
+      onChooserDragOver,
+      onChooserDrop,
+      onChooserDragEnd,
       // ========== GROUPING EXPORTS ==========
       isGroupingActive,
       orderedGroups,
@@ -1968,86 +1904,6 @@ export default {
         }
       }
       return merged;
-    },
-    defaultColDef() {
-      return {
-        editable: false,
-        resizable: this.cfg.resizableColumns,
-        autoHeaderHeight: this.cfg.headerHeightMode === "auto",
-        wrapHeaderText: this.cfg.headerHeightMode === "auto",
-        singleClickEdit: this.cfg.cellEditMode !== "doubleClick",
-        cellClass:
-          this.cfg.cellAlignmentMode === "custom"
-            ? `-${this.cfg.cellAlignment || "left"} ||`
-            : null,
-        filterParams: {
-          buttons: ['reset', 'apply'],
-          closeOnApply: true,
-        },
-        // Note: cellEditorParams with getValidationErrors is added per-column,
-        // not in defaultColDef, to allow column-specific validation rules
-      };
-    },
-    dataTypeDefinitions() {
-      // Return undefined to use AG Grid's default data type handling
-      // Custom formatting is handled via valueFormatter/valueParser on individual columns
-      // This avoids "data type definition undefined does not exist" errors
-      return undefined;
-    },
-    allColumnsList() {
-      // Build a map of colId → column meta from content.columns (exclude design-time hidden)
-      const colMap = new Map();
-      for (const col of (this.cfg.columns || [])) {
-        if (!col || (!col.field && !col.actionName) || col.hide) continue;
-        const colId = col.actionName || col.field;
-        colMap.set(colId, {
-          colId,
-          headerName: col.headerName || colId,
-          isHidden: (this.chooserHiddenState || []).includes(colId),
-          isLocked: !!col.lockedInChooser,
-        });
-      }
-
-      // Sort by chooserColumnOrder (reflects live grid order), append any extras
-      const ordered = [];
-      const seen = new Set();
-      for (const colId of (this.chooserColumnOrder || [])) {
-        if (colMap.has(colId)) {
-          ordered.push(colMap.get(colId));
-          seen.add(colId);
-        }
-      }
-      // Append columns not yet in the ordered list
-      for (const [colId, meta] of colMap) {
-        if (!seen.has(colId)) ordered.push(meta);
-      }
-
-      // Move locked columns to the top, preserving their relative order
-      const locked = ordered.filter(c => c.isLocked);
-      const unlocked = ordered.filter(c => !c.isLocked);
-      return [...locked, ...unlocked];
-    },
-    filteredColumnsList() {
-      const q = (this.columnChooserSearch || '').toLowerCase().trim();
-      if (!q) return this.allColumnsList;
-      return this.allColumnsList.filter(c => c.headerName.toLowerCase().includes(q));
-    },
-    allColumnsVisible() {
-      return !this.chooserHiddenState || this.chooserHiddenState.length === 0;
-    },
-    // Cheap count of runtime-toggleable columns (design-time hidden are excluded).
-    // Used by someColumnsHidden to avoid pulling in the heavier allColumnsList computation.
-    visibleColumnCount() {
-      return (this.cfg.columns || []).filter(
-        col => col && (col.field || col.actionName) && !col.hide
-      ).length;
-    },
-    someColumnsHidden() {
-      return !!(
-        this.chooserHiddenState &&
-        this.chooserHiddenState.length > 0 &&
-        this.chooserHiddenState.length < this.visibleColumnCount
-      );
     },
     columnDefs() {
       // First, map all columns to their definitions
@@ -2711,262 +2567,6 @@ export default {
 
       return columns;
     },
-    rowSelection() {
-      if (this.cfg.rowSelection === "multiple") {
-        return {
-          mode: "multiRow",
-          checkboxes: !this.cfg.disableCheckboxes,
-          headerCheckbox: !this.cfg.disableCheckboxes,
-          selectAll: this.cfg.selectAll || "all",
-          enableClickSelection: this.cfg.enableClickSelection,
-        };
-      } else if (this.cfg.rowSelection === "single") {
-        return {
-          mode: "singleRow",
-          checkboxes: !this.cfg.disableCheckboxes,
-          enableClickSelection: this.cfg.enableClickSelection,
-        };
-      } else {
-        return {
-          mode: "singleRow",
-          checkboxes: false,
-          isRowSelectable: () => false,
-          enableClickSelection: this.cfg.enableClickSelection,
-        };
-      }
-    },
-    style() {
-      if (this.cfg.layout === "auto") return {};
-      return {
-        height: this.cfg.height || "500px",
-        minHeight: "200px",
-      };
-    },
-    cssVars() {
-      const columnChooserBackground =
-        this.cfg.columnChooserBackground ||
-        this.cfg.menuBackgroundColor ||
-        this.cfg.headerBackgroundColor ||
-        this.cfg.rowBackgroundColor;
-      const columnChooserBorderColor =
-        this.cfg.columnChooserBorderColor ||
-        this.cfg.borderColor ||
-        this.cfg.outerBorderColor;
-      const columnChooserTextColor =
-        this.cfg.columnChooserTextColor ||
-        this.cfg.menuTextColor ||
-        this.cfg.textColor ||
-        this.cfg.cellColor ||
-        this.cfg.headerTextColor;
-      const columnChooserAccentColor =
-        this.cfg.columnChooserAccentColor ||
-        this.cfg.selectionCheckboxColor ||
-        this.cfg.userFocusColor ||
-        this.cfg.cellSelectionBorderColor;
-
-      return {
-        "--ww-data-grid_cc-background": columnChooserBackground,
-        "--ww-data-grid_cc-border-color": columnChooserBorderColor,
-        "--ww-data-grid_cc-border-radius": this.cfg.columnChooserBorderRadius || "8px",
-        "--ww-data-grid_cc-text-color": columnChooserTextColor,
-        "--ww-data-grid_cc-accent-color": columnChooserAccentColor,
-        "--ww-data-grid_cc-width": this.cfg.columnChooserWidth || "260px",
-        "--ww-data-grid_action-backgroundColor":
-          this.cfg.actionBackgroundColor,
-        "--ww-data-grid_action-color": this.cfg.actionColor,
-        "--ww-data-grid_action-padding": this.cfg.actionPadding,
-        "--ww-data-grid_action-border": this.cfg.actionBorder,
-        "--ww-data-grid_action-borderRadius": this.cfg.actionBorderRadius,
-        ...(this.cfg.actionFont
-          ? { "--ww-data-grid_action-font": this.cfg.actionFont }
-          : {
-              "--ww-data-grid_action-fontSize": this.cfg.actionFontSize,
-              "--ww-data-grid_action-fontFamily": this.cfg.actionFontFamily,
-              "--ww-data-grid_action-fontWeight": this.cfg.actionFontWeight,
-              "--ww-data-grid_action-fontStyle": this.cfg.actionFontStyle,
-              "--ww-data-grid_action-lineHeight": this.cfg.actionLineHeight,
-            }),
-        "--ww-data-grid_record-pill-accent-color": this.cfg.recordPillAccentColor,
-        "--ww-data-grid_record-pill-background": this.cfg.recordPillBackgroundColor,
-        "--ww-data-grid_record-pill-border-color": this.cfg.recordPillBorderColor,
-        "--ww-data-grid_record-pill-text-primary":
-          this.cfg.recordPillTextPrimaryColor,
-        "--ww-data-grid_record-pill-text-secondary":
-          this.cfg.recordPillTextSecondaryColor,
-        "--ww-data-grid_record-pill-accent-width":
-          this.cfg.recordPillAccentWidth,
-        "--ww-data-grid_record-pill-hover-shadow":
-          this.cfg.recordPillHoverShadow,
-      };
-    },
-    theme() {
-      return themeQuartz.withParams({
-        headerBackgroundColor: this.cfg.headerBackgroundColor,
-        headerTextColor: this.cfg.headerTextColor,
-        headerFontSize: this.cfg.headerFontSize,
-        headerFontFamily: this.cfg.headerFontFamily,
-        headerFontWeight: this.cfg.headerFontWeight,
-        headerHeight:
-          this.cfg.headerHeightMode !== "auto"
-            ? this.cfg.headerHeight
-            : undefined,
-        borderColor: this.cfg.borderColor,
-        wrapperBorder: this.cfg.outerBorderColor
-          ? { style: "solid", width: 1, color: this.cfg.outerBorderColor }
-          : undefined,
-        cellTextColor: this.cfg.cellColor,
-        cellFontFamily: this.cfg.cellFontFamily,
-        dataFontSize: this.cfg.cellFontSize,
-        oddRowBackgroundColor: this.cfg.rowAlternateColor,
-        backgroundColor: this.cfg.rowBackgroundColor,
-        rowHoverColor: this.cfg.rowHoverColor,
-        selectedRowBackgroundColor: this.cfg.selectedRowBackgroundColor,
-        rowVerticalPaddingScale: this.cfg.rowVerticalPaddingScale || 1,
-        menuBackgroundColor: this.cfg.menuBackgroundColor,
-        menuTextColor: this.cfg.menuTextColor,
-        columnHoverColor: this.cfg.columnHoverColor,
-        foregroundColor: this.cfg.textColor,
-        checkboxCheckedBackgroundColor: this.cfg.selectionCheckboxColor,
-        rangeSelectionBorderColor: this.cfg.cellSelectionBorderColor,
-        checkboxUncheckedBorderColor: this.cfg.checkboxUncheckedBorderColor,
-        focusShadow: this.cfg.focusShadow?.length
-          ? this.cfg.focusShadow
-          : undefined,
-        wrapperBorderRadius: this.cfg.wrapperBorderRadius,
-      });
-    },
-    rowStyle() {
-      // Return a function that AG Grid will call for each row
-      // This function evaluates conditional styling rules and focused row styling
-      // IMPORTANT: Focused row styling is applied LAST to override conditional styles
-      //
-      // PERFORMANCE: We only use conditionalRowStyles as a reactive dependency here.
-      // focusedRowId is read at call time (inside the returned function) so that
-      // changing the focused row does NOT cause this computed to re-evaluate and
-      // return a new function reference — which would force AG Grid to re-render
-      // all rows. Instead, the focusedRowId watcher handles targeted redraws of
-      // only the affected rows.
-      const conditionalRowStyles = this.content?.conditionalRowStyles;
-      
-      const hasConditionalStyles = conditionalRowStyles && Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
-      
-      // We always return a function now (instead of null) so that the function
-      // reference stays stable. Returning null vs function on focusedRowId toggle
-      // would also cause AG Grid to detect a prop change.
-      // Keep a reference to 'this' for use inside the closure
-      const self = this;
-      
-      // Return a stable function that reads focusedRowId at call time
-      return (params) => {
-        // params.data contains the row data
-        const rowData = params.data;
-        
-        // If no row data, return null
-        if (!rowData) {
-          return null;
-        }
-        
-        // Read focusedRowId at call time (not at computed evaluation time)
-        // This prevents the computed from re-evaluating when focusedRowId changes
-        const focusedRowId = self.cfg?.focusedRowId;
-        const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
-        
-        // If no conditional styles and no focused row, return null early
-        if (!hasConditionalStyles && !hasFocusedRow) {
-          return null;
-        }
-        
-        // Accumulate styles from all matching rules
-        // Later rules override earlier ones for conflicting properties
-        let mergedStyle = {};
-        
-        // Check if this row is the focused row (we'll apply styling at the end)
-        let isFocusedRow = false;
-        if (hasFocusedRow) {
-          // Get the row's ID using the idFormula
-          let baseId = self.resolveMappingFormula(self.cfg.idFormula, rowData);
-          
-          // Fallback to common ID fields if formula doesn't return a valid ID
-          if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-            baseId = rowData.id || rowData._id || rowData.uuid || rowData.ID || rowData.Id;
-          }
-          
-          // Compare with focusedRowId (convert both to strings for comparison)
-          const baseIdStr = baseId != null ? String(baseId) : '';
-          const focusedIdStr = String(focusedRowId);
-          
-          isFocusedRow = (baseIdStr === focusedIdStr);
-        }
-        
-        // Apply conditional row styles FIRST
-        if (hasConditionalStyles) {
-          for (const rule of conditionalRowStyles) {
-            // Skip rules without a condition formula
-            if (!rule?.conditionFormula) {
-              continue;
-            }
-            
-            // Evaluate the condition formula with the row data as context
-            let conditionResult = false;
-            try {
-              conditionResult = self.resolveMappingFormula(rule.conditionFormula, rowData);
-            } catch (error) {
-              // Log error in debug mode and skip this rule
-              self.debugLog('[Conditional Row Style] Error evaluating condition:', error);
-              continue;
-            }
-            
-            // If condition is true, apply the styles from this rule
-            if (conditionResult) {
-              // Apply backgroundColor
-              if (rule.backgroundColor) {
-                mergedStyle.backgroundColor = rule.backgroundColor;
-              }
-              
-              // Apply textColor (maps to color CSS property)
-              if (rule.textColor) {
-                mergedStyle.color = rule.textColor;
-              }
-              
-              // Apply fontWeight
-              if (rule.fontWeight) {
-                mergedStyle.fontWeight = rule.fontWeight;
-              }
-              
-              // Apply fontStyle
-              if (rule.fontStyle) {
-                mergedStyle.fontStyle = rule.fontStyle;
-              }
-              
-              // Apply border properties
-              if (rule.borderLeft) {
-                mergedStyle.borderLeft = rule.borderLeft;
-              }
-              if (rule.borderRight) {
-                mergedStyle.borderRight = rule.borderRight;
-              }
-              if (rule.borderTop) {
-                mergedStyle.borderTop = rule.borderTop;
-              }
-              if (rule.borderBottom) {
-                mergedStyle.borderBottom = rule.borderBottom;
-              }
-            }
-          }
-        }
-        
-        // Apply focused row styling LAST to override conditional styles
-        if (isFocusedRow) {
-          // Using box-shadow for a left border effect that doesn't affect layout
-          mergedStyle.boxShadow = 'inset 4px 0 0 0 var(--ag-range-selection-border-color, #2196F3)';
-          // Add a subtle background tint (overrides any conditional backgroundColor)
-          mergedStyle.backgroundColor = 'var(--ag-range-selection-background-color, rgba(33, 150, 243, 0.1))';
-        }
-        
-        // Return the merged style object, or null if no styles were applied
-        return Object.keys(mergedStyle).length > 0 ? mergedStyle : null;
-      };
-    },
     isEditing() {
       /* wwEditor:start */
       return (
@@ -3010,9 +2610,6 @@ export default {
     resetPerformance() {
       this.gridMonitor.reset();
     },
-    openColumnChooser() {
-      this.showColumnChooser = true;
-    },
     /**
      * Format a per-group row count as a localized "X items" / "X éléments" string.
      * Picks the singular form when count === 1, otherwise the plural form.
@@ -3024,124 +2621,6 @@ export default {
       const tpl = count === 1 ? t.itemCountOne : t.itemCountMany;
       return (tpl || '{count}').replace('{count}', count);
     },
-    hideColumn(colId) {
-      if (!colId) return;
-      const current = [...(this.hiddenColumns || [])];
-      if (!current.includes(colId)) {
-        current.push(colId);
-        this.setHiddenColumns(current);
-        this.chooserHiddenState = current;
-        this.gridApi?.setColumnsVisible([colId], false);
-        this.updateCurrentConfig();
-        this.$emit('trigger-event', {
-          name: 'columnVisibilityChanged',
-          event: {
-            columnId: colId,
-            visible: false,
-            hiddenColumns: current,
-          },
-        });
-      }
-    },
-    showColumn(colId) {
-      if (!colId) return;
-      if (!(this.hiddenColumns || []).includes(colId)) return; // already visible, no-op
-      const current = (this.hiddenColumns || []).filter(id => id !== colId);
-      this.setHiddenColumns(current);
-      this.chooserHiddenState = current;
-      this.gridApi?.setColumnsVisible([colId], true);
-      this.updateCurrentConfig();
-      this.$emit('trigger-event', {
-        name: 'columnVisibilityChanged',
-        event: {
-          columnId: colId,
-          visible: true,
-          hiddenColumns: current,
-        },
-      });
-    },
-    toggleColumnVisibility(colId) {
-      const col = this.allColumnsList.find(c => c.colId === colId);
-      if (col?.isLocked) return;
-      if ((this.hiddenColumns || []).includes(colId)) {
-        this.showColumn(colId);
-      } else {
-        this.hideColumn(colId);
-      }
-    },
-    toggleAllColumns() {
-      const colIds = this.allColumnsList.filter(c => !c.isLocked).map(c => c.colId);
-      // Capture the intended outcome before any mutation
-      const willBeVisible = !this.allColumnsVisible;
-      if (!willBeVisible) {
-        // Hide all columns
-        this.setHiddenColumns([...colIds]);
-        if (this.gridApi) this.gridApi.setColumnsVisible(colIds, false);
-      } else {
-        // Show all columns
-        this.setHiddenColumns([]);
-        if (this.gridApi) this.gridApi.setColumnsVisible(colIds, true);
-      }
-      const newHiddenColumns = willBeVisible ? [] : [...colIds];
-      this.chooserHiddenState = newHiddenColumns;
-      this.updateCurrentConfig();
-      this.$emit('trigger-event', {
-        name: 'columnVisibilityChanged',
-        event: {
-          columnId: null,
-          visible: willBeVisible,
-          hiddenColumns: newHiddenColumns,
-        },
-      });
-    },
-    onChooserDragStart(colId) {
-      const col = this.allColumnsList.find(c => c.colId === colId);
-      if (col?.isLocked) return;
-      this.chooserDragColId = colId;
-    },
-    onChooserDragOver(colId) {
-      if (this.chooserDragColId && colId !== this.chooserDragColId) {
-        this.chooserDragOverColId = colId;
-      }
-    },
-    onChooserDrop(targetColId) {
-      const fromColId = this.chooserDragColId;
-      if (!fromColId || fromColId === targetColId) {
-        this.chooserDragColId = null;
-        this.chooserDragOverColId = null;
-        return;
-      }
-      const targetCol = this.allColumnsList.find(c => c.colId === targetColId);
-      if (targetCol?.isLocked) {
-        this.chooserDragColId = null;
-        this.chooserDragOverColId = null;
-        return;
-      }
-      // Reorder chooserColumnOrder
-      const order = [...this.chooserColumnOrder];
-      const fromIdx = order.indexOf(fromColId);
-      const toIdx = order.indexOf(targetColId);
-      if (fromIdx !== -1 && toIdx !== -1) {
-        order.splice(fromIdx, 1);
-        order.splice(toIdx, 0, fromColId);
-        this.chooserColumnOrder = order;
-        // Apply new order to AG Grid
-        if (this.gridApi) {
-          this.gridApi.applyColumnState({
-            state: order.map(colId => ({ colId })),
-            applyOrder: true,
-          });
-        }
-        this.updateCurrentConfig();
-      }
-      this.chooserDragColId = null;
-      this.chooserDragOverColId = null;
-    },
-    onChooserDragEnd() {
-      this.chooserDragColId = null;
-      this.chooserDragOverColId = null;
-    },
-    /* wwEditor:start */
     checkIfColumnsStructureChanged(newDefs, oldDefs) {
       // If no old defs, structure changed (initial load)
       if (!oldDefs || !Array.isArray(oldDefs)) return false;
