@@ -4,8 +4,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 
 ## Current state
 
-- **Datagrid.vue:** 5,449 lines (was 8,730 — total removed: 3,281, ~38% reduction; Session 5 removed 521).
-- **Composables created:** 9 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig, useColumnState, useColumnChooser).
+- **Datagrid.vue:** 3,509 lines (was 8,730 — total removed: 5,221, ~60% reduction; Session 6 removed 1,940).
+- **Composables created:** 11 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig, useColumnState, useColumnChooser, useCellEditing, useGridActions).
 - **New utils created:** 2 of 2 (convertFilterToSupabase, supabaseFieldMappings).
 - **Build status:** `npm run serve` passes cleanly.
 - **Branch:** `create-groups` (uncommitted).
@@ -23,8 +23,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 7 | `composables/useSelection.js` | setup 1469-1492, 2780-2818; computed 5474-5497 | 69 actual | **DONE (S1)** — `rowSelection` computed deferred to S4 |
 | 8 | `composables/useGrouping.js` | setup 1220-1469, 2577-3550, 3142-3430, 3486-3541; methods 5781-5786 | 890 actual | **DONE (S3)** — `formatItemCount` (in `methods:`) deferred to S5 |
 | 9 | `composables/useInfiniteScroll.js` | setup 3021-3398 | 380 actual | **DONE (S2)** |
-| 10 | `composables/useCellEditing.js` | methods 5940-6273 (onCellValueChanged, getRowId, onCellEditing*, onRowEditing*, onActionTrigger, onCustomCellEdit, onRowClicked) | ~700 | not started |
-| 11 | `composables/useGridActions.js` | methods 6275-7449 (setCellValue, triggerCellValueChanged, refreshRow, refreshAllRows, programmatic actions) | ~1,200 | not started |
+| 10 | `composables/useCellEditing.js` | computed 1908-2569 (columnDefs); methods 2659-2993 (getRowId, onActionTrigger, onCellEdit*, onRowEditing*, onCellValueChanged, onRowClicked, onCustomCellEdit) | 1,074 actual | **DONE (S6)** |
+| 11 | `composables/useGridActions.js` | methods 3001-4022 (setCellValue, triggerCellValueChanged, refreshRow, stopCellEditing, createRecord, closeCreateRecordForm, resetFilters, resetSort, deselectAll, selectAll, selectRow, deselectRow, removeRow, applyFocusedRow) | 1,109 actual | **DONE (S6)** |
 | u1 | `utils/convertFilterToSupabase.js` | setup 770-1208 | 324 actual | **DONE (S1)** |
 | u2 | `utils/supabaseFieldMappings.js` | setup 634-722 | 84 actual | **DONE (S1)** |
 
@@ -37,8 +37,8 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 3 | useGrouping (useViewConfig moved to S4 — cycle deps proved too tangled to do both at once) | `npm run serve` + WeWeb smoke test grouping | **DONE** — build passes |
 | 4 | useViewConfig (split off — useColumnState/useColumnChooser deferred to S5) | `npm run serve` + WeWeb smoke test view-config restore | **DONE** — build passes |
 | 5 | useColumnState (no columnDefs) + useColumnChooser | `npm run serve` + WeWeb smoke test column chooser + theme/rowStyle | **DONE** — build passes |
-| 6 | useCellEditing + useGridActions (converts the rest of `methods:` block — incl. `columnDefs` computed which depends on cell-editing methods) | `npm run serve` + cell edit smoke test | pending |
-| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks (cfg duplicate, formatItemCount, reportPerformance, resetPerformance) | `npm run serve` + full WeWeb smoke test | pending |
+| 6 | useCellEditing + useGridActions (incl. `columnDefs` computed) | `npm run serve` + cell edit smoke test + WeWeb workflow action smoke test | **DONE** — build passes |
+| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks (cfg duplicate, formatItemCount, reportPerformance, resetPerformance, isEditing/invalidEditValueMode/paginationPageSizeSelector, generateColumns + test event stubs) | `npm run serve` + full WeWeb smoke test | pending |
 
 Each session is committable independently. Run `npm run serve` and at least a quick WeWeb smoke test before committing.
 
@@ -180,7 +180,38 @@ No boundary issues this round — the surgery applied cleanly on first try.
 
 **Pre-existing bugs noticed (not fixed):** Same as previous sessions.
 
+### 2026-04-30 — Session 6: useCellEditing + useGridActions
+**Shipped:**
+- `composables/useCellEditing.js` (1,074 lines) — owns the giant `columnDefs` computed (the per-column AG Grid definition builder, ~660 lines), the `_lastActiveCellEdit` ref, all cell/row edit lifecycle handlers (`onCellEditingStarted`, `onCellEditingStopped`, `onRowEditingStarted`, `onRowEditingStopped`, `onCellValueChanged`, `onCellEditRequest`), action triggering (`onActionTrigger`, `onCustomCellEdit`, `onRowClicked`), and `getRowId`. Reads validation tracking refs from useColumnState (S5) — `_pendingValidationError`/`_validationFiredForCurrentEdit` were exposed there with that lookahead in mind.
+- `composables/useGridActions.js` (1,109 lines) — owns the entire programmatic-action surface exposed to WeWeb workflows: `setCellValue`, `triggerCellValueChanged`, `refreshRow` (with grouped-mode + active-editor preservation + DB-fetch-and-add for not-found rows + infinite-cache purge), `stopCellEditing`, `createRecord`, `closeCreateRecordForm`, `resetFilters`, `resetSort`, `deselectAll`, `selectAll`, `selectRow`, `deselectRow`, `removeRow` (with infinite-scroll DOM-hide + cache-purge ceremony), `applyFocusedRow`. Method bindings declared as `let` first then assigned — preserves the recursive call semantics (e.g. `setCellValue(...)` calling itself on render-collision retry, `selectRow` calling itself on rendering-deferral) and the cross-method calls (`createRecord` → `setCellValue`).
+
+**Wired into Datagrid.vue:** Two consecutive composable destructure blocks inserted right after `createPopupTeleportTarget` (line ~796), with deps that match each composable's reads. `useCellEditing` runs FIRST so its `_lastActiveCellEdit` ref is in scope when `useGridActions` is constructed (consumed by refreshRow's diagnostic logging). Setup return statement extended with 26 new entries: 12 from useCellEditing (incl. `columnDefs` and `_lastActiveCellEdit`) and 14 from useGridActions.
+
+**Surgery details:** Single PowerShell pass deleted 8 contiguous code regions from the Options-API blocks: the entire `columnDefs` computed (1910-2571, 662 lines), the cell-editing methods cluster (2661-2995, 335 lines: getRowId / onActionTrigger / onCellEditRequest / onCellEditingStarted / onCellEditingStopped / onRowEditingStarted / onRowEditingStopped / onCellValueChanged / onRowClicked / onCustomCellEdit), the JSDoc + body for setCellValue (2996-3187, 192 lines), the JSDoc + body for refreshRow + stopCellEditing through removeRow (3188-3951, 764 lines), the JSDoc + body for applyFocusedRow (3952-4024, 73 lines). Total raw delete: ~2,026 lines, replaced with ~57 lines of composable wiring → net **-1,970 lines** before adding 28 lines to the setup return → final net **-1,940 lines**.
+
+**Datagrid.vue:** 5,449 → 3,509 (1,940 lines removed; cumulative reduction since start: 8,730 → 3,509 = **60%**).
+**Build:** `npm run serve` compiles cleanly. Only the pre-existing webpack-dev-server `https` deprecation warning.
+**Not committed yet** — user to review and commit when ready.
+
+**Judgment calls:**
+- **`columnDefs` extracted into useCellEditing, not useColumnState.** The S5 plan considered putting columnDefs in useColumnState; deferring to S6 paid off — once the cell-editing methods (`onActionTrigger`, `onCustomCellEdit`) become composable-local, columnDefs's two `this.X` references to them resolve to ordinary closure references with no `getCurrentInstance()` proxy hack needed. Validation tracking refs continue to live in useColumnState (S5) and are passed in as deps; conceptually they belong with editing more than with columnDefs, but moving them now would mean re-touching useColumnState — leaving them there is cheaper.
+- **Forward-declared `let` bindings inside useGridActions for inter-method calls.** `setCellValue` calls itself on render-collision retry, `selectRow`/`deselectRow`/`removeRow` likewise self-recurse, and `createRecord` calls `setCellValue`. Declaring `let setCellValue; ... ; setCellValue = async (...) => {...}` lets the closures see the bound function at call time — same shape as the original Options-API behavior where `this.setCellValue` resolved through the proxy. Cleaner than passing them through deps or restructuring as a single Object.assign.
+- **Pre-existing `cleanupRemovedIds()` bug naturally fixed.** The original Options-API `removeRow` called bare `cleanupRemovedIds()` instead of `this.cleanupRemovedIds()` — a `ReferenceError` waiting to fire. After conversion to composable, `cleanupRemovedIds` is a passed-in dep and resolves correctly. Bug noted in earlier sessions, fixed incidentally here.
+- **`_lastActiveCellEdit` lives in useCellEditing.** It's set/cleared in onCellEditingStarted/Stopped (cell-editing concern) and only read by useGridActions.refreshRow (for diagnostic logging — not behavior). Useless to put it in useGridActions; useCellEditing owns it and exposes via the composable return.
+- **`activeCreateColumnField`/`Row`/`RowId` still inline in setup.** Both composables receive them as deps. They're consumed in two unrelated ways: useCellEditing's record column `onCreateClick` writes them, useGridActions's `createRecord` and `closeCreateRecordForm` write them. They could move into useCellEditing in a future cleanup, but they're refs not state with logic, and currently they're also used by the create-record popup template and `<style>` selectors — leaving inline.
+- **`onRowDragged`/`onRowDragEnter` left in useSelection.** Already there from S1 — not touched.
+
+**What remains in Options API** (S7 work):
+- `cfg` computed (duplicate of setup `cfg` — easy collapse via setup return spread)
+- `isEditing`, `invalidEditValueMode`, `paginationPageSizeSelector` (3 small computeds)
+- `reportPerformance`, `resetPerformance`, `formatItemCount`, `checkIfColumnsStructureChanged`
+- `generateColumns` + 9 `getOnXTestEvent` editor-only stubs (~150 lines)
+- `watch.columnDefs` editor-only block (60 lines)
+
+**Pre-existing bugs noticed (not fixed):** None new — the `cleanupRemovedIds` bare-call bug was incidentally fixed by the composable conversion (now a passed dep that resolves correctly).
+
 ## Next action
 
-Start Session 6: extract `useCellEditing` (covers the meaty `onCellValueChanged` / `onCellEditRequest` / `onCellEditingStarted`/`Stopped` / `onRowEditingStarted`/`Stopped` / `onActionTrigger` / `onCustomCellEdit` / `onRowClicked` / `getRowId` methods, currently ~550 lines in `methods:`) AND extract `useGridActions` (covers `setCellValue` / `triggerCellValueChanged` / `refreshRow` / `refreshAllRows` / `removeRow` / etc. — the programmatic-action surface exposed to WeWeb workflows, ~1,200 lines). With `this.onActionTrigger`/`this.onCustomCellEdit`/`this._pendingValidationError`/`this._validationFiredForCurrentEdit` becoming composable-local at that point, **`columnDefs` can finally move into useColumnState** (or into useCellEditing if its tighter coupling there proves cleaner). Estimated reduction: ~1,500-1,800 lines. After S6 lands, only the `cfg` duplicate, `isEditing`/`invalidEditValueMode`/`paginationPageSizeSelector` Options-API computeds, `formatItemCount`/`reportPerformance`/`resetPerformance` methods, `checkIfColumnsStructureChanged` (editor-only), the `watch.columnDefs` editor-only block, and a thin orchestrator setup() body remain — easy S7 cleanup to land at ~700-900 lines as targeted.
+Start Session 7: final cleanup pass. Move the remaining 3 small Options-API computeds (isEditing, invalidEditValueMode, paginationPageSizeSelector) and the 4 wrapper methods (reportPerformance, resetPerformance, formatItemCount, checkIfColumnsStructureChanged) into the setup() body as inline `const`s/lambdas. Add `cfg` to the setup return so the duplicate Options-API `cfg` computed can be deleted. Move `generateColumns` + the test-event-stub methods into a small `editor-only` block of the setup or keep them in a tiny editor-only `methods:` block. Convert `watch.columnDefs` to a Composition-API `watch()` inside setup (still wwEditor-gated). Consider deleting the entire `computed:`, `methods:`, `watch:` Options-API blocks. Estimated reduction: ~250 lines, ending at ~3,250 lines (a bit higher than the original ~700-900 target because the `<style>` block is 1,200 lines and the `<template>` is ~457 lines, both untouched). The original target presumed the `<style>` would shrink — it didn't, so the realistic floor is ~3,000 lines without further template/style consolidation.
+
 
