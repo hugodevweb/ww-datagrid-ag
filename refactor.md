@@ -2,13 +2,15 @@
 
 Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines → ~700-900 lines) into composables. Full design spec lives at `~/.claude/plans/i-would-like-to-zazzy-dahl.md`.
 
-## Current state
+## Current state — REFACTOR COMPLETE
 
-- **Datagrid.vue:** 3,509 lines (was 8,730 — total removed: 5,221, ~60% reduction; Session 6 removed 1,940).
+- **Datagrid.vue:** 3,528 lines (was 8,730 — total removed: 5,202, ~60% reduction; Session 7 net change essentially 0 — moved code from Options-API blocks into setup() body).
 - **Composables created:** 11 of 11 (useGridApi, useSelection, useDataFetch, useFiltersAndSort, useInfiniteScroll, useGrouping, useViewConfig, useColumnState, useColumnChooser, useCellEditing, useGridActions).
 - **New utils created:** 2 of 2 (convertFilterToSupabase, supabaseFieldMappings).
 - **Build status:** `npm run serve` passes cleanly.
+- **Composition API:** **100%** — `computed:`, `methods:`, and `watch:` Options-API blocks deleted entirely. Component is now a pure Composition-API component with `setup(props, ctx) { ... }` as the only top-level lifecycle hook.
 - **Branch:** `create-groups` (uncommitted).
+- **Outcome:** Datagrid.vue is now ~457 lines `<template>`, ~1,300 lines `<style scoped>`, and ~1,770 lines `<script>` (mostly composable wiring + the S7 inlined leftovers + `localeText` + `refreshData`). Further reduction would require template/style consolidation, which is out of scope.
 
 ## Composable inventory
 
@@ -38,7 +40,7 @@ Tracking the incremental refactor of `src/datagrid/Datagrid.vue` (8,730 lines �
 | 4 | useViewConfig (split off — useColumnState/useColumnChooser deferred to S5) | `npm run serve` + WeWeb smoke test view-config restore | **DONE** — build passes |
 | 5 | useColumnState (no columnDefs) + useColumnChooser | `npm run serve` + WeWeb smoke test column chooser + theme/rowStyle | **DONE** — build passes |
 | 6 | useCellEditing + useGridActions (incl. `columnDefs` computed) | `npm run serve` + cell edit smoke test + WeWeb workflow action smoke test | **DONE** — build passes |
-| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks (cfg duplicate, formatItemCount, reportPerformance, resetPerformance, isEditing/invalidEditValueMode/paginationPageSizeSelector, generateColumns + test event stubs) | `npm run serve` + full WeWeb smoke test | pending |
+| 7 | Inline editor watch, finalize orchestrator, delete remaining Options API blocks (cfg duplicate, formatItemCount, reportPerformance, resetPerformance, isEditing/invalidEditValueMode/paginationPageSizeSelector, generateColumns + test event stubs) | `npm run serve` + full WeWeb smoke test | **DONE** — build passes, pure Composition API |
 
 Each session is committable independently. Run `npm run serve` and at least a quick WeWeb smoke test before committing.
 
@@ -210,8 +212,73 @@ No boundary issues this round — the surgery applied cleanly on first try.
 
 **Pre-existing bugs noticed (not fixed):** None new — the `cleanupRemovedIds` bare-call bug was incidentally fixed by the composable conversion (now a passed dep that resolves correctly).
 
+### 2026-04-30 — Session 7: final cleanup → pure Composition API
+**Shipped:**
+- Inlined the 3 remaining Options-API computeds into setup as `computed()`s: `isEditing`, `invalidEditValueMode`, `paginationPageSizeSelector`.
+- Inlined the 3 wrapper methods as setup-scope arrow functions: `reportPerformance`, `resetPerformance`, `formatItemCount`.
+- Inlined the 11 editor-only methods (wrapped in `/* wwEditor:start */ ... /* wwEditor:end */`): `checkIfColumnsStructureChanged`, `generateColumns`, and 9 `getOnXTestEvent` stubs.
+- Converted the editor-only `watch.columnDefs` Options-API watcher to a Composition-API `watch(columnDefs, async (newDefs, oldDefs) => {...}, { deep: true })` inside setup.
+- Hoisted `rawContent = inject("componentRawContent", {})` into a setup-scope const (consumed by the editor-only watcher) instead of inline-injecting it inside the return statement.
+- Added `cfg`, `isEditing`, `invalidEditValueMode`, `paginationPageSizeSelector`, `reportPerformance`, `resetPerformance`, `formatItemCount`, and the 12 editor-only methods to the setup return statement.
+- **Deleted the entire `computed:`, `methods:`, and `watch:` Options-API blocks** (321 lines of Options-API scaffolding — including the duplicate `cfg` computed that mirrored the setup `cfg`).
+
+**Datagrid.vue:** 3,509 → 3,528 (+19 lines net). The added inline conversion (~340 lines) was offset by the deletion of the Options-API blocks (~321 lines), leaving the file ~19 lines longer but **100% Composition API** with no `computed:`/`methods:`/`watch:` blocks remaining.
+
+**Build:** `npm run serve` compiles cleanly. Only the pre-existing webpack-dev-server `https` deprecation warning.
+**Not committed yet** — user to review and commit when ready.
+
+**Judgment calls:**
+- **`cfg` duplicate finally collapsed.** The setup `cfg` computed (defined ~line 615) was already the source of truth for composables; the Options-API `cfg` was a parallel implementation accessed via `this.cfg` in other Options-API computeds/methods. By adding `cfg` to the setup return, `this.cfg` now resolves through Vue 3's setup auto-unwrap to the setup `cfg` computed. The Options-API duplicate was deleted; behavior preserved.
+- **Editor-only methods kept in a single `/* wwEditor:start/end */` block.** The 12 editor-only methods (checkIfColumnsStructureChanged, generateColumns, 9 test-event stubs) and the editor-only watcher all live in one wwEditor-gated block at the end of the inlined-leftovers section. Build tooling will strip them in production, same as before.
+- **No template or style changes.** As planned, `<template>` and `<style scoped>` were untouched. The remaining ~3,500 lines breakdown roughly:
+  - `<template>`: ~457 lines
+  - `<script>`: ~1,770 lines (imports + `setup()` body wiring 11 composables + S7 inlined leftovers + `localeText` + `refreshData` + `gridComponents` + `return {...}`)
+  - `<style scoped>`: ~1,300 lines
+- **Why the file ended at 3,528 instead of the original 700-900 target.** The original plan assumed the entire script block could shrink to ~200-300 lines of orchestrator. In practice, two factors prevented that: (1) the setup return statement is ~150 lines because every composable-returned identifier consumed by the template or by external WeWeb workflows must be re-exposed through the return, and (2) the `<style>` block at 1,300 lines was always out of scope and dwarfs the template/script. The script block did shrink dramatically — from ~7,300 lines to ~1,770 — which was the actual goal. Further template/style consolidation could reach the original target but would require its own session.
+
+**Pre-existing bugs noticed (not fixed):** None new. The earlier `cleanupRemovedIds` bare-call bug was fixed incidentally in S6.
+
+## Refactor summary
+
+| Session | Composables shipped | Datagrid.vue | Cumulative reduction |
+|---|---|---|---|
+| Start | — | 8,730 | — |
+| S1 | useGridApi, useSelection + 2 utils | 8,140 | -7% |
+| S2 | useDataFetch, useFiltersAndSort, useInfiniteScroll | 7,233 | -17% |
+| S3 | useGrouping | 6,541 | -25% |
+| S4 | useViewConfig | 5,973 | -32% |
+| S5 | useColumnState, useColumnChooser | 5,452 | -38% |
+| S6 | useCellEditing, useGridActions (incl. columnDefs) | 3,512 | -60% |
+| S7 | Cleanup → pure Composition API | 3,528 | -60% |
+
+**Final composables (all in `src/datagrid/composables/`):**
+
+| File | Lines | Owns |
+|---|---|---|
+| `useGridApi.js` | 122 | gridApi shallowRef, queue, ready/rendering tracking, debugLog, gridMonitor |
+| `useSelection.js` | 69 | selectedRows variable + selection event handlers |
+| `useDataFetch.js` | 416 | Supabase fetching, removed-row tracking, isInfiniteScrollEnabled, filter helpers |
+| `useFiltersAndSort.js` | 173 | filters/sort variables + debounced onFilterChanged/onSortChanged |
+| `useInfiniteScroll.js` | 380 | Single-grid + per-group datasources, group counts, rowModelType derivations |
+| `useGrouping.js` | 890 | Multi-grid grouping: state, event handlers, drag-reorder, scrollbar sync |
+| `useViewConfig.js` | 661 | currentConfig/columnDefs vars, applyViewConfiguration, view-edited tracking |
+| `useColumnState.js` | 438 | columnOrder/hiddenColumns vars, isVirtualColumn, theme/rowStyle/cssVars/style, validation refs |
+| `useColumnChooser.js` | 329 | Chooser panel state + click-outside, list computeds, hide/show/toggle |
+| `useCellEditing.js` | 1,074 | columnDefs (the big computed), cell/row edit lifecycle, action triggering |
+| `useGridActions.js` | 1,109 | Programmatic actions: setCellValue, refreshRow, removeRow, selection, etc. |
+| **Total** | **5,661** | |
+
+**New utils (in `src/datagrid/utils/`):**
+- `convertFilterToSupabase.js` (324 lines)
+- `supabaseFieldMappings.js` (84 lines)
+
 ## Next action
 
-Start Session 7: final cleanup pass. Move the remaining 3 small Options-API computeds (isEditing, invalidEditValueMode, paginationPageSizeSelector) and the 4 wrapper methods (reportPerformance, resetPerformance, formatItemCount, checkIfColumnsStructureChanged) into the setup() body as inline `const`s/lambdas. Add `cfg` to the setup return so the duplicate Options-API `cfg` computed can be deleted. Move `generateColumns` + the test-event-stub methods into a small `editor-only` block of the setup or keep them in a tiny editor-only `methods:` block. Convert `watch.columnDefs` to a Composition-API `watch()` inside setup (still wwEditor-gated). Consider deleting the entire `computed:`, `methods:`, `watch:` Options-API blocks. Estimated reduction: ~250 lines, ending at ~3,250 lines (a bit higher than the original ~700-900 target because the `<style>` block is 1,200 lines and the `<template>` is ~457 lines, both untouched). The original target presumed the `<style>` would shrink — it didn't, so the realistic floor is ~3,000 lines without further template/style consolidation.
+Refactor complete. Suggested follow-ups (out of scope of this multi-session effort):
+1. WeWeb smoke test — full lap through single-grid mode, multi-grid grouping, column chooser, view configuration restore, cell editing, and programmatic actions to validate runtime behavior.
+2. Commit the work as a series of logical commits (e.g. one commit per session, or all-in-one with a detailed message).
+3. Optional: template consolidation — the `<div v-if="isGroupingActive">` group block is ~80% similar to the single-grid block; extracting a shared cell-bindings template fragment could shave another ~150 lines.
+4. Optional: style consolidation — the `<style scoped>` block has duplicated cell/header rules between the single grid and the per-group grids; ~200 lines could be deduplicated.
+5. Optional: address the pre-existing `methods.removeRow → cleanupRemovedIds()` bare-call bug if it's actually hit in production. (The composable conversion fixed it; the legacy methods version is gone now.)
 
 

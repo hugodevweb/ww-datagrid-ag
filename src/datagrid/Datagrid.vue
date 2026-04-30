@@ -843,7 +843,8 @@ export default {
       removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
       supabaseData, supabaseTotalCount,
       waitForSupabaseInstance,
-      datasource,
+      // Thunk: useInfiniteScroll is created AFTER useGridActions
+      getDatasource: () => datasource,
       gridContainerRef,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
       _lastActiveCellEdit,
@@ -1781,6 +1782,325 @@ export default {
       UserFilterComponent,
     };
 
+    // ===== S7: inlined Options-API leftovers =====
+    // The 3 small computeds, 4 wrapper methods, and editor-only stubs that
+    // were too small to justify their own composables. Lifted verbatim from
+    // the previous `computed:` / `methods:` blocks; `this.X` references
+    // converted to setup-scope reads.
+    const isEditing = computed(() => {
+      /* wwEditor:start */
+      return (
+        props.wwEditorState?.editMode === wwLib.wwEditorHelper.EDIT_MODES.EDITION
+      );
+      /* wwEditor:end */
+      // eslint-disable-next-line no-unreachable
+      return false;
+    });
+
+    const invalidEditValueMode = computed(() => props.content?.invalidEditValueMode || "revert");
+
+    const paginationPageSizeSelector = computed(() => {
+      if (
+        !cfg.value.pagination ||
+        cfg.value.hasPaginationSelector !== "multiple"
+      ) {
+        return false;
+      }
+      if (
+        !Array.isArray(cfg.value.paginationPageSizeSelector) ||
+        cfg.value.paginationPageSizeSelector.length === 0
+      ) {
+        return false;
+      }
+      return cfg.value.paginationPageSizeSelector;
+    });
+
+    /**
+     * Print a grid performance report to the browser console.
+     * Only produces output when "Enable debug logs" is turned on in the editor.
+     * Can be wired to a WeWeb action button for on-demand diagnostics.
+     */
+    const reportPerformance = () => {
+      gridMonitor.report();
+    };
+
+    /**
+     * Reset all collected performance metrics.
+     */
+    const resetPerformance = () => {
+      gridMonitor.reset();
+    };
+
+    /**
+     * Format a per-group row count as a localized "X items" / "X éléments" string.
+     * Picks the singular form when count === 1, otherwise the plural form.
+     * Returns '' for null/undefined (e.g. infinite-scroll mode before first fetch).
+     */
+    const formatItemCount = (count) => {
+      if (count === null || count === undefined) return '';
+      const t = getTranslations(cfg.value?.lang || 'en');
+      const tpl = count === 1 ? t.itemCountOne : t.itemCountMany;
+      return (tpl || '{count}').replace('{count}', count);
+    };
+
+    /* wwEditor:start */
+    const rawContent = inject("componentRawContent", {});
+
+    const checkIfColumnsStructureChanged = (newDefs, oldDefs) => {
+      // If no old defs, structure changed (initial load)
+      if (!oldDefs || !Array.isArray(oldDefs)) return false;
+
+      // If no new defs or not an array, no structure change
+      if (!newDefs || !Array.isArray(newDefs)) return false;
+
+      // If number of columns changed, structure changed
+      if (newDefs.length !== oldDefs.length) return true;
+
+      // Check if column IDs or key properties changed
+      for (let i = 0; i < newDefs.length; i++) {
+        const newCol = newDefs[i];
+        const oldCol = oldDefs[i];
+
+        // If either column is undefined/null, consider it a change
+        if (!newCol || !oldCol) return true;
+
+        // Check if column ID changed
+        const newColId = newCol.colId || newCol.field;
+        const oldColId = oldCol.colId || oldCol.field;
+        if (newColId !== oldColId) return true;
+
+        // Check if filter/sortable flags changed
+        if (newCol.filter !== oldCol.filter) return true;
+        if (newCol.sortable !== oldCol.sortable) return true;
+
+        // Check if header name changed
+        if (newCol.headerName !== oldCol.headerName) return true;
+      }
+
+      // No structural changes detected
+      return false;
+    };
+
+    const generateColumns = () => {
+      ctx.emit("update:content", {
+        columns: rowData.value?.[0]
+          ? Object.keys(rowData.value[0]).map((key) => ({
+              field: key,
+              sortable: true,
+              filter: true,
+            }))
+          : [],
+      });
+    };
+
+    const getOnActionTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        actionName: "actionName",
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      };
+    };
+
+    const getOnCellValueChangedTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = cfg.value.columns || [];
+      const firstEditableColumn = columns.find(
+        (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
+      );
+      return {
+        oldValue: "oldValue",
+        newValue: "newValue",
+        columnId: firstEditableColumn?.field || "columnId",
+        row: data[0],
+        isDirectUpdate: firstEditableColumn?.isDirectUpdate || false,
+      };
+    };
+
+    const getSelectionTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        row: data[0],
+      };
+    };
+
+    const getRowClickedTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      };
+    };
+
+    const getRowDraggedTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        row: data[0],
+        id: 0,
+        targetIndex: 1,
+        rows: data,
+      };
+    };
+
+    const getRowDragStartTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        row: data[0],
+        id: 0,
+      };
+    };
+
+    const getColumnMovedTestEvent = () => {
+      const data = columnDefs.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      return {
+        toIndex: 1,
+        columnId: data[0]?.field,
+        columnsOrder: data.map((col) => col?.field).filter(Boolean),
+      };
+    };
+
+    const getColumnResizedTestEvent = () => {
+      const columns = columnDefs.value;
+      if (!columns || !columns[0]) throw new Error("No columns found");
+      const columnsWidths = {};
+      columns.forEach((col) => {
+        const colId = col?.colId || col?.field;
+        if (colId) {
+          columnsWidths[colId] = col?.width || 150;
+        }
+      });
+      return {
+        columnId: columns[0]?.colId || columns[0]?.field,
+        width: columns[0]?.width || 150,
+        columnsWidths: columnsWidths,
+      };
+    };
+
+    const getCellEditStartTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = columnDefs.value;
+      const customColumn = columns.find(
+        (col) => col.cellRenderer === "WewebCellRenderer"
+      );
+      return {
+        columnId: customColumn?.field || "field",
+        field: customColumn?.field || "field",
+        value: data[0]?.[customColumn?.field],
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+      };
+    };
+
+    const getCellEditEndTestEvent = () => {
+      const data = rowData.value;
+      if (!data || !data[0]) throw new Error("No data found");
+      const columns = columnDefs.value;
+      const customColumn = columns.find(
+        (col) => col.cellRenderer === "WewebCellRenderer"
+      );
+      return {
+        columnId: customColumn?.field || "field",
+        field: customColumn?.field || "field",
+        value: data[0]?.[customColumn?.field],
+        row: data[0],
+        id: 0,
+        index: 0,
+        displayIndex: 0,
+        isCancel: false,
+      };
+    };
+
+    const getScrollTestEvent = () => {
+      if (!gridApi.value) throw new Error("Grid API is not initialized");
+      return {
+        scrollTop: 500,
+        scrollLeft: 0,
+        scrollHeight: 1000,
+        clientHeight: 400,
+        distanceFromBottom: 100,
+        isNearBottom: true,
+        isAtBottom: false,
+        totalRows: gridApi.value.getDisplayedRowCount() || 0,
+      };
+    };
+
+    // Editor-only watch on columnDefs: auto-creates `containerId` for new
+    // custom columns + resets column state when the columns structure
+    // actually changes (preserving filters/sort across the reset).
+    watch(
+      columnDefs,
+      async (newDefs, oldDefs) => {
+        if (props.wwEditorState?.boundProps?.columns) return;
+
+        // Skip if grid is not ready yet
+        if (!gridApi.value) return;
+
+        // CRITICAL FIX: Only reset column state if columns structure actually changed
+        // Don't reset if only data or other reactive dependencies changed
+        // This preserves user-applied filters and sorting
+        const shouldResetState = checkIfColumnsStructureChanged(newDefs, oldDefs);
+        if (shouldResetState && gridApi.value) {
+          // Save current filters and sorting before reset
+          const currentFilters = gridApi.value.getFilterModel();
+          const currentSort = gridApi.value.getState()?.sort?.sortModel;
+
+          gridApi.value.resetColumnState();
+
+          // Restore filters and sorting after reset if they exist
+          if (currentFilters && Object.keys(currentFilters).length > 0) {
+            nextTick(() => {
+              if (gridApi.value) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+            });
+          }
+          if (currentSort && currentSort.length > 0) {
+            nextTick(() => {
+              if (gridApi.value) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            });
+          }
+        }
+
+        if (props.wwEditorState?.isACopy) return;
+
+        // Auto-create containerId for new custom columns
+        const columnIndex = (rawContent.columns || []).findIndex(
+          (col) => col?.cellDataType === "custom" && !col?.containerId
+        );
+        if (columnIndex !== -1) {
+          const newColumns = [...rawContent.columns];
+          let column = { ...newColumns[columnIndex] };
+          column.containerId = await createElement("ww-flexbox", {
+            _state: { name: `Cell ${column.headerName || column.field}` },
+          });
+          newColumns[columnIndex] = column;
+          ctx.emit("update:content:effect", { columns: newColumns });
+          return;
+        }
+      },
+      { deep: true }
+    );
+    /* wwEditor:end */
+
     return {
       resolveMappingFormula,
       debugLog,
@@ -1963,333 +2283,33 @@ export default {
       deselectRow,
       removeRow,
       applyFocusedRow,
+      // ========== S7 INLINED LEFTOVERS ==========
+      cfg,
+      isEditing,
+      invalidEditValueMode,
+      paginationPageSizeSelector,
+      reportPerformance,
+      resetPerformance,
+      formatItemCount,
       /* wwEditor:start */
       createElement,
-      rawContent: inject("componentRawContent", {}),
+      rawContent,
+      checkIfColumnsStructureChanged,
+      generateColumns,
+      getOnActionTestEvent,
+      getOnCellValueChangedTestEvent,
+      getSelectionTestEvent,
+      getRowClickedTestEvent,
+      getRowDraggedTestEvent,
+      getRowDragStartTestEvent,
+      getColumnMovedTestEvent,
+      getColumnResizedTestEvent,
+      getCellEditStartTestEvent,
+      getCellEditEndTestEvent,
+      getScrollTestEvent,
       /* wwEditor:end */
     };
   },
-  computed: {
-    cfg() {
-      if (!this.content || typeof this.content !== 'object') return this.content ?? {};
-      const base = this.content.baseConfig;
-      const excludes = this.content.baseConfigExcludes;
-      if (!base || typeof base !== 'object') return this.content;
-
-      const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
-      excludeSet.add('baseConfig');
-      excludeSet.add('baseConfigExcludes');
-
-      const merged = {};
-      for (const key of Object.keys(this.content)) {
-        merged[key] = this.content[key];
-      }
-      for (const key of Object.keys(base)) {
-        if (!excludeSet.has(key)) {
-          merged[key] = base[key];
-        }
-      }
-      return merged;
-    },
-    isEditing() {
-      /* wwEditor:start */
-      return (
-        this.wwEditorState.editMode === wwLib.wwEditorHelper.EDIT_MODES.EDITION
-      );
-      /* wwEditor:end */
-      // eslint-disable-next-line no-unreachable
-      return false;
-    },
-    invalidEditValueMode() {
-      return this.content?.invalidEditValueMode || "revert";
-    },
-    paginationPageSizeSelector() {
-      if (
-        !this.cfg.pagination ||
-        this.cfg.hasPaginationSelector !== "multiple"
-      ) {
-        return false;
-      }
-      if (
-        !Array.isArray(this.cfg.paginationPageSizeSelector) ||
-        this.cfg.paginationPageSizeSelector.length === 0
-      ) {
-        return false;
-      }
-      return this.cfg.paginationPageSizeSelector;
-    },
-  },
-  methods: {
-    /**
-     * Print a grid performance report to the browser console.
-     * Only produces output when "Enable debug logs" is turned on in the editor.
-     * Can be wired to a WeWeb action button for on-demand diagnostics.
-     */
-    reportPerformance() {
-      this.gridMonitor.report();
-    },
-    /**
-     * Reset all collected performance metrics.
-     */
-    resetPerformance() {
-      this.gridMonitor.reset();
-    },
-    /**
-     * Format a per-group row count as a localized "X items" / "X éléments" string.
-     * Picks the singular form when count === 1, otherwise the plural form.
-     * Returns '' for null/undefined (e.g. infinite-scroll mode before first fetch).
-     */
-    formatItemCount(count) {
-      if (count === null || count === undefined) return '';
-      const t = this.getTranslations(this.cfg?.lang || 'en');
-      const tpl = count === 1 ? t.itemCountOne : t.itemCountMany;
-      return (tpl || '{count}').replace('{count}', count);
-    },
-    checkIfColumnsStructureChanged(newDefs, oldDefs) {
-      // If no old defs, structure changed (initial load)
-      if (!oldDefs || !Array.isArray(oldDefs)) return false;
-      
-      // If no new defs or not an array, no structure change
-      if (!newDefs || !Array.isArray(newDefs)) return false;
-      
-      // If number of columns changed, structure changed
-      if (newDefs.length !== oldDefs.length) return true;
-      
-      // Check if column IDs or key properties changed
-      for (let i = 0; i < newDefs.length; i++) {
-        const newCol = newDefs[i];
-        const oldCol = oldDefs[i];
-        
-        // If either column is undefined/null, consider it a change
-        if (!newCol || !oldCol) return true;
-        
-        // Check if column ID changed
-        const newColId = newCol.colId || newCol.field;
-        const oldColId = oldCol.colId || oldCol.field;
-        if (newColId !== oldColId) return true;
-        
-        // Check if filter/sortable flags changed
-        if (newCol.filter !== oldCol.filter) return true;
-        if (newCol.sortable !== oldCol.sortable) return true;
-        
-        // Check if header name changed
-        if (newCol.headerName !== oldCol.headerName) return true;
-      }
-      
-      // No structural changes detected
-      return false;
-    },
-    /* wwEditor:end */
-    /* wwEditor:start */
-    generateColumns() {
-      this.$emit("update:content", {
-        columns: this.rowData?.[0]
-          ? Object.keys(this.rowData[0]).map((key) => ({
-              field: key,
-              sortable: true,
-              filter: true,
-            }))
-          : [],
-      });
-    },
-    getOnActionTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        actionName: "actionName",
-        row: data[0],
-        id: 0,
-        index: 0,
-        displayIndex: 0,
-      };
-    },
-    getOnCellValueChangedTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      const columns = this.cfg.columns || [];
-      const firstEditableColumn = columns.find(
-        (col) => col?.editable && (col?.cellDataType !== "action" && col?.cellDataType !== "image")
-      );
-      return {
-        oldValue: "oldValue",
-        newValue: "newValue",
-        columnId: firstEditableColumn?.field || "columnId",
-        row: data[0],
-        isDirectUpdate: firstEditableColumn?.isDirectUpdate || false,
-      };
-    },
-    getSelectionTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        row: data[0],
-      };
-    },
-    getRowClickedTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        row: data[0],
-        id: 0,
-        index: 0,
-        displayIndex: 0,
-      };
-    },
-    getRowDraggedTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        row: data[0],
-        id: 0,
-        targetIndex: 1,
-        rows: data,
-      };
-    },
-    getRowDragStartTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        row: data[0],
-        id: 0,
-      };
-    },
-    getColumnMovedTestEvent() {
-      const data = this.columnDefs;
-      if (!data || !data[0]) throw new Error("No data found");
-      return {
-        toIndex: 1,
-        columnId: data[0]?.field,
-        columnsOrder: data.map((col) => col?.field).filter(Boolean),
-      };
-    },
-    getColumnResizedTestEvent() {
-      const columns = this.columnDefs;
-      if (!columns || !columns[0]) throw new Error("No columns found");
-      const columnsWidths = {};
-      columns.forEach((col) => {
-        const colId = col?.colId || col?.field;
-        if (colId) {
-          columnsWidths[colId] = col?.width || 150;
-        }
-      });
-      return {
-        columnId: columns[0]?.colId || columns[0]?.field,
-        width: columns[0]?.width || 150,
-        columnsWidths: columnsWidths,
-      };
-    },
-    getCellEditStartTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      const columns = this.columnDefs;
-      const customColumn = columns.find(
-        (col) => col.cellRenderer === "WewebCellRenderer"
-      );
-      return {
-        columnId: customColumn?.field || "field",
-        field: customColumn?.field || "field",
-        value: data[0]?.[customColumn?.field],
-        row: data[0],
-        id: 0,
-        index: 0,
-        displayIndex: 0,
-      };
-    },
-    getCellEditEndTestEvent() {
-      const data = this.rowData;
-      if (!data || !data[0]) throw new Error("No data found");
-      const columns = this.columnDefs;
-      const customColumn = columns.find(
-        (col) => col.cellRenderer === "WewebCellRenderer"
-      );
-      return {
-        columnId: customColumn?.field || "field",
-        field: customColumn?.field || "field",
-        value: data[0]?.[customColumn?.field],
-        row: data[0],
-        id: 0,
-        index: 0,
-        displayIndex: 0,
-        isCancel: false,
-      };
-    },
-    getScrollTestEvent() {
-      if (!this.gridApi) throw new Error("Grid API is not initialized");
-      return {
-        scrollTop: 500,
-        scrollLeft: 0,
-        scrollHeight: 1000,
-        clientHeight: 400,
-        distanceFromBottom: 100,
-        isNearBottom: true,
-        isAtBottom: false,
-        totalRows: this.gridApi.getDisplayedRowCount() || 0,
-      };
-    },
-    /* wwEditor:end */
-  },
-  /* wwEditor:start */
-  watch: {
-    columnDefs: {
-      async handler(newDefs, oldDefs) {
-        if (this.wwEditorState?.boundProps?.columns) return;
-        
-        // Skip if grid is not ready yet
-        if (!this.gridApi) return;
-        
-        // CRITICAL FIX: Only reset column state if columns structure actually changed
-        // Don't reset if only data or other reactive dependencies changed
-        // This preserves user-applied filters and sorting
-        const shouldResetState = this.checkIfColumnsStructureChanged(newDefs, oldDefs);
-        if (shouldResetState && this.gridApi) {
-          // Save current filters and sorting before reset
-          const currentFilters = this.gridApi.getFilterModel();
-          const currentSort = this.gridApi.getState()?.sort?.sortModel;
-          
-          this.gridApi.resetColumnState();
-          
-          // Restore filters and sorting after reset if they exist
-          if (currentFilters && Object.keys(currentFilters).length > 0) {
-            this.$nextTick(() => {
-              if (this.gridApi) {
-                this.gridApi.setFilterModel(currentFilters);
-              }
-            });
-          }
-          if (currentSort && currentSort.length > 0) {
-            this.$nextTick(() => {
-              if (this.gridApi) {
-                this.gridApi.applyColumnState({
-                  state: currentSort,
-                  defaultState: { sort: null },
-                });
-              }
-            });
-          }
-        }
-
-        if (this.wwEditorState.isACopy) return;
-
-        // Auto-create containerId for new custom columns
-        const columnIndex = (this.rawContent.columns || []).findIndex(
-          (col) => col?.cellDataType === "custom" && !col?.containerId
-        );
-        if (columnIndex !== -1) {
-          const newColumns = [...this.rawContent.columns];
-          let column = { ...newColumns[columnIndex] };
-          column.containerId = await this.createElement("ww-flexbox", {
-            _state: { name: `Cell ${column.headerName || column.field}` },
-          });
-          newColumns[columnIndex] = column;
-          this.$emit("update:content:effect", { columns: newColumns });
-          return;
-        }
-
-      },
-      deep: true,
-    },
-  },
-  /* wwEditor:end */
 };
 </script>
 

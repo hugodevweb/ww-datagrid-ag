@@ -25,8 +25,10 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
   removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
   supabaseData, supabaseTotalCount,
   waitForSupabaseInstance,
-  // From useInfiniteScroll (S2):
-  datasource,
+  // From useInfiniteScroll (S2) — passed as a thunk because useInfiniteScroll
+  // is created AFTER useGridActions in the orchestrator (it needs grouping
+  // refs from useGrouping which it consumes inline). Resolved at call time.
+  getDatasource,
   // Inline refs in setup() — DOM container + record-create-popup state:
   gridContainerRef,
   activeCreateColumnField, activeCreateRow, activeCreateRowId,
@@ -515,7 +517,7 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
                   debugLog('[Datagrid] Purged infinite cache to reload data with new row');
 
                   // Refresh the datasource to trigger fresh data fetch
-                  const currentDatasource = datasource.value;
+                  const currentDatasource = getDatasource()?.value;
                   if (currentDatasource) {
                     gridApi.value.setGridOption('datasource', currentDatasource);
                     debugLog('[Datagrid] Refreshed datasource - will fetch fresh data from Supabase');
@@ -953,7 +955,7 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
 
         // Refresh the datasource - this will trigger getRows calls for visible blocks
         // Our flag prevents actual fetching, and getRows will return filtered cached data
-        const currentDatasource = datasource.value;
+        const currentDatasource = getDatasource()?.value;
         if (currentDatasource) {
           // Reset the datasource to force AG Grid to re-fetch visible blocks
           gridApi.value.setGridOption('datasource', currentDatasource);
