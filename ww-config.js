@@ -122,11 +122,20 @@ export default {
         isCollapsible: true,
         properties: ["baseConfig", "baseConfigExcludes"],
       },
-      "dataSource",
-      "rowData",
-      "supabaseTable",
-      "supabaseQuery",
-      "supabaseFilters",
+      {
+        label: "Data Source",
+        isCollapsible: true,
+        properties: [
+          "dataSource",
+          "rowData",
+          "supabaseTable",
+          "supabaseQuery",
+          "supabaseFilters",
+          "supabaseUpdateTable",
+          "supabaseIdField",
+          "idFormula",
+        ],
+      },
       {
         label: "Search",
         isCollapsible: true,
@@ -136,9 +145,14 @@ export default {
           "searchableColumns",
         ],
       },
-      "idFormula",
-      "generateColumns",
-      "columns",
+      {
+        label: "Columns",
+        isCollapsible: true,
+        properties: [
+          "generateColumns",
+          "columns",
+        ],
+      },
       {
         label: "Row Styling",
         isCollapsible: true,
@@ -166,6 +180,7 @@ export default {
       },
       {
         label: "Selection",
+        isCollapsible: true,
         properties: [
           "rowSelection",
           "enableClickSelection",
@@ -174,20 +189,54 @@ export default {
           "focusedRowId",
         ],
       },
-      "invalidEditValueMode",
-      "cellEditMode",
-      "rowBuffer",
-      "suppressAnimationFrame",
-      "movableColumns",
-      "resizableColumns",
-      "allowColumnHiding",
-      "rowReorder",
-      "reorderInfoBox",
-      "viewConfiguration",
-      "viewEditedVariableId",
-      "columnChooserVariableId",
-      ["lang", "localeText"],
-      "enableDebugLogs",
+      {
+        label: "Editing",
+        isCollapsible: true,
+        properties: [
+          "invalidEditValueMode",
+          "cellEditMode",
+        ],
+      },
+      {
+        label: "Grid Behavior",
+        isCollapsible: true,
+        properties: [
+          "movableColumns",
+          "resizableColumns",
+          "allowColumnHiding",
+          "rowReorder",
+          "reorderInfoBox",
+        ],
+      },
+      {
+        label: "Performance",
+        isCollapsible: true,
+        properties: [
+          "rowBuffer",
+          "rowHeight",
+        ],
+      },
+      {
+        label: "View State",
+        isCollapsible: true,
+        properties: [
+          "viewConfiguration",
+          "viewEditedVariableId",
+          "columnChooserVariableId",
+        ],
+      },
+      {
+        label: "Localization",
+        isCollapsible: true,
+        properties: [
+          ["lang", "localeText"],
+        ],
+      },
+      {
+        label: "Developer",
+        isCollapsible: true,
+        properties: ["enableDebugLogs"],
+      },
     ],
   },
   triggerEvents: [
@@ -359,6 +408,19 @@ export default {
       name: "onRecordCreated",
       label: { en: "On Record Created" },
       event: { record: null, columnId: "", rowId: "" },
+    },
+    {
+      name: "cardMoved",
+      label: { en: "On Kanban Card Moved" },
+      event: {
+        row: null,
+        id: null,
+        columnId: "",
+        oldValue: null,
+        newValue: null,
+        oldGroup: "",
+        newGroup: "",
+      },
     },
   ],
   actions: [
@@ -556,6 +618,10 @@ export default {
   ],
   properties: {
     createRecordDropzone: {
+      hidden: true,
+      defaultValue: [],
+    },
+    kanbanCardDropzone: {
       hidden: true,
       defaultValue: [],
     },
@@ -1387,6 +1453,39 @@ export default {
       },
       propertyHelp: {
         tooltip: "Supabase query string for selecting columns and relations. Use '*' for all columns, or specify columns and relations like '*, site:sites(id, name, code)'.",
+      },
+      /* wwEditor:end */
+    },
+    supabaseUpdateTable: {
+      label: { en: "Supabase Update Table" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Underlying table name to issue UPDATE against (when 'Supabase Table' is a view). Leave empty to update directly against 'Supabase Table'.",
+      },
+      propertyHelp: {
+        tooltip: "When 'Supabase Table' is a database view (used to join columns or project data), an UPDATE against the view will fail unless the view is updatable. Set this to the underlying table name so the kanban can write the new group value to the right place. Leave empty if 'Supabase Table' is itself a writable table. If empty AND the kanban detects a view, it will skip the direct write and just emit `cardMoved` / `cellValueChanged` so your workflow can perform the update.",
+      },
+      /* wwEditor:end */
+    },
+    supabaseIdField: {
+      label: { en: "Supabase Id Column" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      defaultValue: "id",
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "Column to filter on when issuing UPDATE (e.g. 'id', 'uuid'). Defaults to 'id'.",
+      },
+      propertyHelp: {
+        tooltip: "Column used in `.eq(column, rowId)` when the kanban writes a card move back to Supabase. Should match the primary key of the underlying table (or the field the row id formula resolves to). Defaults to 'id'.",
       },
       /* wwEditor:end */
     },
@@ -2825,27 +2924,24 @@ export default {
       type: "Number",
       section: "settings",
       bindable: true,
-      defaultValue: 10,
+      defaultValue: 25,
       /* wwEditor:start */
       bindingValidation: {
         type: "number",
-        tooltip: "Number of rows rendered outside the visible viewport. Keep this low (10–20) for best scroll performance — a large buffer increases DOM weight and slows row creation. Only raise it if rows still flash during very fast scrolling.",
+        tooltip: "Number of rows rendered outside the visible viewport. 20–30 gives the smoothest scroll on modern hardware. Lower values save memory but cause blank rows to flash when scrolling fast. Raise toward 40 if you still see row pop-in.",
       },
       /* wwEditor:end */
     },
-    suppressAnimationFrame: {
-      label: { en: "Sync Row Rendering" },
-      type: "OnOff",
+    rowHeight: {
+      label: { en: "Row Height" },
+      type: "Number",
       section: "settings",
       bindable: true,
-      defaultValue: false,
+      defaultValue: 40,
       /* wwEditor:start */
       bindingValidation: {
-        type: "boolean",
-        tooltip: "When enabled, new rows entering the viewport are rendered synchronously inside the scroll handler instead of waiting for the next animation frame. This eliminates blank-row flashes during fast scrolling but may reduce scroll smoothness on low-end devices. Enable only if rows still flash after reducing the Row Buffer.",
-      },
-      propertyHelp: {
-        tooltip: "Synchronous row rendering (suppressAnimationFrame). Eliminates visible row pop-in during scroll at the cost of slightly less fluid scrolling on slow hardware.",
+        type: "number",
+        tooltip: "Fixed height (in pixels) for every row. A uniform row height enables AG Grid's fast virtualization path. Set to a value that fits your tallest cell content — variable per-row heights are not supported here.",
       },
       /* wwEditor:end */
     },
@@ -3000,10 +3096,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId: string|null, order: [groupValue], showUnassigned: boolean } }. The grouping.columnId must reference a select-type column. Group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] } }. The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields is capped at 5 fields. kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned } }. Set grouping.columnId to a select-column field to split records into colored, collapsible groups; set to null to disable grouping. Group collapsed state is no longer part of this object — it is persisted in a dedicated WeWeb object variable keyed by view id. Empty values ({} or []) are gracefully ignored and won't affect the current grid state.",
+        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups } }. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). kanban.hiddenGroups holds the group values that should be hidden on the board. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
       },
       /* wwEditor:end */
     },

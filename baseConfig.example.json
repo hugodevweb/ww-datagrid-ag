@@ -45,8 +45,6 @@
 
   "_comment_rowBuffer": "rowBuffer: any positive number (recommended 10-20)",
   "rowBuffer": 10,
-  "_comment_suppressAnimationFrame": "suppressAnimationFrame: true | false",
-  "suppressAnimationFrame": false,
 
   "_comment_dataSource": "dataSource: 'mapping' | 'supabase'",
   "_comment_enableInfiniteScroll": "enableInfiniteScroll: true | false — only available when dataSource is 'supabase'. Mutually exclusive with pagination.",

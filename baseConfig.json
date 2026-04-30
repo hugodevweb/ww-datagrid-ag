@@ -13,7 +13,6 @@
   "cellAlignment": "left",
   "invalidEditValueMode": "revert",
   "rowBuffer": 15,
-  "suppressAnimationFrame": false,
   "dataSource": "supabase",
   "lang": "fr",
   "viewEditedVariableId":"6fe05736-6920-46d3-8240-8227dcc814a2",

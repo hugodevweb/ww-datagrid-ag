@@ -15,6 +15,7 @@
       :selection-column-def="{ pinned: true }"
       :theme="theme"
       :getRowId="getRowId"
+      :popup-parent="popupParent"
       :rowModelType="rowModelType"
       :datasource="delayedDatasource"
       :cacheBlockSize="cacheBlockSize"
@@ -39,12 +40,12 @@
       enableCellTextSelection
       ensureDomOrder
       :row-drag-managed="rowDragManaged"
-      :rowBuffer="cfg.rowBuffer ?? 10"
+      :rowBuffer="cfg.rowBuffer ?? 25"
+      :rowHeight="cfg.rowHeight ?? 40"
       :suppressRowVirtualisation="false"
       :animateRows="false"
-      :debounceVerticalScrollbar="true"
+      :debounceVerticalScrollbar="false"
       :suppressScrollOnNewData="true"
-      :suppressAnimationFrame="cfg.suppressAnimationFrame ?? false"
       @grid-ready="onGridReady"
       @row-selected="onRowSelected"
       @selection-changed="onSelectionChanged"
@@ -81,6 +82,7 @@
           'ww-group--dragging': groupDragValue === group.value,
           'ww-group--drag-over': groupDragOverValue === group.value && groupDragValue !== group.value,
           'ww-group--collapsed': group.collapsed,
+          'ww-group--master-scroll': group.value === lastExpandedGroupValue,
         }"
       >
         <div
@@ -137,6 +139,7 @@
           :selection-column-def="{ pinned: true }"
           :theme="theme"
           :getRowId="getRowId"
+          :popup-parent="popupParent"
           :pagination="paginationEnabled"
           :paginationPageSize="
             forcedPaginationPageSize
@@ -154,12 +157,12 @@
           enableCellTextSelection
           ensureDomOrder
           :row-drag-managed="false"
-          :rowBuffer="cfg.rowBuffer ?? 10"
+          :rowBuffer="cfg.rowBuffer ?? 25"
+          :rowHeight="cfg.rowHeight ?? 40"
           :suppressRowVirtualisation="false"
           :animateRows="false"
-          :debounceVerticalScrollbar="true"
+          :debounceVerticalScrollbar="false"
           :suppressScrollOnNewData="true"
-          :suppressAnimationFrame="cfg.suppressAnimationFrame ?? false"
           @grid-ready="(p) => onGroupGridReady(group.value, p)"
           @row-selected="(e) => onGroupRowSelected(group.value, e)"
           @selection-changed="(e) => onGroupSelectionChanged(group.value, e)"
@@ -193,21 +196,6 @@
         </div>
       </div>
 
-      <div
-        v-if="hasGroupHorizontalOverflow"
-        ref="groupHorizontalScrollRef"
-        class="ww-group-horizontal-scroll"
-        :style="{
-          left: `${groupHorizontalScrollLeft}px`,
-          width: `${groupHorizontalViewportWidth}px`,
-        }"
-        @scroll="onGroupHorizontalScrollbarScroll"
-      >
-        <div
-          class="ww-group-horizontal-scroll__spacer"
-          :style="{ width: `${groupHorizontalScrollWidth}px` }"
-        ></div>
-      </div>
     </template>
 
     <Transition name="group-loading-fade">
@@ -468,6 +456,7 @@ import {
   onMounted,
   onBeforeUnmount,
   isRef,
+  markRaw,
 } from "vue";
 import { AgGridVue } from "ag-grid-vue3";
 import {
@@ -482,8 +471,8 @@ import {
   AG_GRID_LOCALE_ES,
   AG_GRID_LOCALE_PT,
 } from "@ag-grid-community/locale";
-import ActionCellRenderer from "./components/ActionCellRenderer.vue";
-import ImageCellRenderer from "./components/ImageCellRenderer.vue";
+import ActionCellRenderer from "./components/ActionCellRenderer.js";
+import ImageCellRenderer from "./components/ImageCellRenderer.js";
 import WewebCellRenderer from "./components/WewebCellRenderer.vue";
 import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 import SelectFilterComponent from "./components/SelectFilterComponent.vue";
@@ -574,8 +563,10 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 export default {
   components: {
     AgGridVue,
-    ActionCellRenderer,
-    ImageCellRenderer,
+    // ActionCellRenderer and ImageCellRenderer are AG Grid JS class
+    // renderers (not Vue components); they're registered via the
+    // `gridComponents` prop on <ag-grid-vue>, not via Vue's component
+    // lookup, so they don't belong in this map.
     WewebCellRenderer,
     SelectCellRenderer,
     SelectFilterComponent,
@@ -727,6 +718,19 @@ export default {
       getCurrentConfig: () => currentConfig,
     });
 
+    // The last expanded group owns the visible horizontal scrollbar — same
+    // bar AG Grid renders for the non-grouped view (.ag-body-horizontal-scroll).
+    // All groups stay aligned via `alignedGrids`, so scrolling that one bar
+    // scrolls every group horizontally. Other groups keep their bar suppressed
+    // to avoid stacking duplicates.
+    const lastExpandedGroupValue = computed(() => {
+      const groups = orderedGroups.value;
+      for (let i = groups.length - 1; i >= 0; i--) {
+        if (!groups[i].collapsed) return groups[i].value;
+      }
+      return null;
+    });
+
     // Composable: column state — owns columnOrder/hiddenColumns WeWeb
     // variables, isVirtualColumn helper, the simple visual computeds
     // (defaultColDef, dataTypeDefinitions, rowSelection, style, cssVars,
@@ -792,6 +796,11 @@ export default {
     const activeCreateRow = ref(null);
     const activeCreateRowId = ref(null);
     const createPopupTeleportTarget = ref(null);
+    // popupParent for AG Grid filter/menu popups. Set to the front document
+    // body so popups escape the per-group `.ww-group__grid` overflow:hidden
+    // clip in grouped mode (otherwise filter popups get cropped on the right).
+    // Resolved eagerly so the value is available at grid-init, not on mount.
+    const popupParent = ref((wwLib?.getFrontDocument?.() || document)?.body || null);
 
     // Composable: cell editing — owns the columnDefs computed, all cell/row
     // editing lifecycle handlers (onCellValueChanged, onCellEditingStarted/
@@ -852,9 +861,16 @@ export default {
 
 
 
-    // Resolve teleport target for the create record popup
+    // Resolve teleport target for the create record popup, and refresh the
+    // popupParent in case the front document wasn't ready at setup time.
     onMounted(() => {
-      createPopupTeleportTarget.value = (wwLib?.getFrontDocument?.() || document).body;
+      console.log('[viewEdited][datagrid] MOUNTED', {
+        viewEditedVariableId: cfg.value?.viewEditedVariableId,
+        hasViewConfiguration: !!cfg.value?.viewConfiguration,
+      });
+      const body = (wwLib?.getFrontDocument?.() || document).body;
+      createPopupTeleportTarget.value = body;
+      if (!popupParent.value) popupParent.value = body;
     });
 
     const { value: activeCreateColumn, setValue: setActiveCreateColumn } =
@@ -1115,6 +1131,7 @@ export default {
 
     // Cleanup on unmount
     onBeforeUnmount(() => {
+      console.log('[viewEdited][datagrid] UNMOUNTING');
       if (scrollDebounceTimer.value) {
         clearTimeout(scrollDebounceTimer.value);
       }
@@ -1771,7 +1788,7 @@ export default {
       });
     }
 
-    const gridComponents = {
+    const gridComponents = markRaw(Object.freeze({
       ActionCellRenderer,
       ImageCellRenderer,
       WewebCellRenderer,
@@ -1780,7 +1797,7 @@ export default {
       DateCellEditor,
       UserCellRenderer,
       UserFilterComponent,
-    };
+    }));
 
     // ===== S7: inlined Options-API leftovers =====
     // The 3 small computeds, 4 wrapper methods, and editor-only stubs that
@@ -2177,6 +2194,7 @@ export default {
       activeCreateRow,
       activeCreateRowId,
       createPopupTeleportTarget,
+      popupParent,
       showColumnChooser,
       columnChooserRef,
       activeChooserTab,
@@ -2223,6 +2241,7 @@ export default {
       // ========== GROUPING EXPORTS ==========
       isGroupingActive,
       orderedGroups,
+      lastExpandedGroupValue,
       groupRowData,
       groupingState,
       groupDragValue,
@@ -3236,6 +3255,13 @@ export default {
   // sits above the component (toolbar, tabs, page header, etc.). !important
   // because the host wrapper sometimes resets padding on the root element.
   padding: 16px 4px 12px !important;
+  // Each per-group ag-grid uses domLayout="autoHeight" so it sizes to its
+  // own row count. Without overflow handling here, the stacked groups would
+  // blow past the configured Grid Height (cfg.height) in fixed-layout mode.
+  // overflow-y:auto makes the container respect that height and scroll
+  // through the groups internally. In auto-layout mode the component itself
+  // has no fixed height, so the auto overflow is a no-op.
+  overflow-y: auto;
 }
 
 .ww-group-loading-overlay {
@@ -3425,7 +3451,12 @@ export default {
   border-bottom-left-radius: 6px;
   border-bottom-right-radius: 6px;
   overflow: hidden;
+}
 
+// Hide AG Grid's per-group horizontal scrollbar on every group EXCEPT the
+// master. The master group exposes the native bar (see .ww-group--master-scroll
+// rules below), all groups stay synced via `alignedGrids`.
+.ww-group:not(.ww-group--master-scroll) .ww-group__grid {
   :deep(.ag-body-horizontal-scroll) {
     height: 0 !important;
     min-height: 0 !important;
@@ -3472,58 +3503,25 @@ export default {
   white-space: nowrap;
 }
 
-.ww-group-horizontal-scroll {
-  position: absolute;
-  bottom: 0;
-  z-index: 30;
-  height: 8px;
-  overflow-x: scroll;
-  overflow-y: hidden;
-  flex: 0 0 auto;
-  scrollbar-width: thin;
-  scrollbar-color: #888 #f1f1f1;
+// Master horizontal scrollbar: only the last expanded group exposes AG Grid's
+// native .ag-body-horizontal-scroll (the same bar used in non-grouped mode).
+// All groups stay in sync via `alignedGrids`, so scrolling that one bar
+// scrolls every group horizontally. The non-master groups keep their bar
+// suppressed via the .ww-group__grid block above.
+.ww-group--master-scroll .ww-group__grid {
+  // Drop overflow:hidden so the sticky scrollbar can bind to the outer
+  // .ww-datagrid.grouped scroll viewport instead of being clipped here.
+  overflow: visible;
 
-  &::-webkit-scrollbar {
-    height: 8px;
-    width: 8px;
-    -webkit-appearance: none;
-    appearance: none;
+  :deep(.ag-body-horizontal-scroll) {
+    height: 8px !important;
+    min-height: 8px !important;
+    max-height: 8px !important;
+    overflow: visible !important;
   }
 
-  &::-webkit-scrollbar-button,
-  &::-webkit-scrollbar-button:single-button,
-  &::-webkit-scrollbar-button:start:decrement,
-  &::-webkit-scrollbar-button:end:increment,
-  &::-webkit-scrollbar-button:horizontal:start:decrement,
-  &::-webkit-scrollbar-button:horizontal:end:increment,
-  &::-webkit-scrollbar-button:vertical:start:decrement,
-  &::-webkit-scrollbar-button:vertical:end:increment {
-    display: none !important;
-    width: 0 !important;
-    height: 0 !important;
-    background: transparent !important;
+  :deep(.ag-body-horizontal-scroll-viewport) {
+    overflow-x: scroll !important;
   }
-
-  &::-webkit-scrollbar-corner {
-    background: transparent;
-  }
-
-  &::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 0;
-  }
-
-  &::-webkit-scrollbar-thumb {
-    background: #888;
-    border-radius: 0;
-
-    &:hover {
-      background: #555;
-    }
-  }
-}
-
-.ww-group-horizontal-scroll__spacer {
-  height: 1px;
 }
 </style>

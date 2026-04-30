@@ -201,6 +201,7 @@ export function useViewConfig(cfg, props, ctx, {
     // Skip during programmatic view config application — grid is mid-transition
     // The watcher resets the variable to false once the config is fully applied
     if (isApplyingViewConfig?.value) {
+      console.log('[viewEdited][datagrid] updateViewEditedVariable SUPPRESSED — isApplyingViewConfig');
       debugLog(`[ViewEditedVariable] Skipping update — viewConfiguration is being applied`);
       return;
     }
@@ -212,11 +213,18 @@ export function useViewConfig(cfg, props, ctx, {
     // let late grid events mark the view as edited. Allow `false` through so
     // state converges correctly once the grid settles.
     if (edited && Date.now() < suppressEditedUntil.value) {
+      console.log('[viewEdited][datagrid] updateViewEditedVariable SUPPRESSED — within 2s window of viewConfig change');
       debugLog(`[ViewEditedVariable] Suppressed true → view just changed, ignoring late grid event`);
       return;
     }
 
     try {
+      console.log('[viewEdited][datagrid] updateViewEditedVariable→' + edited, {
+        variableId,
+        config,
+        baseline,
+        callerStack: new Error().stack?.split('\n').slice(2, 6).join('\n'),
+      });
       wwLib.wwVariable.updateValue(variableId, edited);
       debugLog(`[ViewEditedVariable] Set variable "${variableId}" →`, edited);
     } catch (e) {
@@ -255,6 +263,46 @@ export function useViewConfig(cfg, props, ctx, {
       }
 
       try {
+        // 0. Apply grouping FIRST, before any AG Grid API calls below.
+        // Rationale: when viewConfiguration is updated via a reset → repopulate
+        // flow (two updates in close succession), the previous setTimeout may
+        // have already triggered a layout swap (single ↔ per-group grids),
+        // leaving `gridApi.value` pointing at a destroyed AG Grid handle. Calls
+        // like setFilterModel on a destroyed api throw, the outer catch fires,
+        // and any code after it never runs. By placing the grouping write
+        // first, the grouped layout is reactivated even if the api calls
+        // below fail; the per-group grids' onGridReady will then re-apply
+        // filters/sort/widths from the live state refs.
+        {
+          const groupingPresent = viewConfig && 'grouping' in viewConfig;
+          const g = groupingPresent ? viewConfig.grouping : null;
+          if (!groupingPresent || isEmptyConfigValue(g) || !g || !g.columnId) {
+            groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
+            groupGridApis.value = new Map();
+            groupSelections.value = new Map();
+            debugLog(
+              groupingPresent
+                ? '[ViewConfiguration] Disabled grouping (empty or no columnId)'
+                : '[ViewConfiguration] Disabled grouping (key not present)'
+            );
+          } else if (isValidGroupColumn(g.columnId)) {
+            groupingState.value = {
+              columnId: g.columnId,
+              order: Array.isArray(g.order) ? [...g.order] : [],
+              collapsed: getStoredCollapsedForView(),
+              showUnassigned: g.showUnassigned !== false,
+            };
+            // When grouping activates, we unmount the single grid and mount per-group grids.
+            // Clear any stale per-group caches so fresh grid-ready events register them.
+            groupGridApis.value = new Map();
+            groupSelections.value = new Map();
+            debugLog('[ViewConfiguration] Applied grouping:', groupingState.value);
+          } else {
+            console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);
+            groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
+          }
+        }
+
         // 1. Apply filters if key is present (even if empty {} - which clears all filters)
         // Only skip if the key is completely absent from viewConfig
         if (viewConfig && 'filters' in viewConfig) {
@@ -401,38 +449,8 @@ export function useViewConfig(cfg, props, ctx, {
           debugLog('[ViewConfiguration] Skipped hidden columns (key not present, keeping current state)');
         }
 
-        // 6. Apply grouping config. Unlike the other keys above, an absent
-        // 'grouping' key is treated as "disable grouping" — removing the key
-        // from a view configuration must clear the grouped layout.
-        {
-          const groupingPresent = viewConfig && 'grouping' in viewConfig;
-          const g = groupingPresent ? viewConfig.grouping : null;
-          if (!groupingPresent || isEmptyConfigValue(g) || !g || !g.columnId) {
-            groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
-            groupGridApis.value = new Map();
-            groupSelections.value = new Map();
-            debugLog(
-              groupingPresent
-                ? '[ViewConfiguration] Disabled grouping (empty or no columnId)'
-                : '[ViewConfiguration] Disabled grouping (key not present)'
-            );
-          } else if (isValidGroupColumn(g.columnId)) {
-            groupingState.value = {
-              columnId: g.columnId,
-              order: Array.isArray(g.order) ? [...g.order] : [],
-              collapsed: getStoredCollapsedForView(),
-              showUnassigned: g.showUnassigned !== false,
-            };
-            // When grouping activates, we unmount the single grid and mount per-group grids.
-            // Clear any stale per-group caches so fresh grid-ready events register them.
-            groupGridApis.value = new Map();
-            groupSelections.value = new Map();
-            debugLog('[ViewConfiguration] Applied grouping:', groupingState.value);
-          } else {
-            console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);
-            groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
-          }
-        }
+        // (Grouping was applied at the top of this try block, before any
+        // AG Grid API calls — see step 0 above for rationale.)
 
         // 7. Clear row selections when view changes (not on initial load)
         if (!isInitial) {
@@ -492,19 +510,39 @@ export function useViewConfig(cfg, props, ctx, {
     () => gridReady.value,
     (ready) => {
       if (!ready || !gridApi.value) return;
+      console.log('[viewEdited][datagrid] gridReady fired — initial apply pending');
 
       // Apply initial view configuration when grid is ready
       if (cfg.value?.viewConfiguration) {
+        // Open a suppression window. The initial mount path triggers several
+        // post-apply updateCurrentConfig calls (e.g. Datagrid.vue's
+        // setTimeout(200) at line ~992 after grid-ready) that land AFTER
+        // applyViewConfiguration's 100ms cleanup has cleared
+        // isApplyingViewConfig. Without this window, those late calls compute
+        // "edited" against a fresh AG-Grid snapshot that doesn't perfectly
+        // match the baseline (flex widths, sort serialization, etc.) and
+        // falsely flip the edited variable to true.
+        suppressEditedUntil.value = Date.now() + 2000;
+
         applyViewConfiguration(cfg.value.viewConfiguration, true);
-        // Grid now matches the initial config — reset the edited variable
+
         const variableId = cfg.value?.viewEditedVariableId;
         if (variableId) {
-          try {
-            wwLib.wwVariable.updateValue(variableId, false);
-            debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (initial config applied)`);
-          } catch (e) {
-            debugLog('[ViewEditedVariable] Could not reset variable on init:', variableId, e);
-          }
+          const safeReset = (reason) => {
+            try {
+              console.log('[viewEdited][datagrid] gridReady→FALSE (' + reason + ')', { variableId });
+              wwLib.wwVariable.updateValue(variableId, false);
+              debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (${reason})`);
+            } catch (e) {
+              debugLog('[ViewEditedVariable] Could not reset variable on init:', variableId, e);
+            }
+          };
+          // Immediate reset, then mirror the viewConfiguration-changed path's
+          // three-stage settle so any late grid events that fire during the
+          // window are followed by a converging false.
+          safeReset('initial config applied');
+          setTimeout(() => safeReset('initial — late settle'), 300);
+          setTimeout(() => safeReset('initial — final settle'), 1100);
         }
       }
     },
@@ -570,6 +608,7 @@ export function useViewConfig(cfg, props, ctx, {
         const variableId = cfg.value?.viewEditedVariableId;
         if (!variableId) return;
         try {
+          console.log('[viewEdited][datagrid] viewConfig-watcher→FALSE (' + reason + ')', { variableId });
           wwLib.wwVariable.updateValue(variableId, false);
           debugLog(`[ViewEditedVariable] Set variable "${variableId}" → false (${reason})`);
         } catch (e) {

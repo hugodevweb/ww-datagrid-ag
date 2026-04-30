@@ -432,21 +432,34 @@ export function createActionColumnDef(col, commonProperties, onActionTrigger, co
   };
 }
 
-// Custom column factory  
+// Custom column factory
 export function createCustomColumnDef(col, commonProperties, onCustomCellEdit, resolveMappingFormula) {
   const validationFn = createValidationFunction(col, resolveMappingFormula);
-  
+
+  // Performance: only mount the (heavy) WewebCellRenderer when the column
+  // actually has a containerId to host. Without one, the renderer would
+  // wrap an empty <wwElement> per row at full Vue-mount cost — a column
+  // configured without a custom container has nothing to display beyond
+  // its raw value, so we let AG Grid's built-in fast text path handle it.
+  // The editor is still wired so editable cells continue to behave
+  // identically when activated (one-shot cost, not in the scroll hot path).
+  const hasContainer = !!col?.containerId;
+
   const customColumn = {
     ...commonProperties,
     headerName: col?.headerName,
     field: col?.field,
-    cellRenderer: "WewebCellRenderer",
-    cellRendererParams: {
-      containerId: col?.containerId,
-      trigger: onCustomCellEdit,
-      suppressRowInteraction: col?.suppressRowInteraction,
-    },
-    cellEditor: "WewebCellRenderer", 
+    ...(hasContainer
+      ? {
+          cellRenderer: "WewebCellRenderer",
+          cellRendererParams: {
+            containerId: col?.containerId,
+            trigger: onCustomCellEdit,
+            suppressRowInteraction: col?.suppressRowInteraction,
+          },
+        }
+      : {}),
+    cellEditor: "WewebCellRenderer",
     cellEditorParams: {
       containerId: col?.containerId,
       trigger: onCustomCellEdit,

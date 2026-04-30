@@ -216,137 +216,99 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
   }));
 
   const rowStyle = computed(() => {
-    // Return a function that AG Grid will call for each row
-    // This function evaluates conditional styling rules and focused row styling
-    // IMPORTANT: Focused row styling is applied LAST to override conditional styles
+    // Returns a function AG Grid calls per row to compute its style.
     //
-    // PERFORMANCE: We only use conditionalRowStyles as a reactive dependency here.
-    // focusedRowId is read at call time (inside the returned function) so that
-    // changing the focused row does NOT cause this computed to re-evaluate and
-    // return a new function reference — which would force AG Grid to re-render
-    // all rows. Instead, the focusedRowId watcher handles targeted redraws of
-    // only the affected rows.
+    // PERFORMANCE: We only use conditionalRowStyles as a reactive dependency.
+    // focusedRowId is read at call time (inside the returned function) so
+    // changing the focused row does NOT re-evaluate this computed and return
+    // a new function reference — which would force AG Grid to re-render all
+    // rows. The focusedRowId watcher handles targeted redraws.
     const conditionalRowStyles = props.content?.conditionalRowStyles;
+    const hasConditionalStyles = Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
 
-    const hasConditionalStyles = conditionalRowStyles && Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
+    // Pre-compile conditional rules once per conditionalRowStyles change into
+    // a flat array of (rowData) => mergedStyleObject|null closures. This
+    // hoists the per-rule field lookups out of the per-row hot path.
+    const compiledRules = hasConditionalStyles
+      ? conditionalRowStyles
+          .filter(r => r && r.conditionFormula)
+          .map(rule => {
+            // Pre-extract the style object that gets applied if condition matches
+            const styleToApply = {};
+            if (rule.backgroundColor) styleToApply.backgroundColor = rule.backgroundColor;
+            if (rule.textColor) styleToApply.color = rule.textColor;
+            if (rule.fontWeight) styleToApply.fontWeight = rule.fontWeight;
+            if (rule.fontStyle) styleToApply.fontStyle = rule.fontStyle;
+            if (rule.borderLeft) styleToApply.borderLeft = rule.borderLeft;
+            if (rule.borderRight) styleToApply.borderRight = rule.borderRight;
+            if (rule.borderTop) styleToApply.borderTop = rule.borderTop;
+            if (rule.borderBottom) styleToApply.borderBottom = rule.borderBottom;
+            const formula = rule.conditionFormula;
+            return (rowData) => {
+              try {
+                return resolveMappingFormula && resolveMappingFormula(formula, rowData)
+                  ? styleToApply
+                  : null;
+              } catch (error) {
+                debugLog('[Conditional Row Style] Error evaluating condition:', error);
+                return null;
+              }
+            };
+          })
+      : null;
 
-    // We always return a function now (instead of null) so that the function
-    // reference stays stable. Returning null vs function on focusedRowId toggle
-    // would also cause AG Grid to detect a prop change.
-
-    // Return a stable function that reads focusedRowId at call time
     return (params) => {
-      // params.data contains the row data
       const rowData = params.data;
+      if (!rowData) return null;
 
-      // If no row data, return null
-      if (!rowData) {
-        return null;
-      }
-
-      // Read focusedRowId at call time (not at computed evaluation time)
-      // This prevents the computed from re-evaluating when focusedRowId changes
       const focusedRowId = cfg.value?.focusedRowId;
       const hasFocusedRow = focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '';
 
-      // If no conditional styles and no focused row, return null early
-      if (!hasConditionalStyles && !hasFocusedRow) {
-        return null;
-      }
+      if (!compiledRules && !hasFocusedRow) return null;
 
-      // Accumulate styles from all matching rules
-      // Later rules override earlier ones for conflicting properties
-      let mergedStyle = {};
-
-      // Check if this row is the focused row (we'll apply styling at the end)
       let isFocusedRow = false;
       if (hasFocusedRow) {
-        // Get the row's ID using the idFormula
-        let baseId = resolveMappingFormula
-          ? resolveMappingFormula(cfg.value.idFormula, rowData)
-          : null;
-
-        // Fallback to common ID fields if formula doesn't return a valid ID
-        if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
-          baseId = rowData.id || rowData._id || rowData.uuid || rowData.ID || rowData.Id;
+        // Cache the resolved baseId on the node so repeated style evaluations
+        // for the same row data don't re-run the (potentially expensive)
+        // idFormula. Invalidate when node.data identity changes.
+        const node = params.node;
+        let baseId;
+        if (node && node.__cachedBaseIdSrc === rowData) {
+          baseId = node.__cachedBaseId;
+        } else {
+          baseId = resolveMappingFormula
+            ? resolveMappingFormula(cfg.value.idFormula, rowData)
+            : null;
+          if (baseId === 'id' || baseId === null || baseId === undefined || baseId === '') {
+            baseId = rowData.id || rowData._id || rowData.uuid || rowData.ID || rowData.Id;
+          }
+          if (node) {
+            node.__cachedBaseIdSrc = rowData;
+            node.__cachedBaseId = baseId;
+          }
         }
-
-        // Compare with focusedRowId (convert both to strings for comparison)
         const baseIdStr = baseId != null ? String(baseId) : '';
-        const focusedIdStr = String(focusedRowId);
-
-        isFocusedRow = (baseIdStr === focusedIdStr);
+        isFocusedRow = (baseIdStr === String(focusedRowId));
       }
 
-      // Apply conditional row styles FIRST
-      if (hasConditionalStyles) {
-        for (const rule of conditionalRowStyles) {
-          // Skip rules without a condition formula
-          if (!rule?.conditionFormula) {
-            continue;
-          }
-
-          // Evaluate the condition formula with the row data as context
-          let conditionResult = false;
-          try {
-            conditionResult = resolveMappingFormula
-              ? resolveMappingFormula(rule.conditionFormula, rowData)
-              : false;
-          } catch (error) {
-            // Log error in debug mode and skip this rule
-            debugLog('[Conditional Row Style] Error evaluating condition:', error);
-            continue;
-          }
-
-          // If condition is true, apply the styles from this rule
-          if (conditionResult) {
-            // Apply backgroundColor
-            if (rule.backgroundColor) {
-              mergedStyle.backgroundColor = rule.backgroundColor;
-            }
-
-            // Apply textColor (maps to color CSS property)
-            if (rule.textColor) {
-              mergedStyle.color = rule.textColor;
-            }
-
-            // Apply fontWeight
-            if (rule.fontWeight) {
-              mergedStyle.fontWeight = rule.fontWeight;
-            }
-
-            // Apply fontStyle
-            if (rule.fontStyle) {
-              mergedStyle.fontStyle = rule.fontStyle;
-            }
-
-            // Apply border properties
-            if (rule.borderLeft) {
-              mergedStyle.borderLeft = rule.borderLeft;
-            }
-            if (rule.borderRight) {
-              mergedStyle.borderRight = rule.borderRight;
-            }
-            if (rule.borderTop) {
-              mergedStyle.borderTop = rule.borderTop;
-            }
-            if (rule.borderBottom) {
-              mergedStyle.borderBottom = rule.borderBottom;
-            }
+      let mergedStyle = null;
+      if (compiledRules) {
+        for (let i = 0; i < compiledRules.length; i++) {
+          const ruleStyle = compiledRules[i](rowData);
+          if (ruleStyle) {
+            if (!mergedStyle) mergedStyle = {};
+            Object.assign(mergedStyle, ruleStyle);
           }
         }
       }
 
-      // Apply focused row styling LAST to override conditional styles
       if (isFocusedRow) {
-        // Using box-shadow for a left border effect that doesn't affect layout
+        if (!mergedStyle) mergedStyle = {};
         mergedStyle.boxShadow = 'inset 4px 0 0 0 var(--ag-range-selection-border-color, #2196F3)';
-        // Add a subtle background tint (overrides any conditional backgroundColor)
         mergedStyle.backgroundColor = 'var(--ag-range-selection-background-color, rgba(33, 150, 243, 0.1))';
       }
 
-      // Return the merged style object, or null if no styles were applied
-      return Object.keys(mergedStyle).length > 0 ? mergedStyle : null;
+      return mergedStyle;
     };
   });
 

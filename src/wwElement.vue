@@ -15,6 +15,7 @@
     :content="content"
     :uid="uid"
     :wwEditorState="wwEditorState"
+    @trigger-event="(e) => $emit('trigger-event', e)"
   />
 </template>
 
@@ -70,7 +71,12 @@ export default {
   emits: ['trigger-event', 'update:content', 'update:content:effect'],
   computed: {
     viewType() {
-      return this.content?.[VIEW_VARIABLE_ID]?.type ?? 'grid';
+      try {
+        const v = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID);
+        return v?.type ?? 'grid';
+      } catch (_) {
+        return 'grid';
+      }
     },
   },
   methods: Object.fromEntries(

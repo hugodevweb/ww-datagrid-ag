@@ -6,6 +6,7 @@
         @mousedown="handleMouseDown"
     >
         <wwLayoutItemContext
+            v-if="hasRowData"
             is-repeat
             :index="activeParams.node.sourceRowIndex"
             :data="{ value: activeParams.value, row: activeParams.data, columnId: columnId }"
@@ -55,6 +56,14 @@ export default {
                    this.activeParams?.colDef?.colId ||
                    this.activeParams?.colDef?.field ||
                    null;
+        },
+        // Only mount the bound layout once the row actually has data. AG Grid
+        // can mount cell renderers before row data is populated (initial load,
+        // infinite-scroll placeholder rows); without this guard the custom
+        // column shows its design-time layout while other columns are still
+        // empty, which looks like the custom column "renders early".
+        hasRowData() {
+            return this.activeParams?.data != null;
         },
     },
     mounted() {
