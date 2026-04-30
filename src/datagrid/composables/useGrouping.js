@@ -118,14 +118,13 @@ export function useGrouping(
   const groupGridApis = shallowRef(new Map());
 
   // AG Grid `alignedGrids` feed — returns every currently-mounted group grid
-  // wrapped as { api } so all siblings auto-sync column widths, column order,
-  // visibility, pinning, and horizontal scroll natively (v34 feature).
-  // AG Grid self-excludes the calling grid, so returning all APIs is safe.
-  // Passed as a function so it re-reads the live Map on every call.
+  // so all siblings auto-sync column widths, column order, visibility, pinning,
+  // and horizontal scroll natively (v34 feature). Passed as a function so it
+  // re-reads the live Map on every call. Self-inclusion is harmless (AG Grid's
+  // `consuming` flag and doHorizontalScroll early-return short-circuit recursion).
   const alignedGridApisForGroup = () => {
     if (!isGroupingActive.value) return [];
-    const apis = Array.from(groupGridApis.value.values()).filter(Boolean);
-    return apis.map(api => ({ api }));
+    return Array.from(groupGridApis.value.values()).filter(Boolean);
   };
 
   // Map<groupValue, row[]> — aggregated selection across group grids.
@@ -144,6 +143,13 @@ export function useGrouping(
   // Drag-reorder state for group headers.
   const groupDragValue = ref(null);
   const groupDragOverValue = ref(null);
+
+  // Runtime-only override: empty groups are collapsed by default (regardless
+  // of the persisted state), but the user can manually expand one by clicking
+  // its chevron. Tracked here per-session — not persisted, so reload returns
+  // empty groups to the default collapsed display while preserving the
+  // stored "expanded when populated" intent.
+  const manuallyExpandedEmptyGroups = ref(new Set());
 
   // Track which invalid-columnId warning has already been logged (avoid log spam).
   const warnedInvalidGroupingColumn = ref(null);
@@ -257,14 +263,23 @@ export function useGrouping(
       return dataMap.get(value)?.length || 0;
     };
 
+    const manualExpand = manuallyExpandedEmptyGroups.value;
     const base = options.map((o) => {
       const value = String(o.value);
+      const count = countFor(value);
+      // Empty groups (confirmed 0): collapsed by default, expanded only if the
+      // user manually opened them this session. `null` count = unknown
+      // (infinite-scroll pre-fetch) and falls through to the persisted state.
+      const isEmpty = count === 0;
+      const collapsed = isEmpty
+        ? !manualExpand.has(value)
+        : collapsedSet.has(value);
       return {
         value,
         label: o.label ?? value,
         color: o.color || '#e5e7eb',
-        count: countFor(value),
-        collapsed: collapsedSet.has(value),
+        count,
+        collapsed,
       };
     });
 
@@ -281,12 +296,15 @@ export function useGrouping(
         : (unassignedCount || 0) > 0
     );
     if (showUnassigned) {
+      const unassignedEmpty = unassignedCount === 0;
       base.push({
         value: UNASSIGNED_GROUP,
         label: 'Unassigned',
         color: '#9ca3af',
         count: unassignedCount,
-        collapsed: collapsedSet.has(UNASSIGNED_GROUP),
+        collapsed: unassignedEmpty
+          ? !manualExpand.has(UNASSIGNED_GROUP)
+          : collapsedSet.has(UNASSIGNED_GROUP),
       });
     }
 
@@ -653,8 +671,19 @@ export function useGrouping(
 
   // ========== COLLAPSE / EXPAND ==========
 
-  // Toggle a single group's collapsed state and persist
+  // Toggle a single group's collapsed state and persist.
+  // Empty groups (count === 0) flip the session-only override instead of the
+  // persisted state, so the stored "expanded when populated" intent is kept.
   const toggleGroupCollapsed = (groupValue) => {
+    const group = orderedGroups.value.find(g => g.value === groupValue);
+    if (group && group.count === 0) {
+      const next = new Set(manuallyExpandedEmptyGroups.value);
+      if (next.has(groupValue)) next.delete(groupValue);
+      else next.add(groupValue);
+      manuallyExpandedEmptyGroups.value = next;
+      updateGroupHorizontalScrollbarMetrics();
+      return;
+    }
     const collapsed = Array.isArray(groupingState.value?.collapsed) ? [...groupingState.value.collapsed] : [];
     const idx = collapsed.indexOf(groupValue);
     if (idx >= 0) collapsed.splice(idx, 1);
