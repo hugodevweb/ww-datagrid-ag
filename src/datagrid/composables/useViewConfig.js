@@ -276,10 +276,15 @@ export function useViewConfig(cfg, props, ctx, {
         {
           const groupingPresent = viewConfig && 'grouping' in viewConfig;
           const g = groupingPresent ? viewConfig.grouping : null;
+          const prevColumnId = groupingState.value?.columnId ?? null;
           if (!groupingPresent || isEmptyConfigValue(g) || !g || !g.columnId) {
             groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
-            groupGridApis.value = new Map();
-            groupSelections.value = new Map();
+            // Grouping deactivated — drop any per-group api refs so a later
+            // re-activation starts fresh.
+            if (prevColumnId !== null) {
+              groupGridApis.value = new Map();
+              groupSelections.value = new Map();
+            }
             debugLog(
               groupingPresent
                 ? '[ViewConfiguration] Disabled grouping (empty or no columnId)'
@@ -292,10 +297,17 @@ export function useViewConfig(cfg, props, ctx, {
               collapsed: getStoredCollapsedForView(),
               showUnassigned: g.showUnassigned !== false,
             };
-            // When grouping activates, we unmount the single grid and mount per-group grids.
-            // Clear any stale per-group caches so fresh grid-ready events register them.
-            groupGridApis.value = new Map();
-            groupSelections.value = new Map();
+            // Only wipe the per-group api/selection caches when grouping
+            // ACTIVATES or the column CHANGES. Wiping unconditionally on
+            // every apply (including the initial gridReady-triggered apply
+            // where grouping is already active) clears the freshly-registered
+            // grid apis before each group grid's staggered datasource-assign
+            // setTimeout fires its `stillMounted` check — leaving every
+            // group grid without a datasource and rendering zero rows.
+            if (prevColumnId !== g.columnId) {
+              groupGridApis.value = new Map();
+              groupSelections.value = new Map();
+            }
             debugLog('[ViewConfiguration] Applied grouping:', groupingState.value);
           } else {
             console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);

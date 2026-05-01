@@ -140,6 +140,8 @@
           :theme="theme"
           :getRowId="getRowId"
           :popup-parent="popupParent"
+          :context="{ groupValue: group.value }"
+          :rowClassRules="groupRowClassRules"
           :pagination="paginationEnabled"
           :paginationPageSize="
             forcedPaginationPageSize
@@ -160,7 +162,7 @@
           :rowBuffer="cfg.rowBuffer ?? 25"
           :rowHeight="cfg.rowHeight ?? 40"
           :suppressRowVirtualisation="false"
-          :animateRows="false"
+          :animateRows="true"
           :debounceVerticalScrollbar="false"
           :suppressScrollOnNewData="true"
           @grid-ready="(p) => onGroupGridReady(group.value, p)"
@@ -678,6 +680,7 @@ export default {
       UNASSIGNED_GROUP,
       groupingState, pendingGroupingColumnId, isGroupingTransitionLoading,
       groupGridApis, groupSelections, groupInfiniteCounts,
+      pendingGroupingMoves, setPendingGroupingMove, clearPendingGroupingMove,
       groupHorizontalScrollRef, groupHorizontalScrollWidth,
       groupHorizontalViewportWidth, groupHorizontalScrollLeft,
       groupDragValue, groupDragOverValue,
@@ -825,6 +828,13 @@ export default {
       isGroupingActive, groupingState, groupGridApis,
       isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
+      setPendingGroupingMove,
+      // Thunk: useInfiniteScroll is created AFTER useCellEditing, so the
+      // scheduleRefreshGroupCounts function isn't bound yet at construction
+      // time. Resolve it lazily so cross-group cell edits can refresh the
+      // badge counts on collapsed destination groups (whose grids aren't
+      // mounted, so their per-group datasource isn't called).
+      getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
     });
 
     // Composable: grid actions — programmatic actions exposed to WeWeb
@@ -921,6 +931,7 @@ export default {
       UNASSIGNED_GROUP,
       isGroupingActive, groupingColumnId, orderedGroups,
       groupGridApis, groupInfiniteCounts,
+      pendingGroupingMoves,
     });
 
     // Helper function to get current column widths from the grid
@@ -1799,6 +1810,25 @@ export default {
       UserFilterComponent,
     }));
 
+    // Per-group rowClassRules. Each per-group grid passes its own groupValue
+    // via `:context="{ groupValue }"`; the rule fires on rows whose grouping
+    // column value no longer matches the grid's group — e.g. right after the
+    // user edits the grouping column locally but before the Supabase write
+    // round-trips and the per-group infinite cache is purged. The CSS for
+    // .ww-row-leaving fades the row out so the move feels animated instead
+    // of abrupt.
+    const groupRowClassRules = markRaw(Object.freeze({
+      'ww-row-leaving': (params) => {
+        const colId = groupingColumnId.value;
+        if (!colId) return false;
+        const raw = params?.data?.[colId];
+        const expected = (raw === null || raw === undefined || raw === '')
+          ? '__unassigned__'
+          : String(raw);
+        return expected !== params?.context?.groupValue;
+      },
+    }));
+
     // ===== S7: inlined Options-API leftovers =====
     // The 3 small computeds, 4 wrapper methods, and editor-only stubs that
     // were too small to justify their own composables. Lifted verbatim from
@@ -2273,6 +2303,7 @@ export default {
       groupDatasourceFor,
       refreshGroupInfiniteCache,
       groupInfiniteCounts,
+      groupRowClassRules,
       // ========== /GROUPING EXPORTS ==========
       // ========== CELL EDITING EXPORTS (S6) ==========
       columnDefs,
@@ -3451,6 +3482,28 @@ export default {
   border-bottom-left-radius: 6px;
   border-bottom-right-radius: 6px;
   overflow: hidden;
+
+  // Per-group grids run with domLayout="autoHeight" — they should hug their
+  // rows. The .ww-datagrid-wide rule sets a 75px floor on .ag-center-cols-viewport
+  // (useful for single-grid mode to avoid an empty-looking grid); reset it
+  // here so a group with one or two rows doesn't get padded out with whitespace
+  // before its footer.
+  :deep(.ag-center-cols-viewport) {
+    min-height: 0 !important;
+  }
+
+  // Row whose grouping-column value no longer matches its grid's group —
+  // applied via rowClassRules right after the user edits the grouping
+  // column locally. The row fades + slides out while the per-group
+  // datasource refetch is in flight; once the refetch lands the row is
+  // dropped from the source group and reappears in the destination
+  // group via animateRows.
+  :deep(.ag-row.ww-row-leaving) {
+    opacity: 0.25;
+    transform: translateX(-12px);
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    pointer-events: none;
+  }
 }
 
 // Hide AG Grid's per-group horizontal scrollbar on every group EXCEPT the

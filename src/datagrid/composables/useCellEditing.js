@@ -46,6 +46,13 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   isInfiniteScrollEnabled, setUpdatingDataLocally,
   // Inline refs in setup() (record column's onCreateClick writes these):
   activeCreateColumnField, activeCreateRow, activeCreateRowId,
+  // Records a pending grouping-column move so the per-group infinite
+  // datasource can drop the row from the source group on the next
+  // refetch, regardless of whether Supabase has caught up. From useGrouping.
+  setPendingGroupingMove,
+  // Thunk — useInfiniteScroll runs AFTER this composable, so we resolve
+  // scheduleRefreshGroupCounts lazily.
+  getScheduleRefreshGroupCounts,
 }) {
   // Tracks the currently active cell edit (set in onCellEditingStarted,
   // cleared in onCellEditingStopped). Consumed by useGridActions.refreshRow
@@ -169,7 +176,19 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
     // When the user edits the grouping column itself, the row needs to move
     // from its old group grid to the new group grid. Since each group owns
     // its own infinite cache, we purge the cache of both the old and new
-    // group APIs — AG Grid will refetch the visible block on each side.
+    // group APIs so AG Grid refetches the visible block on each side.
+    //
+    // Two-phase timing for a smooth move:
+    //   1. Immediately redraw the source row. Its data was just mutated to
+    //      the new group value, so the per-grid `rowClassRules` lookup —
+    //      which compares row.data[groupingColumnId] against the grid's
+    //      `context.groupValue` — flips on .ww-row-leaving and the row
+    //      fades out in place.
+    //   2. Wait long enough for the parent's Supabase update to round-trip
+    //      (the previous 50ms fired before the write landed, so the
+    //      refetch returned stale rows and the move appeared not to take).
+    //      Then purge both source & destination caches; AG Grid's
+    //      animateRows fades the row in on the destination side.
     if (
       isGroupingActive.value &&
       isInfiniteScrollEnabled.value &&
@@ -180,22 +199,45 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       const normalize = (v) => (v === null || v === undefined || v === '' ? null : String(v));
       const oldGroupVal = normalize(event.oldValue);
       const newGroupVal = normalize(event.data?.[columnId]);
-      const targets = new Set();
       if (oldGroupVal !== newGroupVal) {
         // Map null/'' to the Unassigned-group sentinel (matches the
         // UNASSIGNED_GROUP constant used by groupGridApis Map keys).
         const UNASSIGNED = '__unassigned__';
-        targets.add(oldGroupVal ?? UNASSIGNED);
-        targets.add(newGroupVal ?? UNASSIGNED);
-        // Small defer so the write has landed before we purge + refetch.
+        const sourceKey = oldGroupVal ?? UNASSIGNED;
+        const destKey = newGroupVal ?? UNASSIGNED;
+
+        // Record the pending move BEFORE the source-side purge fires so
+        // the per-group datasource's filter drops this row on the next
+        // refetch — even if Supabase still has the old grouping value.
+        // Without this, the refetch returns the row unchanged and it
+        // pops back into the source group.
+        const rowId = event.node?.id ?? event.data?.id ?? null;
+        try { setPendingGroupingMove?.(rowId, newGroupVal); }
+        catch (_) { /* noop */ }
+
+        // Phase 1: immediate visual feedback — the source row's data already
+        // reflects the new group, so a redraw lets rowClassRules apply
+        // .ww-row-leaving and the CSS fade kicks in.
+        const sourceApi = groupGridApis.value.get(sourceKey);
+        if (sourceApi && event.node) {
+          try { sourceApi.redrawRows({ rowNodes: [event.node] }); }
+          catch (_) { /* noop */ }
+        }
+
+        // Phase 2: refetch once Supabase has had time to land the write.
         setTimeout(() => {
-          targets.forEach((gv) => {
+          [sourceKey, destKey].forEach((gv) => {
             const api = groupGridApis.value.get(gv);
             if (!api) return;
             try { api.purgeInfiniteCache(); }
             catch (e) { debugLog?.(`[Group Infinite] purge failed for "${gv}":`, e?.message); }
           });
-        }, 50);
+          // Refresh upfront counts so the badge on a collapsed destination
+          // group (whose grid isn't mounted to update its own count via
+          // its datasource) reflects the move.
+          try { getScheduleRefreshGroupCounts?.()?.(); }
+          catch (_) { /* noop */ }
+        }, 800);
       }
     }
 
@@ -513,8 +555,7 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
         width,
         flex,
         hide: !!col?.hide
-          || (viewHiddenColumns !== null && viewHiddenColumns.has(colId))
-          || (isGroupingActive.value && colId === groupingState.value?.columnId),
+          || (viewHiddenColumns !== null && viewHiddenColumns.has(colId)),
         headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
         ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
         valueSetter: getValueSetter(col),

@@ -130,6 +130,52 @@ export function useGrouping(
   // Map<groupValue, row[]> — aggregated selection across group grids.
   const groupSelections = ref(new Map());
 
+  // Map<rowId, { newGroupValue }> — rows whose grouping-column value was just
+  // edited in the current grid. The per-group infinite datasource consults
+  // this Map and filters out any row whose pending move targets a different
+  // group, so the row disappears from its old group immediately on the next
+  // refetch — regardless of whether the parent workflow has finished writing
+  // to Supabase. Without this, the post-edit refetch returns the row with
+  // its old (pre-write) grouping value and the row pops back into the
+  // source group.
+  // Entries auto-expire after PENDING_MOVE_TTL_MS so a missing/failed write
+  // doesn't permanently hide rows.
+  const pendingGroupingMoves = shallowRef(new Map());
+  const PENDING_MOVE_TTL_MS = 10000;
+  const pendingMoveTimers = new Map();
+
+  const setPendingGroupingMove = (rowId, newGroupValue) => {
+    if (rowId == null || rowId === '') return;
+    const key = String(rowId);
+    const next = new Map(pendingGroupingMoves.value);
+    next.set(key, { newGroupValue });
+    pendingGroupingMoves.value = next;
+    // Reset the expiry timer if this row is moved again before the previous
+    // pending entry expired.
+    const prevTimer = pendingMoveTimers.get(key);
+    if (prevTimer) clearTimeout(prevTimer);
+    const t = setTimeout(() => {
+      pendingMoveTimers.delete(key);
+      const cur = new Map(pendingGroupingMoves.value);
+      if (cur.has(key)) {
+        cur.delete(key);
+        pendingGroupingMoves.value = cur;
+      }
+    }, PENDING_MOVE_TTL_MS);
+    pendingMoveTimers.set(key, t);
+  };
+
+  const clearPendingGroupingMove = (rowId) => {
+    if (rowId == null || rowId === '') return;
+    const key = String(rowId);
+    const t = pendingMoveTimers.get(key);
+    if (t) { clearTimeout(t); pendingMoveTimers.delete(key); }
+    if (!pendingGroupingMoves.value.has(key)) return;
+    const cur = new Map(pendingGroupingMoves.value);
+    cur.delete(key);
+    pendingGroupingMoves.value = cur;
+  };
+
   // Reentry guards for cross-grid synchronization.
   const isSyncingLayout = ref(false);
   const isSyncingFilters = ref(false);
@@ -264,22 +310,28 @@ export function useGrouping(
     };
 
     const manualExpand = manuallyExpandedEmptyGroups.value;
+    // Default-closed policy: a group is only opened once we know it has rows
+    // AND the persisted cache says it should be expanded (i.e. not in
+    // collapsedSet). While the count is still unknown (infinite-scroll
+    // pre-fetch, count === null) the group stays closed — the previous
+    // policy opened it from the cache and then collapsed it on a 0 count,
+    // which produced a visible flicker on load.
+    // Empty groups (confirmed count === 0) remain closed unless the user
+    // manually expanded them this session.
+    const computeCollapsed = (value, count) => {
+      if (count === 0) return !manualExpand.has(value);
+      if (count == null) return true;
+      return collapsedSet.has(value);
+    };
     const base = options.map((o) => {
       const value = String(o.value);
       const count = countFor(value);
-      // Empty groups (confirmed 0): collapsed by default, expanded only if the
-      // user manually opened them this session. `null` count = unknown
-      // (infinite-scroll pre-fetch) and falls through to the persisted state.
-      const isEmpty = count === 0;
-      const collapsed = isEmpty
-        ? !manualExpand.has(value)
-        : collapsedSet.has(value);
       return {
         value,
         label: o.label ?? value,
         color: o.color || '#e5e7eb',
         count,
-        collapsed,
+        collapsed: computeCollapsed(value, count),
       };
     });
 
@@ -296,15 +348,12 @@ export function useGrouping(
         : (unassignedCount || 0) > 0
     );
     if (showUnassigned) {
-      const unassignedEmpty = unassignedCount === 0;
       base.push({
         value: UNASSIGNED_GROUP,
         label: 'Unassigned',
         color: '#9ca3af',
         count: unassignedCount,
-        collapsed: unassignedEmpty
-          ? !manualExpand.has(UNASSIGNED_GROUP)
-          : collapsedSet.has(UNASSIGNED_GROUP),
+        collapsed: computeCollapsed(UNASSIGNED_GROUP, unassignedCount),
       });
     }
 
@@ -684,11 +733,20 @@ export function useGrouping(
       updateGroupHorizontalScrollbarMetrics();
       return;
     }
-    const collapsed = Array.isArray(groupingState.value?.collapsed) ? [...groupingState.value.collapsed] : [];
-    const idx = collapsed.indexOf(groupValue);
-    if (idx >= 0) collapsed.splice(idx, 1);
-    else collapsed.push(groupValue);
-    writeGroupingToViewConfig({ collapsed });
+    // Drive the persisted state from what the user *sees* (group.collapsed),
+    // not from the raw collapsedSet membership. With the default-closed
+    // policy, an unknown-count group can be visually closed while persisted
+    // as expanded; clicking it should open it (remove from collapsedSet),
+    // not flip it to "persisted closed".
+    const wasCollapsed = group?.collapsed ?? false;
+    const collapsedList = Array.isArray(groupingState.value?.collapsed) ? [...groupingState.value.collapsed] : [];
+    const idx = collapsedList.indexOf(groupValue);
+    if (wasCollapsed) {
+      if (idx >= 0) collapsedList.splice(idx, 1);
+    } else {
+      if (idx < 0) collapsedList.push(groupValue);
+    }
+    writeGroupingToViewConfig({ collapsed: collapsedList });
     updateGroupHorizontalScrollbarMetrics();
   };
 
@@ -848,6 +906,8 @@ export function useGrouping(
       clearTimeout(groupingTransitionTimer);
       groupingTransitionTimer = null;
     }
+    pendingMoveTimers.forEach((t) => clearTimeout(t));
+    pendingMoveTimers.clear();
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
   });
@@ -862,6 +922,9 @@ export function useGrouping(
     groupGridApis,
     groupSelections,
     groupInfiniteCounts,
+    pendingGroupingMoves,
+    setPendingGroupingMove,
+    clearPendingGroupingMove,
     groupHorizontalScrollRef,
     groupHorizontalScrollWidth,
     groupHorizontalViewportWidth,

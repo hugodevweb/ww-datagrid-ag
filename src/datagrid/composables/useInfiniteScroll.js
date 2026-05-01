@@ -55,6 +55,11 @@ export function useInfiniteScroll(
     orderedGroups,
     groupGridApis,
     groupInfiniteCounts,
+    // Map<rowId, { newGroupValue }> from useGrouping — rows whose grouping
+    // value was just edited locally; the per-group datasource uses this to
+    // hide the row from its old group on the next refetch even if Supabase
+    // hasn't been updated yet (parent workflow round-trip).
+    pendingGroupingMoves,
   }
 ) {
   // Row model type - 'infinite' if enabled, otherwise undefined (defaults to client-side)
@@ -260,23 +265,51 @@ export function useInfiniteScroll(
             searchValue
           );
 
-          // Cache per-group total so badge counts stay accurate.
+          // Drop rows that have a pending move out of this group. This is the
+          // mechanism that makes a grouping-column edit "stick" visually:
+          // even if Supabase still has the row's old grouping value, we
+          // know locally that it's about to change, and the user shouldn't
+          // see the row in the source group while waiting for the write to
+          // round-trip. See useGrouping.pendingGroupingMoves for the writer.
+          const pendingMap = pendingGroupingMoves?.value;
+          let visibleData = data;
+          let droppedCount = 0;
+          if (pendingMap && pendingMap.size > 0 && Array.isArray(data) && data.length > 0) {
+            const idFormula = props.content?.idFormula;
+            visibleData = data.filter((row) => {
+              const rid = resolveMappingFormula?.(idFormula, row);
+              if (rid == null || rid === '') return true;
+              const entry = pendingMap.get(String(rid));
+              if (!entry) return true;
+              const target = (entry.newGroupValue === null || entry.newGroupValue === undefined || entry.newGroupValue === '')
+                ? UNASSIGNED_GROUP
+                : String(entry.newGroupValue);
+              return target === groupValue;
+            });
+            droppedCount = data.length - visibleData.length;
+          }
+
+          // Cache per-group total so badge counts stay accurate. Subtract
+          // the rows we dropped so the badge reflects what the user sees.
           if (typeof totalCount === 'number' && totalCount >= 0) {
             const next = new Map(groupInfiniteCounts.value);
-            next.set(groupValue, totalCount);
+            next.set(groupValue, Math.max(0, totalCount - droppedCount));
             groupInfiniteCounts.value = next;
           }
 
-          const rowCount = data.length;
+          const adjustedTotal = typeof totalCount === 'number'
+            ? Math.max(0, totalCount - droppedCount)
+            : totalCount;
+          const rowCount = visibleData.length;
           const isLastBlock =
-            totalCount === 0 ||
+            adjustedTotal === 0 ||
             rowCount < requestedBlockSize ||
-            (totalCount > 0 && endRow >= totalCount);
-          const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
+            (typeof adjustedTotal === 'number' && adjustedTotal > 0 && endRow >= adjustedTotal);
+          const lastRow = isLastBlock ? (adjustedTotal === 0 ? 0 : adjustedTotal) : undefined;
 
           // Defer to avoid AG Grid error #252 (callback during render cycle).
           setTimeout(() => {
-            try { successCallback(data, lastRow); }
+            try { successCallback(visibleData, lastRow); }
             catch (e) { console.error(`[Group Infinite] successCallback error for "${groupValue}":`, e); }
           }, 0);
         } catch (error) {
