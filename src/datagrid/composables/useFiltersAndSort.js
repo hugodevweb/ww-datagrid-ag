@@ -2,7 +2,12 @@ import { ref, nextTick, onBeforeUnmount } from 'vue';
 
 // Filters & sort: owns the `filters` and `sort` WeWeb component variables and
 // the `onFilterChanged` / `onSortChanged` event handlers (single-grid mode).
-// The handlers debounce Supabase requests by 300ms when in paginated mode.
+//
+// All filtering/sorting now runs client-side on the in-memory dataset (the
+// grid uses AG Grid's client-side row model and the full table is loaded
+// up-front by useDataFetch). These handlers no longer trigger Supabase
+// re-fetches — they just keep the WeWeb `filters` / `sort` variables and the
+// `records` variable in sync with the displayed rows.
 //
 // Group-mode filter/sort handlers (onGroupFilterChanged, onGroupSortChanged)
 // live in useGrouping and call back into onFilterChanged/onSortChanged.
@@ -11,18 +16,14 @@ import { ref, nextTick, onBeforeUnmount } from 'vue';
 //   props, ctx
 //   gridApi                  — shallowRef from useGridApi
 //   debugLog                 — from useGridApi
-//   isInfiniteScrollEnabled  — computed ref from useDataFetch
 //   isApplyingViewConfig     — ref (still inline in setup() until useViewConfig in S3)
 //   updateCurrentConfig      — function (still inline in setup() until useViewConfig in S3)
-//   fetchSupabaseData        — function from useDataFetch
 //   updateRecordsFromGrid    — function from useDataFetch
 export function useFiltersAndSort(props, ctx, {
   gridApi,
   debugLog,
-  isInfiniteScrollEnabled,
   isApplyingViewConfig,
   updateCurrentConfig,
-  fetchSupabaseData,
   updateRecordsFromGrid,
 }) {
   // WeWeb component variables
@@ -43,7 +44,8 @@ export function useFiltersAndSort(props, ctx, {
       readonly: true,
     });
 
-  // Debounce timers for Supabase fetches
+  // Kept for backward compatibility with consumers that referenced these refs;
+  // no longer wired to debounced server fetches.
   const filterDebounceTimer = ref(null);
   const searchDebounceTimer = ref(null);
 
@@ -70,40 +72,14 @@ export function useFiltersAndSort(props, ctx, {
         debugLog('[FilterChanged] Skipping event emission - change is from view configuration');
       }
 
-      // If using Supabase, debounce filter changes to avoid excessive API calls
-      if (props.content?.dataSource === 'supabase') {
-        if (filterDebounceTimer.value) {
-          clearTimeout(filterDebounceTimer.value);
-        }
-
-        filterDebounceTimer.value = setTimeout(() => {
-          if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, AG Grid automatically handles filter changes.
-            // It resets its cache and calls getRows with the new filterModel.
-            // We do NOT need to manually set the datasource - that causes duplicate queries.
-            nextTick(() => {
-              setTimeout(() => {
-                updateRecordsFromGrid();
-              }, 200);
-            });
-          } else {
-            // For pagination mode, fetch data
-            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
-            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
-            const state = gridApi.value.getState();
-            const sortModel = state?.sort?.sortModel || [];
-            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
-          }
-        }, 300);
-      } else {
-        // For non-Supabase, update records after filter change
-        nextTick(() => {
-          setTimeout(() => {
-            updateRecordsFromGrid();
-          }, 100);
-        });
-      }
+      // Client-side filtering — AG Grid already applied the filter to the
+      // in-memory model. Just sync the WeWeb `records` variable to the
+      // currently-displayed rows.
+      nextTick(() => {
+        setTimeout(() => {
+          updateRecordsFromGrid();
+        }, 100);
+      });
     }
   };
 
@@ -130,32 +106,12 @@ export function useFiltersAndSort(props, ctx, {
         debugLog('[SortChanged] Skipping event emission - change is from view configuration');
       }
 
-      // If using Supabase, refetch data with new sort
-      if (props.content?.dataSource === 'supabase') {
-        if (isInfiniteScrollEnabled.value) {
-          // For infinite scrolling, AG Grid automatically handles sort changes.
-          nextTick(() => {
-            setTimeout(() => {
-              updateRecordsFromGrid();
-            }, 200);
-          });
-        } else {
-          // For pagination mode, fetch data
-          const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
-          const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
-          const filterModel = gridApi.value.getFilterModel();
-          const sortModel = state.sort?.sortModel || [];
-          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-          fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
-        }
-      } else {
-        // For non-Supabase, update records after sort change
-        nextTick(() => {
-          setTimeout(() => {
-            updateRecordsFromGrid();
-          }, 100);
-        });
-      }
+      // Client-side sort — same story as filters above.
+      nextTick(() => {
+        setTimeout(() => {
+          updateRecordsFromGrid();
+        }, 100);
+      });
     }
   };
 

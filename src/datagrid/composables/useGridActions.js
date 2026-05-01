@@ -22,13 +22,9 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
   // From useGrouping (S3):
   isGroupingActive, groupGridApis, findGroupForRowId,
   // From useDataFetch (S2):
-  removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
+  setUpdatingDataLocally,
   supabaseData, supabaseTotalCount,
   waitForSupabaseInstance,
-  // From useInfiniteScroll (S2) — passed as a thunk because useInfiniteScroll
-  // is created AFTER useGridActions in the orchestrator (it needs grouping
-  // refs from useGrouping which it consumes inline). Resolved at call time.
-  getDatasource,
   // Inline refs in setup() — DOM container + record-create-popup state:
   gridContainerRef,
   activeCreateColumnField, activeCreateRow, activeCreateRowId,
@@ -455,8 +451,6 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
         // Row not found in grid but was fetched from DB - add it to the grid
         debugLog(`[Datagrid] Row with id "${rowId}" not found in grid, adding it from database`);
 
-        const isInfiniteScroll = cfg.value?.enableInfiniteScroll === true;
-
         // CRITICAL: Set flag to prevent watchers from triggering a full grid re-render
         // When we update supabaseDataRef, the rowData computed will change, which would
         // normally cause AG Grid to see a new array reference and re-render everything.
@@ -491,84 +485,46 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
         };
 
         try {
-          if (isInfiniteScroll) {
-            // For infinite scroll mode when ADDING a new row:
-            // CRITICAL FIX: We cannot use the cached data approach because supabaseData
-            // only contains the current block, not all rows. If we return cached data,
-            // AG Grid will think that's all the data and replace existing rows.
-            //
-            // Instead, we need to:
-            // 1. Clear the isUpdatingDataLocally flag so getRows fetches fresh data
-            // 2. Purge the cache and refresh - this will trigger a fresh fetch from Supabase
-            //    which will include the newly added row
-            // 3. Wait for the row to appear in the grid before returning
-
-            debugLog('[Datagrid] Infinite scroll mode: clearing flag to fetch fresh data with new row');
-
-            // Clear the flag BEFORE refreshing so getRows will fetch from Supabase
-            setUpdatingDataLocally(false);
-
-            // Purge and refresh the infinite cache
-            // With flag cleared, this will fetch fresh data from Supabase including the new row
-            return new Promise((resolve) => {
-              setTimeout(async () => {
-                if (gridApi.value) {
-                  gridApi.value.purgeInfiniteCache();
-                  debugLog('[Datagrid] Purged infinite cache to reload data with new row');
-
-                  // Refresh the datasource to trigger fresh data fetch
-                  const currentDatasource = getDatasource()?.value;
-                  if (currentDatasource) {
-                    gridApi.value.setGridOption('datasource', currentDatasource);
-                    debugLog('[Datagrid] Refreshed datasource - will fetch fresh data from Supabase');
-                  }
-
-                  // CRITICAL: Wait for the row to appear in the grid before resolving
-                  // This ensures subsequent actions can find the row
-                  try {
-                    await waitForRowInGridLocal(rowId, 10000);
-                    debugLog(`[Datagrid] Row ${rowId} is now present in the grid`);
-                    resolve(true);
-                  } catch (error) {
-                    console.warn(`[Datagrid] Row ${rowId} may not have appeared in grid:`, error.message);
-                    // Still resolve true as the row was fetched and cache was refreshed
-                    resolve(true);
-                  }
-                } else {
-                  resolve(false);
+          // Update supabaseData first — in grouped mode this lets groupedRowData
+          // partition the new row into its correct group via the :rowData prop
+          // diff. AG Grid will see the row as new in that group's grid and
+          // animate it in. In single-grid mode, the rowData computed re-runs
+          // and AG Grid handles the addition the same way.
+          const supabaseDataRefValue = supabaseData;
+          if (supabaseDataRefValue) {
+            const currentDataValue = getRefValue(supabaseDataRefValue);
+            if (Array.isArray(currentDataValue)) {
+              const newData = [...currentDataValue];
+              newData.unshift(data);
+              if (!setRefValue(supabaseDataRefValue, newData)) {
+                if (Array.isArray(supabaseDataRefValue)) {
+                  supabaseDataRefValue.unshift(data);
                 }
-              }, 0);
-            });
-          } else {
-            // For regular mode (non-infinite scroll), use applyTransaction to add the row
-            // This is the most efficient way as it only updates the affected rows in the grid
-            gridApi.value.applyTransaction({ add: [data], addIndex: 0 });
-            debugLog(`[Datagrid] Row ${rowId} added to grid using applyTransaction`);
-
-            // Update the cached data to keep it in sync
-            // The isUpdatingDataLocally flag prevents the rowData watch from causing a re-render
-            const supabaseDataRefValue = supabaseData;
-            if (supabaseDataRefValue) {
-              const currentDataValue = getRefValue(supabaseDataRefValue);
-              if (Array.isArray(currentDataValue)) {
-                const newData = [...currentDataValue];
-                newData.unshift(data);
-                if (!setRefValue(supabaseDataRefValue, newData)) {
-                  // If we couldn't set through ref, try to modify array in place
-                  if (Array.isArray(supabaseDataRefValue)) {
-                    supabaseDataRefValue.unshift(data);
-                  }
-                }
-                debugLog(`[Datagrid] Updated cached data, now ${newData.length} rows`);
               }
+              debugLog(`[Datagrid] Updated cached data, now ${newData.length} rows`);
             }
+          }
 
-            // Increment total count if available
-            if (supabaseTotalCount) {
-              const currentCount = getRefValue(supabaseTotalCount) || 0;
-              setRefValue(supabaseTotalCount, currentCount + 1);
-              debugLog(`[Datagrid] Incremented total count to ${currentCount + 1}`);
+          // Single-grid mode only: also fire applyTransaction so the new row
+          // appears at the top immediately (the :rowData diff would put it
+          // wherever AG Grid's getRowId-based reconciliation places it). In
+          // grouped mode we skip this — applyTransaction would target the
+          // wrong group's grid; the rowData diff already routes the row to
+          // its correct group.
+          if (!isGroupingActive.value) {
+            try {
+              gridApi.value.applyTransaction({ add: [data], addIndex: 0 });
+              debugLog(`[Datagrid] Row ${rowId} added via applyTransaction`);
+            } catch (e) {
+              debugLog(`[Datagrid] applyTransaction add failed: ${e?.message}`);
             }
+          }
+
+          // Increment total count if available
+          if (supabaseTotalCount) {
+            const currentCount = getRefValue(supabaseTotalCount) || 0;
+            setRefValue(supabaseTotalCount, currentCount + 1);
+            debugLog(`[Datagrid] Incremented total count to ${currentCount + 1}`);
           }
 
           debugLog(`[Datagrid] Row ${rowId} added successfully from database`);
@@ -877,136 +833,33 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
 
     // Remove the row from the grid
     try {
-      const isInfiniteScroll = cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll === true;
-
-      if (isInfiniteScroll) {
-        // For infinite scroll mode, applyTransaction doesn't work properly
-        // We need to:
-        // 1. Store the rowId to filter out when datasource returns cached data
-        // 2. Remove from cached supabaseData
-        // 3. Decrement total count
-        // 4. Purge cache and refresh datasource
-        // 5. The datasource's getRows will filter out the removed row when returning cached data
-
-        // Store the removed row ID so datasource can filter it out
-        // Access the removedRowIds ref from setup
-        if (removedRowIds) {
-          removedRowIds.add(String(rowId));
-          debugLog(`[Remove Row] Added row ${rowId} to removedRowIds set (size: ${removedRowIds.size})`);
-
-          // Periodic cleanup to prevent unbounded growth
-          cleanupRemovedIds();
-        } else {
-          debugLog(`[Remove Row] Warning: removedRowIds not available`);
-        }
-
-        // Remove from cached data
-        if (supabaseData && Array.isArray(supabaseData.value)) {
-          const currentData = [...supabaseData.value];
-          const filteredData = currentData.filter(row => {
-            const rowIdFromData = resolveMappingFormula(cfg.value.idFormula, row);
-            return String(rowIdFromData) !== String(rowId);
-          });
-
-          // Update cached data
-          supabaseData.value = filteredData;
-          debugLog(`[Remove Row] Removed from cached data, ${filteredData.length} rows remaining`);
-        }
-
-        // Decrement total count
-        if (supabaseTotalCount && supabaseTotalCount.value > 0) {
-          supabaseTotalCount.value = supabaseTotalCount.value - 1;
-          debugLog(`[Remove Row] Decremented total count to ${supabaseTotalCount.value}`);
-        }
-
-        // For infinite scroll mode, we need to remove the row from the view
-        // Since applyTransaction doesn't work reliably, we'll:
-        // 1. Try to hide/remove the node directly from the DOM
-        // 2. Purge and refresh the cache to rebuild without the row
-
-        // First, try to remove the row node from the DOM directly
-        try {
-          // Get the row element from the DOM
-          const rowElement = gridContainerRef.value?.querySelector(`[row-id="${rowNode.id}"]`);
-          if (rowElement) {
-            // Hide the row by setting display to none
-            rowElement.style.display = 'none';
-            debugLog('[Remove Row] Hid row element from DOM');
-          } else {
-            // Try alternative selector patterns
-            const allRows = gridContainerRef.value?.querySelectorAll('.ag-row');
-            if (allRows) {
-              allRows.forEach((rowEl, index) => {
-                const rowNodeFromGrid = gridApi.value.getDisplayedRowAtIndex(index);
-                if (rowNodeFromGrid && rowNodeFromGrid.id === rowNode.id) {
-                  rowEl.style.display = 'none';
-                  debugLog('[Remove Row] Hid row element using index lookup');
-                }
-              });
-            }
-          }
-        } catch (e) {
-          debugLog('[Remove Row] Could not hide row from DOM:', e.message);
-        }
-
-        // Purge the entire infinite cache - this clears all cached blocks
-        gridApi.value.purgeInfiniteCache();
-        debugLog('[Remove Row] Purged infinite cache');
-
-        // Refresh the datasource - this will trigger getRows calls for visible blocks
-        // Our flag prevents actual fetching, and getRows will return filtered cached data
-        const currentDatasource = getDatasource()?.value;
-        if (currentDatasource) {
-          // Reset the datasource to force AG Grid to re-fetch visible blocks
-          gridApi.value.setGridOption('datasource', currentDatasource);
-          debugLog('[Remove Row] Refreshed datasource (getRows will return filtered data)');
-
-          // After a short delay, refresh the infinite cache to rebuild the view
-          setTimeout(() => {
-            try {
-              // refreshInfiniteCache will rebuild the view from the datasource
-              // Since our flag is set, getRows will return filtered cached data
-              gridApi.value.refreshInfiniteCache();
-              debugLog('[Remove Row] Refreshed infinite cache - view should update with filtered data');
-            } catch (e) {
-              debugLog('[Remove Row] refreshInfiniteCache not available, trying alternative:', e.message);
-              // Fallback: try to refresh cells
-              try {
-                gridApi.value.refreshCells({ force: true });
-                debugLog('[Remove Row] Fallback: refreshed cells');
-              } catch (e2) {
-                debugLog('[Remove Row] Could not refresh cells either');
-              }
-            }
-          }, 200);
-        } else {
-          debugLog('[Remove Row] Datasource not available, skipping refresh');
-        }
-
-        debugLog(`[Datagrid] Row ${rowId} removed successfully from infinite scroll grid`);
-      } else {
-        // For regular mode, use standard applyTransaction
-        gridApi.value.applyTransaction({ remove: [rowNode.data] });
-        debugLog(`[Datagrid] Row ${rowId} removed successfully`);
+      // Client-side row model: applyTransaction on the *target* grid (which is
+      // the row's group grid in grouped mode, the single grid otherwise) gives
+      // an immediate, animated removal. We then update supabaseData so all
+      // computeds (groupedRowData, records variable, etc.) stay in sync.
+      try {
+        targetApi.applyTransaction({ remove: [rowNode.data] });
+        debugLog(`[Datagrid] Row ${rowId} removed via applyTransaction`);
+      } catch (e) {
+        debugLog(`[Datagrid] applyTransaction failed (likely wrong grid in grouped mode); supabaseData reassignment will still remove the row: ${e?.message}`);
       }
 
-      // Clear the flag after a delay to allow transaction to complete
-      // and prevent any watchers from triggering re-fetches
-      // Use a longer delay for infinite scroll mode to ensure datasource doesn't refresh
-      const delay = isInfiniteScroll ? 500 : 200;
+      if (supabaseData && Array.isArray(supabaseData.value)) {
+        const filteredData = supabaseData.value.filter(row => {
+          const rowIdFromData = resolveMappingFormula(cfg.value.idFormula, row);
+          return String(rowIdFromData) !== String(rowId);
+        });
+        supabaseData.value = filteredData;
+        debugLog(`[Remove Row] Cached data now has ${filteredData.length} rows`);
+      }
+      if (supabaseTotalCount && supabaseTotalCount.value > 0) {
+        supabaseTotalCount.value = supabaseTotalCount.value - 1;
+      }
+
       setTimeout(() => {
         setUpdatingDataLocally(false);
-        // For infinite scroll, keep removedRowIds for a bit longer to ensure all datasource calls are filtered
-        // Then clear it after an additional delay
-        if (isInfiniteScroll && removedRowIds) {
-          setTimeout(() => {
-            // Don't clear removedRowIds - we want to keep filtering this row out permanently
-            // until the next real data fetch (which will naturally exclude it if it's deleted from DB)
-            debugLog(`[Remove Row] Keeping removedRowIds (size: ${removedRowIds.size}) for future filtering`);
-          }, 100);
-        }
         debugLog('[Remove Row] Clearing isUpdatingDataLocally flag');
-      }, delay);
+      }, 200);
 
       return true;
     } catch (error) {

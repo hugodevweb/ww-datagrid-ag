@@ -171,14 +171,6 @@ export default {
         ],
       },
       {
-        label: "Infinite Scrolling",
-        isCollapsible: true,
-        properties: [
-          "enableInfiniteScroll",
-          "infiniteBlockSize",
-        ],
-      },
-      {
         label: "Selection",
         isCollapsible: true,
         properties: [
@@ -1611,41 +1603,6 @@ export default {
       },
       propertyHelp: {
         tooltip: "List of column field names to include in the search. The search will look for the search value in all specified columns.",
-      },
-      /* wwEditor:end */
-    },
-    enableInfiniteScroll: {
-      label: { en: "Enable Infinite Scrolling" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: false,
-      hidden: (content) => content?.dataSource !== "supabase",
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip: "Enable or disable infinite scrolling for Supabase data",
-      },
-      propertyHelp: {
-        tooltip: "When enabled, the grid will lazy-load rows as you scroll. This is more efficient for large datasets than pagination. Note: Infinite scrolling and pagination are mutually exclusive.",
-      },
-      /* wwEditor:end */
-    },
-    infiniteBlockSize: {
-      label: { en: "Block Size" },
-      type: "Number",
-      section: "settings",
-      bindable: true,
-      defaultValue: 100,
-      hidden: (content) => content?.dataSource !== "supabase" || !content?.enableInfiniteScroll,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "number",
-        minimum: 1,
-        tooltip: "Number of rows to fetch per block when scrolling",
-      },
-      propertyHelp: {
-        tooltip: "The number of rows to fetch from Supabase in each block. Larger blocks mean fewer server requests but more data loaded at once. Recommended: 100-200 rows.",
       },
       /* wwEditor:end */
     },

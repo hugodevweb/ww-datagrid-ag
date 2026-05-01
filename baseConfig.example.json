@@ -46,10 +46,7 @@
   "_comment_rowBuffer": "rowBuffer: any positive number (recommended 10-20)",
   "rowBuffer": 10,
 
-  "_comment_dataSource": "dataSource: 'mapping' | 'supabase'",
-  "_comment_enableInfiniteScroll": "enableInfiniteScroll: true | false — only available when dataSource is 'supabase'. Mutually exclusive with pagination.",
-  "_comment_infiniteBlockSize": "infiniteBlockSize: any positive number (default 100) — rows fetched per block, only used when enableInfiniteScroll is true",
-  "infiniteBlockSize": 100,
+  "_comment_dataSource": "dataSource: 'mapping' | 'supabase'. When 'supabase', the full table (up to 15,000 rows) is loaded once on mount; AG Grid then handles all filter/sort/scroll in-memory.",
 
   "_comment_viewConfiguration": "viewConfiguration: object — bind to a variable, e.g. variables['UUID']?.['config']. Structure: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId] }. Empty values are ignored.",
   "_comment_viewEditedVariableId": "viewEditedVariableId: UUID string of a WeWeb boolean variable — set to true when grid state differs from viewConfiguration, false when they match",
