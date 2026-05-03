@@ -16,6 +16,13 @@
       :theme="theme"
       :getRowId="getRowId"
       :popup-parent="popupParent"
+      :rowModelType="rowModelType"
+      :datasource="delayedDatasource"
+      :cacheBlockSize="cacheBlockSize"
+      :maxBlocksInCache="cfg.maxBlocksInCache ?? 10"
+      :cacheOverflowSize="cfg.cacheOverflowSize ?? 2"
+      :maxConcurrentDatasourceRequests="cfg.maxConcurrentRequests ?? 2"
+      :blockLoadDebounceMillis="cfg.blockLoadDebounce ?? 100"
       :pagination="paginationEnabled"
       :paginationPageSize="
         forcedPaginationPageSize
@@ -32,8 +39,8 @@
       :getRowStyle="rowStyle"
       enableCellTextSelection
       ensureDomOrder
-      :row-drag-managed="true"
-      :rowBuffer="50"
+      :row-drag-managed="rowDragManaged"
+      :rowBuffer="cfg.rowBuffer ?? 25"
       :rowHeight="cfg.rowHeight ?? 40"
       :suppressRowVirtualisation="false"
       :animateRows="false"
@@ -119,7 +126,9 @@
         <ag-grid-vue
           v-if="!group.collapsed"
           :components="gridComponents"
-          :rowData="groupRowData(group.value)"
+          :rowData="isInfiniteScrollEnabled ? undefined : groupRowData(group.value)"
+          :rowModelType="rowModelType"
+          :cacheBlockSize="cacheBlockSize"
           :alignedGrids="alignedGridApisForGroup"
           :columnDefs="columnDefs"
           :defaultColDef="defaultColDef"
@@ -150,7 +159,7 @@
           enableCellTextSelection
           ensureDomOrder
           :row-drag-managed="false"
-          :rowBuffer="50"
+          :rowBuffer="cfg.rowBuffer ?? 25"
           :rowHeight="cfg.rowHeight ?? 40"
           :suppressRowVirtualisation="false"
           :animateRows="true"
@@ -201,24 +210,6 @@
         <div class="ww-group-loading-card">
           <span class="ww-group-loading-spinner" aria-hidden="true"></span>
           <span>{{ getTranslations(cfg?.lang || 'en').loadingGroups || 'Loading groups...' }}</span>
-        </div>
-      </div>
-    </Transition>
-
-    <!-- Initial-load overlay for the load-all-rows burst. AG Grid's built-in
-         showLoadingOverlay() only paints inside the single-grid <ag-grid-vue>;
-         in grouped mode that grid is unmounted, so we need our own element to
-         cover the whole component during the multi-second initial fetch. -->
-    <Transition name="group-loading-fade">
-      <div
-        v-if="isInitialLoading"
-        class="ww-group-loading-overlay"
-        role="status"
-        aria-live="polite"
-      >
-        <div class="ww-group-loading-card">
-          <span class="ww-group-loading-spinner" aria-hidden="true"></span>
-          <span>{{ getTranslations(cfg?.lang || 'en').loadingGroups || 'Loading...' }}</span>
         </div>
       </div>
     </Transition>
@@ -524,6 +515,8 @@ import {
   debounce
 } from "../shared/utils/sharedHelpers.js";
 import {
+  fetchSupabaseDataPaginated,
+  fetchSupabaseDataInfinite,
   fetchSupabaseDataCount,
   createFetchKey
 } from "../shared/utils/supabaseUtils.js";
@@ -557,6 +550,7 @@ import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
 import { useDataFetch } from "./composables/useDataFetch.js";
 import { useFiltersAndSort } from "./composables/useFiltersAndSort.js";
+import { useInfiniteScroll } from "./composables/useInfiniteScroll.js";
 import { useGrouping } from "./composables/useGrouping.js";
 import { useViewConfig } from "./composables/useViewConfig.js";
 import { useColumnState } from "./composables/useColumnState.js";
@@ -655,19 +649,20 @@ export default {
       onSelectionChanged,
     } = useSelection(props, ctx, { gridApi });
 
-    // Composable: Supabase data fetching (load-all-rows mode), filter helpers,
-    // records/isFetching/isInitialLoading variables.
+    // Composable: Supabase data fetching, filter helpers, records/isFetching variables,
+    // removed-row tracking, isInfiniteScrollEnabled.
     const {
       records, setRecords,
       isFetching, setIsFetching,
       supabaseData, supabaseTotalCount, supabaseLoading, supabaseError,
       isFetchingData, lastFetchParams,
       isUpdatingDataLocally, setUpdatingDataLocally, getUpdatingDataLocally,
-      isInitialLoading,
+      removedRowIds, cleanupRemovedIds, clearRemovedIds,
+      isInfiniteScrollEnabled,
       formatFiltersForLog, applySearchToSupabase, applyManualFilters,
       convertFilterToSupabase, getSupabaseSortField,
       waitForSupabaseInstance,
-      fetchAllSupabaseData,
+      fetchSupabaseDataForInfinite, fetchSupabaseData,
       updateRecordsFromGrid,
     } = useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering });
 
@@ -678,13 +673,14 @@ export default {
 
     // Composable: grouping feature — multi-grid layout, persisted collapsed state,
     // group event handlers, drag-reorder, horizontal scrollbar sync. Cycle-deps
-    // (updateCurrentConfig, single-grid handlers, etc.) are passed as thunks
-    // that resolve at call time, after the orchestrator has finished wiring all
-    // composables.
+    // (updateCurrentConfig, scheduleRefreshGroupCounts, single-grid handlers, etc.)
+    // are passed as thunks that resolve at call time, after the orchestrator has
+    // finished wiring all composables.
     const {
       UNASSIGNED_GROUP,
       groupingState, pendingGroupingColumnId, isGroupingTransitionLoading,
-      groupGridApis, groupSelections,
+      groupGridApis, groupSelections, groupInfiniteCounts,
+      pendingGroupingMoves, setPendingGroupingMove, clearPendingGroupingMove,
       groupHorizontalScrollRef, groupHorizontalScrollWidth,
       groupHorizontalViewportWidth, groupHorizontalScrollLeft,
       groupDragValue, groupDragOverValue,
@@ -709,10 +705,12 @@ export default {
       gridContainerRef,
       findColumnByField,
       setSelectedRows,
-      supabaseData,
+      isInfiniteScrollEnabled, supabaseData,
       // Thunks resolve at call time:
       getIsVirtualColumn: () => isVirtualColumn,
       getUpdateCurrentConfig: () => updateCurrentConfig,
+      getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
+      getGroupDatasourceFor: () => groupDatasourceFor,
       getOnFilterChanged: () => onFilterChanged,
       getOnSortChanged: () => onSortChanged,
       getOnColumnMoved: () => onColumnMoved,
@@ -828,8 +826,15 @@ export default {
       gridApi, debugLog, isGridRendering,
       _pendingValidationError, _validationFiredForCurrentEdit,
       isGroupingActive, groupingState, groupGridApis,
-      setUpdatingDataLocally, supabaseData,
+      isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
+      setPendingGroupingMove,
+      // Thunk: useInfiniteScroll is created AFTER useCellEditing, so the
+      // scheduleRefreshGroupCounts function isn't bound yet at construction
+      // time. Resolve it lazily so cross-group cell edits can refresh the
+      // badge counts on collapsed destination groups (whose grids aren't
+      // mounted, so their per-group datasource isn't called).
+      getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
     });
 
     // Composable: grid actions — programmatic actions exposed to WeWeb
@@ -854,9 +859,11 @@ export default {
       gridApi, debugLog, isGridRendering,
       waitForGridReady, waitForRowInGridLocal,
       isGroupingActive, groupGridApis, findGroupForRowId,
-      setUpdatingDataLocally,
+      removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
       supabaseData, supabaseTotalCount,
       waitForSupabaseInstance,
+      // Thunk: useInfiniteScroll is created AFTER useGridActions
+      getDatasource: () => datasource,
       gridContainerRef,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
       _lastActiveCellEdit,
@@ -906,10 +913,26 @@ export default {
 
 
 
-    // The grid uses AG Grid's client-side row model exclusively. Pagination
-    // (when enabled) is also client-side — AG Grid paginates the in-memory
-    // rowData without any extra Supabase round-trip.
-    const paginationEnabled = computed(() => !!props.content?.pagination);
+    // Composable: infinite-scroll datasource (single-grid + per-group), upfront
+    // group counts, and the row-model-type / cacheBlockSize / paginationEnabled
+    // computeds. Depends on useDataFetch + the inline grouping refs above.
+    const {
+      rowModelType, rowDragManaged, paginationEnabled, cacheBlockSize,
+      datasource, delayedDatasource,
+      groupDatasourceFor, refreshGroupInfiniteCache,
+      fetchSupabaseGroupCount, scheduleRefreshGroupCounts,
+    } = useInfiniteScroll(cfg, props, resolveMappingFormula, {
+      gridApi, gridReady, isGridRendering,
+      isInfiniteScrollEnabled, isUpdatingDataLocally,
+      supabaseData, supabaseTotalCount, removedRowIds,
+      fetchSupabaseDataForInfinite, waitForSupabaseInstance,
+      updateRecordsFromGrid,
+      formatFiltersForLog, applySearchToSupabase, applyManualFilters, convertFilterToSupabase,
+      UNASSIGNED_GROUP,
+      isGroupingActive, groupingColumnId, orderedGroups,
+      groupGridApis, groupInfiniteCounts,
+      pendingGroupingMoves,
+    });
 
     // Helper function to get current column widths from the grid
     // Helper to check if a column is a virtual (sort/filter-only) column
@@ -1067,9 +1090,9 @@ export default {
       onFilterChanged, onSortChanged,
     } = useFiltersAndSort(props, ctx, {
       gridApi, debugLog,
-      isApplyingViewConfig,
+      isInfiniteScrollEnabled, isApplyingViewConfig,
       updateCurrentConfig,
-      updateRecordsFromGrid,
+      fetchSupabaseData, updateRecordsFromGrid,
     });
 
 
@@ -1079,16 +1102,29 @@ export default {
 
     const onPaginationChanged = (event) => {
       if (!gridApi.value) return;
-
+      
+      // Skip pagination changes if infinite scrolling is enabled
+      if (isInfiniteScrollEnabled.value) {
+        return;
+      }
+      
       // Skip if we're updating data locally (e.g., fake junction records)
+      // This prevents refreshCells from triggering unnecessary fetches
       if (isUpdatingDataLocally.value) {
         return;
       }
-
-      // Pagination is now always client-side — AG Grid paginates the in-memory
-      // dataset. Just keep the WeWeb `records` variable in sync with the
-      // currently-displayed page.
-      {
+      
+      // If using Supabase, refetch data for new page
+      if (props.content?.dataSource === 'supabase') {
+        const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+        const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+        const filterModel = gridApi.value.getFilterModel();
+        const state = gridApi.value.getState();
+        const sortModel = state?.sort?.sortModel || [];
+        const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+        fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+        // Records will be updated when rowData changes (via watch)
+      } else {
         // For non-Supabase, update records after pagination change
         nextTick(() => {
           setTimeout(() => {
@@ -1184,10 +1220,15 @@ export default {
 
 
     const rowData = computed(() => {
-      // Supabase: full dataset is loaded up-front by useDataFetch into supabaseData.
+      // If using infinite scrolling, rowData should be undefined (grid uses datasource)
+      if (isInfiniteScrollEnabled.value) {
+        return undefined;
+      }
+      // If using Supabase with pagination, return Supabase data
       if (props.content?.dataSource === 'supabase') {
         return supabaseData.value;
       }
+
       // Otherwise, use local data (existing behavior)
       const data = wwLib.wwUtils.getDataFromCollection(props.content.rowData);
       return Array.isArray(data) ? data ?? [] : [];
@@ -1217,8 +1258,18 @@ export default {
       rowDataLength.value = newLength;
       rowDataRef.value = newData;
 
-      // Client-side row model: rowData mirrors the full in-memory dataset.
-      setRecords(Array.isArray(newData) ? [...newData] : []);
+      // For non-infinite scroll modes, update records from rowData
+      // For infinite scroll, records will be updated via grid API watchers
+      if (!isInfiniteScrollEnabled.value) {
+        setRecords(Array.isArray(newData) ? [...newData] : []);
+      } else {
+        // For infinite scroll, update from grid API after a short delay to let grid update
+        nextTick(() => {
+          setTimeout(() => {
+            updateRecordsFromGrid();
+          }, 100);
+        });
+      }
 
       // If we've already rendered data once, don't show loading skeleton for updates
       // This prevents select cells from flickering when bound data is updated
@@ -1233,12 +1284,8 @@ export default {
         // Only apply transaction if there was an actual array or length change
         if (isArrayChange || isLengthChange) {
           nextTick(() => {
-            // getEditingCells can return undefined on a not-fully-ready grid
-            // (e.g. just before the first onGridReady in grouped mode), so
-            // defend against both `gridApi.value` being null AND the call
-            // returning a non-array.
-            const editingCells = gridApi.value?.getEditingCells?.();
-            const hasActiveEditor = Array.isArray(editingCells) && editingCells.length > 0;
+            const hasActiveEditor = typeof gridApi.value?.getEditingCells === 'function' &&
+              gridApi.value.getEditingCells().length > 0;
             if (hasActiveEditor) {
               console.log('[Datagrid rowData] skipped grid data refresh while editor active');
               return;
@@ -1344,8 +1391,8 @@ export default {
             lastConditionalRowStylesJson.value = null;
             // Styles were removed, redraw to clear any applied styles
             if (gridApi.value && gridReady.value && !isGridRendering.value) {
-              const editingCells = gridApi.value?.getEditingCells?.();
-              const hasActiveEditor = Array.isArray(editingCells) && editingCells.length > 0;
+              const hasActiveEditor = typeof gridApi.value.getEditingCells === 'function' &&
+                gridApi.value.getEditingCells().length > 0;
               if (hasActiveEditor) {
                 console.log('[Datagrid styles] skipped redraw while editor active');
                 return;
@@ -1370,8 +1417,8 @@ export default {
           
           // Debounce the redraw to avoid multiple rapid redraws
           if (gridApi.value && gridReady.value && !isGridRendering.value) {
-            const editingCells = gridApi.value?.getEditingCells?.();
-            const hasActiveEditor = Array.isArray(editingCells) && editingCells.length > 0;
+            const hasActiveEditor = typeof gridApi.value.getEditingCells === 'function' &&
+              gridApi.value.getEditingCells().length > 0;
             if (hasActiveEditor) {
               console.log('[Datagrid styles] skipped redraw while editor active');
               return;
@@ -1457,23 +1504,233 @@ export default {
       { immediate: false }
     );
 
-    // NOTE: Server-side Supabase fetches (initial load, dataSource/table/query
-    // changes, search value, manual filters) are owned by the watcher in
-    // useDataFetch.js — see fetchAllSupabaseData and the watch() block at the
-    // bottom of that file. We don't duplicate those triggers here.
-
-    // Drive AG Grid's built-in loading overlay from isInitialLoading. Only
-    // covers the very first load-all burst (when the grid would otherwise be
-    // empty for a couple of seconds); subsequent re-fetches keep the existing
-    // rows visible and rely on isFetching for any external spinner.
+    // Watch for dataSource changes and fetch initial data
     watch(
-      () => isInitialLoading.value,
-      (loading) => {
-        if (!gridApi.value) return;
-        try {
-          if (loading) gridApi.value.showLoadingOverlay();
-          else gridApi.value.hideOverlay();
-        } catch (_) { /* grid not yet ready — overlay will sync on next watch */ }
+      () => props.content?.dataSource,
+      (newSource, oldSource) => {
+        // Clear removed IDs when data source changes
+        if (newSource !== oldSource) {
+          clearRemovedIds();
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          return;
+        }
+        
+        // Only fetch if source actually changed to supabase
+        if (newSource === 'supabase' && newSource !== oldSource && gridApi.value) {
+          if (isInfiniteScrollEnabled.value) {
+            // For infinite scrolling, set the datasource
+            // CRITICAL FIX: Preserve filters and sorts when switching to server-side mode
+            const currentFilters = gridApi.value.getFilterModel();
+            const currentSort = gridApi.value.getState()?.sort?.sortModel;
+            gridApi.value.setGridOption('datasource', datasource.value);
+            nextTick(() => {
+              if (currentFilters && Object.keys(currentFilters).length > 0) {
+                gridApi.value.setFilterModel(currentFilters);
+              }
+              if (currentSort && currentSort.length > 0) {
+                gridApi.value.applyColumnState({
+                  state: currentSort,
+                  defaultState: { sort: null },
+                });
+              }
+            });
+          } else {
+            // Reset last fetch params to allow new fetch
+            lastFetchParams.value = null;
+            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+            const filterModel = gridApi.value.getFilterModel();
+            const state = gridApi.value.getState();
+            const sortModel = state?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          }
+        }
+      },
+      { immediate: false }
+    );
+
+    // Watch for Supabase configuration changes
+    watch(
+      () => [props.content?.supabaseTable, props.content?.supabaseQuery],
+      (newValues, oldValues) => {
+        // Only fetch if values actually changed (skip if oldValues is undefined on first run)
+        if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
+          return;
+        }
+        
+        // Clear removed IDs when table or query changes (fresh data context)
+        if (oldValues) {
+          clearRemovedIds();
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          return;
+        }
+        
+        if (props.content?.dataSource === 'supabase' && gridApi.value) {
+          if (isInfiniteScrollEnabled.value) {
+            // For infinite scrolling, refresh the datasource
+            // CRITICAL FIX: Preserve filters and sorts when table/query changes
+            // Use queue-based approach instead of setTimeout cascade
+            gridApiUtils.refreshDatasourceWithState(
+              gridApi.value, 
+              datasource.value, 
+              'Supabase query change refresh'
+            ).catch(error => {
+              console.warn('[Datagrid] Error during datasource refresh:', error);
+            });
+          } else {
+            // Reset last fetch params to allow new fetch
+            lastFetchParams.value = null;
+            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+            const filterModel = gridApi.value.getFilterModel();
+            const state = gridApi.value.getState();
+            const sortModel = state?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+          }
+        }
+      }
+    );
+
+    // Initial data fetch when grid is ready and using Supabase
+    const initialFetchDone = ref(false);
+    watch(
+      () => [gridReady.value, props.content?.dataSource, props.content?.supabaseTable],
+      ([ready, source, table], oldValues) => {
+        // Handle undefined oldValues on first run
+        if (oldValues) {
+          const [oldReady, oldSource, oldTable] = oldValues;
+          // Only fetch if values actually changed and we haven't done initial fetch yet
+          if (ready === oldReady && source === oldSource && table === oldTable) {
+            return;
+          }
+          
+          // Reset initial fetch flag if dataSource changes away from supabase
+          if (source !== 'supabase' && oldSource === 'supabase') {
+            initialFetchDone.value = false;
+          }
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          return;
+        }
+        
+        // Handle initial setup
+        if (ready && source === 'supabase' && table && gridApi.value && !initialFetchDone.value) {
+          initialFetchDone.value = true;
+          
+          if (isInfiniteScrollEnabled.value) {
+            // For infinite scrolling, set the datasource
+            // Note: rowModelType is set via computed property at grid initialization
+            // and cannot be changed dynamically (AG Grid limitation)
+            // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
+            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
+            // Use queue-based approach instead of setTimeout cascade
+            gridApiUtils.refreshDatasourceWithState(
+              gridApi.value, 
+              datasource.value, 
+              'Infinite scroll toggle refresh'
+            ).catch(error => {
+              console.warn('[Datagrid] Error during infinite scroll toggle refresh:', error);
+            });
+          } else {
+            // For pagination mode, fetch initial data
+            lastFetchParams.value = null;
+            const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+            const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            fetchSupabaseData(currentPage, pageSize, null, null, searchValue);
+          }
+        }
+      },
+      { immediate: true       }
+    );
+
+    // Watch for infinite scrolling configuration changes
+    // Note: rowModelType and cacheBlockSize are initial properties and cannot be changed after grid init
+    // Users must reload the page to switch between row model types
+    watch(
+      () => [cfg.value?.enableInfiniteScroll, cfg.value?.infiniteBlockSize],
+      (newValues, oldValues) => {
+        // Only update if values actually changed (skip if oldValues is undefined on first run)
+        if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
+          return;
+        }
+
+        if (cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll && gridApi.value) {
+          // Refresh the datasource when infinite scrolling settings change
+          // Note: cacheBlockSize is an initial property and cannot be changed dynamically
+          // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
+          // CRITICAL FIX: Wrap in setTimeout to prevent error #252
+          // Use queue-based approach instead of setTimeout cascade
+          gridApiUtils.refreshDatasourceWithState(
+            gridApi.value, 
+            datasource.value, 
+            'Search configuration refresh'
+          ).catch(error => {
+            console.warn('[Datagrid] Error during search configuration refresh:', error);
+          });
+        }
+      }
+    );
+
+    // Watch for search value changes (with debounce for Supabase)
+    watch(
+      () => [props.content?.enableSearch, props.content?.searchValue, props.content?.searchableColumns],
+      (newValues, oldValues) => {
+        // Only fetch if values actually changed (skip if oldValues is undefined on first run)
+        if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
+          return;
+        }
+        
+        // Skip fetch if we're updating data locally (e.g., fake junction records)
+        if (isUpdatingDataLocally.value) {
+          return;
+        }
+        
+        if (props.content?.dataSource === 'supabase' && props.content?.enableSearch && gridApi.value) {
+          // Clear existing debounce timer
+          if (searchDebounceTimer.value) {
+            clearTimeout(searchDebounceTimer.value);
+          }
+          
+          // Debounce search changes (300ms)
+          searchDebounceTimer.value = setTimeout(() => {
+            if (isInfiniteScrollEnabled.value) {
+              // For infinite scrolling, refresh the datasource
+              // CRITICAL FIX: Preserve filters and sorts when search changes
+              // CRITICAL FIX: Wrap in setTimeout to prevent error #252
+              if (gridApi.value) {
+                // Use queue-based approach instead of setTimeout cascade
+                gridApiUtils.refreshDatasourceWithState(
+                  gridApi.value, 
+                  datasource.value, 
+                  'Searchable columns refresh'
+                ).catch(error => {
+                  console.warn('[Datagrid] Error during searchable columns refresh:', error);
+                });
+              }
+            } else {
+              // For pagination mode, fetch data
+              lastFetchParams.value = null;
+              const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+              const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+              const filterModel = gridApi.value.getFilterModel();
+              const state = gridApi.value.getState();
+              const sortModel = state?.sort?.sortModel || [];
+              const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+              fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+            }
+          }, 300);
+        }
       }
     );
 
@@ -1905,6 +2162,9 @@ export default {
       onSortChanged,
       setUpdatingDataLocally, // Expose setter so methods can update the flag
       getUpdatingDataLocally, // Expose getter so methods can check the flag
+      removedRowIds, // Expose removedRowIds so methods and datasource can access it
+      cleanupRemovedIds, // Expose cleanup function for methods
+      clearRemovedIds, // Expose clear function for methods
       gridApiQueue, // Expose grid API queue for methods
       gridApiUtils, // Expose grid API utilities for methods
       localeText: computed(() => {
@@ -1937,9 +2197,14 @@ export default {
       initialState,
       refreshData,
       rowData,
+      rowModelType,
+      rowDragManaged,
+      datasource,
+      delayedDatasource,
+      cacheBlockSize,
       paginationEnabled,
       isLoading,
-      isInitialLoading,
+      isInfiniteScrollEnabled,
       gridComponents,
       // Expose supabaseData and supabaseTotalCount for methods to access
       supabaseDataRef: supabaseData,
@@ -2035,6 +2300,9 @@ export default {
       hasGroupHorizontalOverflow,
       onGroupHorizontalScrollbarScroll,
       onGroupBodyScroll,
+      groupDatasourceFor,
+      refreshGroupInfiniteCache,
+      groupInfiniteCounts,
       groupRowClassRules,
       // ========== /GROUPING EXPORTS ==========
       // ========== CELL EDITING EXPORTS (S6) ==========

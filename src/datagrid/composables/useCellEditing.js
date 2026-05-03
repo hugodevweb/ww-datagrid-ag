@@ -43,9 +43,16 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // From useGrouping (S3):
   isGroupingActive, groupingState, groupGridApis,
   // From useDataFetch (S2):
-  setUpdatingDataLocally, supabaseData,
+  isInfiniteScrollEnabled, setUpdatingDataLocally,
   // Inline refs in setup() (record column's onCreateClick writes these):
   activeCreateColumnField, activeCreateRow, activeCreateRowId,
+  // Records a pending grouping-column move so the per-group infinite
+  // datasource can drop the row from the source group on the next
+  // refetch, regardless of whether Supabase has caught up. From useGrouping.
+  setPendingGroupingMove,
+  // Thunk — useInfiniteScroll runs AFTER this composable, so we resolve
+  // scheduleRefreshGroupCounts lazily.
+  getScheduleRefreshGroupCounts,
 }) {
   // Tracks the currently active cell edit (set in onCellEditingStarted,
   // cleared in onCellEditingStopped). Consumed by useGridActions.refreshRow
@@ -165,20 +172,26 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       (col) => col?.field === columnId || col?.actionName === columnId
     );
 
-    // Cross-group move when the grouping column itself is edited.
-    // AG Grid mutates `event.data[columnId]` in place during the edit, but
-    // that mutation does NOT change the supabaseData.value array reference,
-    // so Vue's reactivity won't re-run `groupedRowData` (the computed that
-    // partitions rows by group). Without explicit help, the row stays in
-    // its old group's rowData prop until the next full refetch.
+    // Cross-group refresh in infinite-scroll + grouping mode.
+    // When the user edits the grouping column itself, the row needs to move
+    // from its old group grid to the new group grid. Since each group owns
+    // its own infinite cache, we purge the cache of both the old and new
+    // group APIs so AG Grid refetches the visible block on each side.
     //
-    // Fix: nudge the array reference. supabaseData.value = [...supabaseData.value]
-    // gives every downstream computed a "new" array (same row objects, fresh
-    // reference) — groupedRowData repartitions, each <ag-grid-vue>'s :rowData
-    // changes, AG Grid's getRowId-based diff removes the row from the source
-    // group's grid and adds it to the destination group's grid in one shot.
+    // Two-phase timing for a smooth move:
+    //   1. Immediately redraw the source row. Its data was just mutated to
+    //      the new group value, so the per-grid `rowClassRules` lookup —
+    //      which compares row.data[groupingColumnId] against the grid's
+    //      `context.groupValue` — flips on .ww-row-leaving and the row
+    //      fades out in place.
+    //   2. Wait long enough for the parent's Supabase update to round-trip
+    //      (the previous 50ms fired before the write landed, so the
+    //      refetch returned stale rows and the move appeared not to take).
+    //      Then purge both source & destination caches; AG Grid's
+    //      animateRows fades the row in on the destination side.
     if (
       isGroupingActive.value &&
+      isInfiniteScrollEnabled.value &&
       groupingState.value?.columnId === columnId &&
       groupGridApis.value &&
       groupGridApis.value.size > 0
@@ -187,24 +200,44 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       const oldGroupVal = normalize(event.oldValue);
       const newGroupVal = normalize(event.data?.[columnId]);
       if (oldGroupVal !== newGroupVal) {
+        // Map null/'' to the Unassigned-group sentinel (matches the
+        // UNASSIGNED_GROUP constant used by groupGridApis Map keys).
         const UNASSIGNED = '__unassigned__';
         const sourceKey = oldGroupVal ?? UNASSIGNED;
+        const destKey = newGroupVal ?? UNASSIGNED;
 
-        // Phase 1: immediate visual feedback — apply the .ww-row-leaving fade
-        // to the source row before it gets removed by the repartition.
+        // Record the pending move BEFORE the source-side purge fires so
+        // the per-group datasource's filter drops this row on the next
+        // refetch — even if Supabase still has the old grouping value.
+        // Without this, the refetch returns the row unchanged and it
+        // pops back into the source group.
+        const rowId = event.node?.id ?? event.data?.id ?? null;
+        try { setPendingGroupingMove?.(rowId, newGroupVal); }
+        catch (_) { /* noop */ }
+
+        // Phase 1: immediate visual feedback — the source row's data already
+        // reflects the new group, so a redraw lets rowClassRules apply
+        // .ww-row-leaving and the CSS fade kicks in.
         const sourceApi = groupGridApis.value.get(sourceKey);
         if (sourceApi && event.node) {
           try { sourceApi.redrawRows({ rowNodes: [event.node] }); }
           catch (_) { /* noop */ }
         }
 
-        // Phase 2: re-partition. Tiny delay so the fade has a chance to render
-        // before the row leaves the source grid's rowData entirely.
+        // Phase 2: refetch once Supabase has had time to land the write.
         setTimeout(() => {
-          if (supabaseData && Array.isArray(supabaseData.value)) {
-            supabaseData.value = [...supabaseData.value];
-          }
-        }, 50);
+          [sourceKey, destKey].forEach((gv) => {
+            const api = groupGridApis.value.get(gv);
+            if (!api) return;
+            try { api.purgeInfiniteCache(); }
+            catch (e) { debugLog?.(`[Group Infinite] purge failed for "${gv}":`, e?.message); }
+          });
+          // Refresh upfront counts so the badge on a collapsed destination
+          // group (whose grid isn't mounted to update its own count via
+          // its datasource) reflects the move.
+          try { getScheduleRefreshGroupCounts?.()?.(); }
+          catch (_) { /* noop */ }
+        }, 800);
       }
     }
 
@@ -371,8 +404,8 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       // Use a slightly longer timeout to batch with any other updates
       setTimeout(() => {
         if (gridApi.value && !isGridRendering.value) {
-          const editingCells = gridApi.value?.getEditingCells?.();
-          const hasActiveEditor = Array.isArray(editingCells) && editingCells.length > 0;
+          const hasActiveEditor = typeof gridApi.value.getEditingCells === 'function' &&
+            gridApi.value.getEditingCells().length > 0;
           if (hasActiveEditor) {
             console.log('[Datagrid edit] skipped conditional row redraw while editor active', {
               rowIndex: event?.rowIndex,
@@ -405,9 +438,10 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // ===== columnDefs =====
   // The big computed that builds AG Grid column definitions per cellDataType.
   // Reactive deps: cfg.columns, cfg.viewConfiguration, cfg.lang,
-  // cfg.userFocusColor, cfg.cellFontFamily, isGroupingActive, groupingState.
-  // Writes to validation tracking refs as a side effect (one-shot per edit
-  // session, deduped via the `_validationFiredForCurrentEdit` flag).
+  // cfg.userFocusColor, cfg.cellFontFamily, isGroupingActive, groupingState,
+  // isInfiniteScrollEnabled. Writes to validation tracking refs as a side
+  // effect (one-shot per edit session, deduped via the
+  // `_validationFiredForCurrentEdit` flag).
   const columnDefs = computed(() => {
     // First, map all columns to their definitions
     const columnsMap = new Map();
@@ -1055,9 +1089,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       });
     }
 
-    // Enable row drag if rowReorder is enabled (always supported in client-side
-    // row model).
-    if (cfg.value.rowReorder && columns[0]) {
+    // Enable row drag only if rowReorder is enabled AND infinite scroll is NOT enabled
+    // (row dragging is not supported with infinite row model)
+    if (cfg.value.rowReorder && columns[0] && !isInfiniteScrollEnabled.value) {
       columns[0].rowDrag = true;
     }
 

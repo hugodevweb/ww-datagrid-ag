@@ -1,6 +1,8 @@
 {
   "layout": "fixed",
   "height": "100%",
+  "enableInfiniteScroll": true,
+  "infiniteBlockSize": 100,
   "pagination": false,
   "rowSelection": "none",
   "resizableColumns": true,

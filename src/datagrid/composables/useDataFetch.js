@@ -1,18 +1,17 @@
-import { ref, computed, watch, nextTick, onBeforeUnmount } from 'vue';
+import { ref, computed, nextTick } from 'vue';
 import {
-  fetchSupabaseDataAll,
+  fetchSupabaseDataPaginated,
+  fetchSupabaseDataInfinite,
   createFetchKey,
 } from '../../shared/utils/supabaseUtils.js';
 import { convertFilterToSupabase as _convertFilterToSupabase } from '../utils/convertFilterToSupabase.js';
 import { getSupabaseSortField as _getSupabaseSortField } from '../utils/supabaseFieldMappings.js';
 
-// Owns Supabase data fetching for the datagrid. The grid now uses AG Grid's
-// client-side row model exclusively — on mount (and whenever a server-side
-// input like supabaseFilters / searchValue changes) we burst-fetch the entire
-// table via fetchSupabaseDataAll and hand the full array to AG Grid as
-// rowData. AG Grid handles all subsequent filtering/sorting/scrolling in
-// memory, which is what gives the datagrid its Monday.com-like feel (no blank
-// rows during scroll).
+// Owns Supabase data fetching: paginated + infinite, fetch guards, the
+// `records` / `isFetching` WeWeb component variables, removed-row tracking,
+// and the local-update flag. Also owns the inline filter/search helpers
+// (formatFiltersForLog, applySearchToSupabase, applyManualFilters) since
+// they're called only by the fetch functions and need props.content access.
 //
 // Inputs:
 //   cfg              — computed merged config ref
@@ -45,19 +44,37 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
   const supabaseLoading = ref(false);
   const supabaseError = ref(null);
 
-  // True while the *first* burst is in flight and supabaseData is still empty.
-  // Drives the AG Grid loading overlay so users see a clear "loading…" state
-  // for the multi-second initial fetch. Subsequent re-fetches (caused by
-  // searchValue / supabaseFilters changes) flip isFetching only; the grid
-  // keeps its existing rows visible while the new data loads.
-  const isInitialLoading = ref(false);
-
   // Guard to prevent duplicate/recursive fetches
   const isFetchingData = ref(false);
   const lastFetchParams = ref(null);
 
   // Flag to prevent data fetching when we're updating data locally (e.g., fake junction records)
   const isUpdatingDataLocally = ref(false);
+
+  // Track removed row IDs for infinite scroll mode (so datasource can filter them out)
+  const removedRowIds = ref(new Set());
+  const MAX_REMOVED_IDS = 1000; // Prevent unbounded memory growth
+
+  // Cleanup mechanism for removedRowIds Set
+  const cleanupRemovedIds = () => {
+    const currentSize = removedRowIds.value.size;
+    if (currentSize > MAX_REMOVED_IDS) {
+      const idsArray = Array.from(removedRowIds.value);
+      const keepCount = Math.floor(MAX_REMOVED_IDS * 0.7);
+      const idsToKeep = idsArray.slice(-keepCount);
+      removedRowIds.value = new Set(idsToKeep);
+      debugLog(`[Cleanup] Reduced removedRowIds from ${currentSize} to ${idsToKeep.length} entries`);
+    }
+  };
+
+  // Clear removed IDs when data source changes or major refresh occurs
+  const clearRemovedIds = () => {
+    const size = removedRowIds.value.size;
+    if (size > 0) {
+      removedRowIds.value.clear();
+      debugLog(`[Cleanup] Cleared ${size} removed row IDs`);
+    }
+  };
 
   // Helper functions to set/get the flag from methods
   const setUpdatingDataLocally = (value) => {
@@ -67,10 +84,10 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     return isUpdatingDataLocally.value;
   };
 
-  // AbortController for the most recent burst. Toggling supabaseFilters or
-  // searchValue rapidly cancels any in-flight chunks before kicking off a
-  // fresh burst — prevents stale data from clobbering the grid.
-  let currentAbortController = null;
+  // Determine if infinite scrolling is enabled
+  const isInfiniteScrollEnabled = computed(() => {
+    return cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll === true;
+  });
 
   // Bound wrappers around pure utils
   const convertFilterToSupabase = (filterModel, query) =>
@@ -249,14 +266,61 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     return null;
   };
 
-  // Single bulk fetch that loads the entire dataset into supabaseData. Called
-  // on mount and whenever a server-side input changes (manual filters, search,
-  // searchable columns, table/query). AG Grid filter & sort changes do NOT
-  // trigger this — they're handled in-memory by the client-side row model.
-  const fetchAllSupabaseData = async (searchValue) => {
+  // Fetch data from Supabase for infinite scrolling (returns data directly)
+  const fetchSupabaseDataForInfinite = async (startRow, endRow, filterModel = null, sortModel = null, searchValue = null) => {
+    if (props.content?.dataSource !== 'supabase') {
+      return { data: [], totalCount: 0 };
+    }
+
+    const tableName = props.content?.supabaseTable;
+    const queryString = props.content?.supabaseQuery || '*';
+
+    if (!tableName) {
+      supabaseError.value = 'Supabase table name is required';
+      return { data: [], totalCount: 0 };
+    }
+
+    try {
+      supabaseLoading.value = true;
+      supabaseError.value = null;
+
+      const supabase = await waitForSupabaseInstance(10000, 100);
+      if (!supabase) {
+        throw new Error('Supabase instance not available after waiting');
+      }
+
+      return await fetchSupabaseDataInfinite({
+        supabaseInstance: supabase,
+        tableName,
+        queryString,
+        manualFilters: props.content?.supabaseFilters,
+        searchValue: props.content?.enableSearch ? searchValue : null,
+        searchableColumns: props.content?.searchableColumns || [],
+        filterModel,
+        sortModel,
+        startRow,
+        endRow,
+        applyManualFilters,
+        applySearchToSupabase,
+        convertFilterToSupabase,
+        getSupabaseSortField,
+        formatFiltersForLog,
+      });
+    } catch (error) {
+      console.error('[Supabase Infinite] Error fetching data:', error);
+      supabaseError.value = error.message || 'Failed to fetch data from Supabase';
+      return { data: [], totalCount: 0 };
+    } finally {
+      supabaseLoading.value = false;
+    }
+  };
+
+  // Fetch data from Supabase (paginated)
+  const fetchSupabaseData = async (page = 1, pageSize = 10, filterModel = null, sortModel = null, searchValue = null) => {
     if (isUpdatingDataLocally.value) {
       return;
     }
+
     if (props.content?.dataSource !== 'supabase') {
       return;
     }
@@ -269,40 +333,18 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
       return;
     }
 
-    // Dedupe: if the same set of inputs is already in flight or just resolved,
-    // skip. AG Grid filter/sort intentionally excluded — those are client-side.
-    const fetchKey = createFetchKey({
-      tableName,
-      queryString,
-      searchValue: searchValue ?? null,
-      manualFilters: props.content?.supabaseFilters || null,
-      searchableColumns: props.content?.searchableColumns || null,
-    });
+    const fetchKey = createFetchKey({ page, pageSize, filterModel, sortModel, searchValue, tableName, queryString });
 
-    if (isFetchingData.value && lastFetchParams.value === fetchKey) {
-      return;
-    }
-    if (lastFetchParams.value === fetchKey && supabaseData.value.length > 0) {
+    if (isFetchingData.value) {
       return;
     }
 
-    // Cancel any prior burst still in flight (rapid filter/search changes).
-    if (currentAbortController) {
-      currentAbortController.abort();
+    if (lastFetchParams.value === fetchKey) {
+      return;
     }
-    currentAbortController = new AbortController();
-    const abortSignal = currentAbortController.signal;
 
     isFetchingData.value = true;
     lastFetchParams.value = fetchKey;
-    setIsFetching(true);
-
-    // Only show the full overlay on the very first load (empty grid). Re-fetches
-    // caused by filter/search changes keep the grid populated while updating.
-    const isFirstLoad = supabaseData.value.length === 0;
-    if (isFirstLoad) {
-      isInitialLoading.value = true;
-    }
 
     try {
       supabaseLoading.value = true;
@@ -313,60 +355,42 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
         throw new Error('Supabase instance not available after waiting');
       }
 
-      const result = await fetchSupabaseDataAll({
+      const result = await fetchSupabaseDataPaginated({
         supabaseInstance: supabase,
         tableName,
         queryString,
         manualFilters: props.content?.supabaseFilters,
         searchValue: props.content?.enableSearch ? searchValue : null,
         searchableColumns: props.content?.searchableColumns || [],
-        // No AG Grid filter/sort here — client-side handles them.
-        filterModel: null,
-        sortModel: null,
+        filterModel,
+        sortModel,
+        page,
+        pageSize,
         applyManualFilters,
         applySearchToSupabase,
         convertFilterToSupabase,
         getSupabaseSortField,
         formatFiltersForLog,
-        abortSignal,
-        onProgress: ({ loaded, total, chunkIndex, totalChunks }) => {
-          debugLog(`[LoadAll] Loaded ${loaded}/${total} rows (chunk ${chunkIndex}/${totalChunks - 1})`);
-        },
       });
-
-      if (abortSignal.aborted) {
-        return; // Newer burst started; let it own the result.
-      }
 
       supabaseData.value = result.data;
       supabaseTotalCount.value = result.totalCount;
 
-      if (result.truncated) {
-        supabaseError.value = `Dataset exceeds the ${result.totalCount}-row cap. Reduce your filter scope to load all rows.`;
-      }
-
-      // Defer records refresh — matches the pattern used in the old paginated
-      // path so AG Grid finishes its render cycle before we walk its nodes.
+      // Update records after data is fetched (records will also be updated via rowData watch, but this ensures it's immediate)
       nextTick(() => {
         setTimeout(() => {
           updateRecordsFromGrid();
         }, 100);
       });
     } catch (error) {
-      if (error?.name === 'AbortError') {
-        // Expected — user changed inputs before this burst finished.
-        return;
-      }
-      console.error('[Supabase LoadAll] Error fetching data:', error);
+      console.error('[Supabase] Error fetching data:', error);
       supabaseError.value = error.message || 'Failed to fetch data from Supabase';
       supabaseData.value = [];
       supabaseTotalCount.value = 0;
       setRecords([]);
     } finally {
       supabaseLoading.value = false;
-      isInitialLoading.value = false;
-      setIsFetching(false);
-      // Brief delay matches the legacy guard's behavior, lets AG Grid settle.
+      // Clear fetching flag after a short delay to allow grid to update
       setTimeout(() => {
         isFetchingData.value = false;
       }, 100);
@@ -404,48 +428,6 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     }
   };
 
-  // Reactive watcher: fire the initial burst on mount and re-burst whenever
-  // server-side inputs change. Debounced 250ms so search-bar typing collapses
-  // into a single fetch.
-  let watcherDebounceTimer = null;
-  const triggerFetchDebounced = (searchValue) => {
-    if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer);
-    watcherDebounceTimer = setTimeout(() => {
-      watcherDebounceTimer = null;
-      fetchAllSupabaseData(searchValue);
-    }, 250);
-  };
-
-  watch(
-    () => [
-      props.content?.dataSource,
-      props.content?.supabaseTable,
-      props.content?.supabaseQuery,
-      props.content?.searchValue,
-      // JSON.stringify so deep config changes are detected without a deep watcher.
-      JSON.stringify(props.content?.supabaseFilters || null),
-      JSON.stringify(props.content?.searchableColumns || null),
-    ],
-    () => {
-      if (props.content?.dataSource !== 'supabase') {
-        // Clear any leftover Supabase state when switching to manual mode.
-        supabaseData.value = [];
-        supabaseTotalCount.value = 0;
-        return;
-      }
-      triggerFetchDebounced(props.content?.searchValue);
-    },
-    { immediate: true }
-  );
-
-  // Cancel any in-flight burst when the component unmounts.
-  onBeforeUnmount(() => {
-    if (currentAbortController) {
-      currentAbortController.abort();
-    }
-    if (watcherDebounceTimer) clearTimeout(watcherDebounceTimer);
-  });
-
   return {
     // State
     records,
@@ -459,11 +441,14 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     isFetchingData,
     lastFetchParams,
     isUpdatingDataLocally,
-    isInitialLoading,
+    removedRowIds,
+    isInfiniteScrollEnabled,
     // Helper setters/getters
     setUpdatingDataLocally,
     getUpdatingDataLocally,
-    // Filter helpers (still used by useFiltersAndSort/etc.)
+    cleanupRemovedIds,
+    clearRemovedIds,
+    // Filter helpers (also consumed by useInfiniteScroll for group counts)
     formatFiltersForLog,
     applySearchToSupabase,
     applyManualFilters,
@@ -471,7 +456,8 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     getSupabaseSortField,
     // Async fetch operations
     waitForSupabaseInstance,
-    fetchAllSupabaseData,
+    fetchSupabaseDataForInfinite,
+    fetchSupabaseData,
     updateRecordsFromGrid,
   };
 }

@@ -7,11 +7,11 @@ import { findRowNode } from '../utils/rowLookup.js';
 // group headers, the multi-grid horizontal scrollbar sync, and the show/hide
 // loading transition.
 //
-// Cross-composable dependencies that are defined LATER in setup() (view-config
-// writeback from useViewConfig, single-grid event handlers from
-// useFiltersAndSort) are passed as thunks (`getX: () => x`). Thunks resolve at
-// event-call time, by which point the downstream composables have been
-// created and the values exist.
+// Cross-composable dependencies that are defined LATER in setup() (data-fetch
+// helpers from useInfiniteScroll, view-config writeback from useViewConfig,
+// single-grid event handlers from useFiltersAndSort) are passed as thunks
+// (`getX: () => x`). Thunks resolve at event-call time, by which point the
+// downstream composables have been created and the values exist.
 //
 // Args:
 //   cfg, props, ctx, resolveMappingFormula
@@ -20,12 +20,14 @@ import { findRowNode } from '../utils/rowLookup.js';
 //     gridContainerRef                   — DOM ref from setup()
 //     findColumnByField                  — bound wrapper from setup()
 //     setSelectedRows                    — from useSelection
-//     supabaseData                       — from useDataFetch
+//     isInfiniteScrollEnabled, supabaseData — from useDataFetch
 //
 //     // Thunks (late-bound — return values become valid after the orchestrator
 //     // has finished wiring all composables together):
 //     getIsVirtualColumn                 — function still inline in setup()
 //     getUpdateCurrentConfig             — from useViewConfig (S4)
+//     getScheduleRefreshGroupCounts      — from useInfiniteScroll
+//     getGroupDatasourceFor              — from useInfiniteScroll
 //     getOnFilterChanged, getOnSortChanged          — from useFiltersAndSort
 //     getOnColumnMoved, getOnColumnResized          — still inline in setup()
 //     getFilterValue, getSortValue       — refs from useFiltersAndSort
@@ -43,9 +45,12 @@ export function useGrouping(
     gridContainerRef,
     findColumnByField,
     setSelectedRows,
+    isInfiniteScrollEnabled,
     supabaseData,
     getIsVirtualColumn,
     getUpdateCurrentConfig,
+    getScheduleRefreshGroupCounts,
+    getGroupDatasourceFor,
     getOnFilterChanged,
     getOnSortChanged,
     getOnColumnMoved,
@@ -124,6 +129,52 @@ export function useGrouping(
 
   // Map<groupValue, row[]> — aggregated selection across group grids.
   const groupSelections = ref(new Map());
+
+  // Map<rowId, { newGroupValue }> — rows whose grouping-column value was just
+  // edited in the current grid. The per-group infinite datasource consults
+  // this Map and filters out any row whose pending move targets a different
+  // group, so the row disappears from its old group immediately on the next
+  // refetch — regardless of whether the parent workflow has finished writing
+  // to Supabase. Without this, the post-edit refetch returns the row with
+  // its old (pre-write) grouping value and the row pops back into the
+  // source group.
+  // Entries auto-expire after PENDING_MOVE_TTL_MS so a missing/failed write
+  // doesn't permanently hide rows.
+  const pendingGroupingMoves = shallowRef(new Map());
+  const PENDING_MOVE_TTL_MS = 10000;
+  const pendingMoveTimers = new Map();
+
+  const setPendingGroupingMove = (rowId, newGroupValue) => {
+    if (rowId == null || rowId === '') return;
+    const key = String(rowId);
+    const next = new Map(pendingGroupingMoves.value);
+    next.set(key, { newGroupValue });
+    pendingGroupingMoves.value = next;
+    // Reset the expiry timer if this row is moved again before the previous
+    // pending entry expired.
+    const prevTimer = pendingMoveTimers.get(key);
+    if (prevTimer) clearTimeout(prevTimer);
+    const t = setTimeout(() => {
+      pendingMoveTimers.delete(key);
+      const cur = new Map(pendingGroupingMoves.value);
+      if (cur.has(key)) {
+        cur.delete(key);
+        pendingGroupingMoves.value = cur;
+      }
+    }, PENDING_MOVE_TTL_MS);
+    pendingMoveTimers.set(key, t);
+  };
+
+  const clearPendingGroupingMove = (rowId) => {
+    if (rowId == null || rowId === '') return;
+    const key = String(rowId);
+    const t = pendingMoveTimers.get(key);
+    if (t) { clearTimeout(t); pendingMoveTimers.delete(key); }
+    if (!pendingGroupingMoves.value.has(key)) return;
+    const cur = new Map(pendingGroupingMoves.value);
+    cur.delete(key);
+    pendingGroupingMoves.value = cur;
+  };
 
   // Reentry guards for cross-grid synchronization.
   const isSyncingLayout = ref(false);
@@ -204,11 +255,12 @@ export function useGrouping(
   };
 
   // Source data for grouping — unified across data sources.
-  // Local: rowData. Supabase: supabaseData (loaded entirely up-front by
-  // useDataFetch.fetchAllSupabaseData, since the grid is now always
-  // client-side).
+  // Local: rowData. Supabase paginated: supabaseData.
+  // Infinite scroll: empty — each group grid owns its own IDatasource via
+  // groupDatasourceFor(). Counts come from groupInfiniteCounts instead.
   const groupingSourceRows = computed(() => {
     if (!isGroupingActive.value) return [];
+    if (isInfiniteScrollEnabled.value) return [];
     if (cfg.value?.dataSource === 'supabase') {
       return Array.isArray(supabaseData.value) ? supabaseData.value : [];
     }
@@ -232,6 +284,10 @@ export function useGrouping(
 
   const groupRowData = (groupValue) => groupedRowData.value.get(groupValue) || [];
 
+  // Row counts for badge display in infinite-scroll mode — populated by each
+  // per-group datasource's getRows on successful fetch. Map<groupValue, totalCount>
+  const groupInfiniteCounts = ref(new Map());
+
   // Compute the ordered list of groups to render.
   const orderedGroups = computed(() => {
     if (!isGroupingActive.value) return [];
@@ -241,16 +297,27 @@ export function useGrouping(
     const orderArr = Array.isArray(groupingState.value?.order) ? groupingState.value.order : [];
     const collapsedSet = new Set(Array.isArray(groupingState.value?.collapsed) ? groupingState.value.collapsed : []);
     const dataMap = groupedRowData.value;
+    const infiniteCounts = isInfiniteScrollEnabled.value ? groupInfiniteCounts.value : null;
 
-    // Counts come from the partitioned in-memory dataset. The full table is
-    // already loaded up-front, so partition lengths are authoritative.
-    const countFor = (value) => dataMap.get(value)?.length || 0;
+    // Count resolution:
+    //  - Infinite-scroll: use totalCount reported by each group's datasource (null if unknown yet).
+    //  - Local / paginated: partition the in-memory dataset.
+    const countFor = (value) => {
+      if (infiniteCounts) {
+        return infiniteCounts.has(value) ? infiniteCounts.get(value) : null;
+      }
+      return dataMap.get(value)?.length || 0;
+    };
 
     const manualExpand = manuallyExpandedEmptyGroups.value;
     // Default-closed policy: a group is only opened once we know it has rows
     // AND the persisted cache says it should be expanded (i.e. not in
-    // collapsedSet). Empty groups (confirmed count === 0) remain closed
-    // unless the user manually expanded them this session.
+    // collapsedSet). While the count is still unknown (infinite-scroll
+    // pre-fetch, count === null) the group stays closed — the previous
+    // policy opened it from the cache and then collapsed it on a 0 count,
+    // which produced a visible flicker on load.
+    // Empty groups (confirmed count === 0) remain closed unless the user
+    // manually expanded them this session.
     const computeCollapsed = (value, count) => {
       if (count === 0) return !manualExpand.has(value);
       if (count == null) return true;
@@ -270,10 +337,16 @@ export function useGrouping(
 
     // Unassigned group:
     //  - User-toggleable via groupingState.showUnassigned (default true).
-    //  - Only show when it has rows (we always know the full set client-side).
+    //  - Local / paginated: only show when it has rows (we know the full set).
+    //  - Infinite-scroll: always show — we can't cheaply know upfront if null
+    //    rows exist, and the group's datasource will report 0 if not.
     const unassignedCount = countFor(UNASSIGNED_GROUP);
     const userShowUnassigned = groupingState.value?.showUnassigned !== false;
-    const showUnassigned = userShowUnassigned && (unassignedCount || 0) > 0;
+    const showUnassigned = userShowUnassigned && (
+      infiniteCounts
+        ? true
+        : (unassignedCount || 0) > 0
+    );
     if (showUnassigned) {
       base.push({
         value: UNASSIGNED_GROUP,
@@ -466,6 +539,30 @@ export function useGrouping(
     }
 
     updateGroupHorizontalScrollbarMetrics();
+
+    // In infinite-scroll mode, assign this group's datasource — but stagger
+    // the assignment across groups so N grids don't fire getRows in the same
+    // tick (which can trigger AG Grid error #252 on initial mount and also
+    // hammer Supabase with N parallel requests). Stagger = 100ms + 50ms × index.
+    if (isInfiniteScrollEnabled.value && isGroupingActive.value) {
+      const idx = orderedGroups.value.findIndex(g => g.value === groupValue);
+      const delay = 100 + Math.max(0, idx) * 50;
+      setTimeout(() => {
+        // Guard: grid might have been unmounted (collapsed) or grouping disabled
+        // before the timer fires.
+        const stillMounted = groupGridApis.value.get(groupValue) === params.api;
+        if (!stillMounted || !isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+        const groupDatasourceFor = getGroupDatasourceFor?.();
+        const ds = groupDatasourceFor?.(groupValue);
+        if (!ds) return;
+        try {
+          params.api.setGridOption('datasource', ds);
+          debugLog(`[Group Infinite] Assigned datasource for "${groupValue}" after ${delay}ms`);
+        } catch (e) {
+          console.warn(`[Group Infinite] Failed to set datasource for "${groupValue}":`, e?.message);
+        }
+      }, delay);
+    }
   };
 
   const onGroupGridUnmounted = (groupValue) => {
@@ -502,9 +599,10 @@ export function useGrouping(
     }
     const onFilterChanged = getOnFilterChanged?.();
     if (onFilterChanged) withFiringGrid(event, onFilterChanged);
-    // Group badge counts come from the in-memory partitioned dataset (orderedGroups),
-    // so they update reactively when AG Grid filters the rows in place — no
-    // explicit refresh needed.
+    // Refresh the per-group badge counts to reflect the new filter — counts
+    // would otherwise stay stale until each group's grid is opened.
+    const scheduleRefreshGroupCounts = getScheduleRefreshGroupCounts?.();
+    scheduleRefreshGroupCounts?.();
   };
 
   const onGroupSortChanged = (groupValue, event) => {
@@ -808,6 +906,8 @@ export function useGrouping(
       clearTimeout(groupingTransitionTimer);
       groupingTransitionTimer = null;
     }
+    pendingMoveTimers.forEach((t) => clearTimeout(t));
+    pendingMoveTimers.clear();
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
   });
@@ -821,6 +921,10 @@ export function useGrouping(
     isGroupingTransitionLoading,
     groupGridApis,
     groupSelections,
+    groupInfiniteCounts,
+    pendingGroupingMoves,
+    setPendingGroupingMove,
+    clearPendingGroupingMove,
     groupHorizontalScrollRef,
     groupHorizontalScrollWidth,
     groupHorizontalViewportWidth,
