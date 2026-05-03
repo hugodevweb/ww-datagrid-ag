@@ -1054,7 +1054,8 @@ export default {
   flex-direction: column;
   width: 100%;
   height: 100%;
-  min-height: 300px;
+  min-height: 0; // let a flex-parent (WeWeb wrapper) constrain the kanban; was 300px which forced overflow on shorter wrappers
+  box-sizing: border-box;
   background: var(--ag-background-color, #ffffff);
   color: var(--ag-foreground-color, #1f2937);
   font-family: 'Work Sans', sans-serif;

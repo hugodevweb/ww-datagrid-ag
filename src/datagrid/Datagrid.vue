@@ -2433,7 +2433,9 @@ export default {
 .ww-datagrid {
   position: relative;
   isolation: isolate; // Create a new stacking context to contain AG Grid elements
-  
+  box-sizing: border-box; // padding stays inside cfg.height so we don't exceed the WeWeb wrapper
+  min-height: 0; // let a flex-parent (WeWeb wrapper) actually constrain us
+
   // Fix horizontal scroll alignment between header and body
   // Optimize scroll containers for better synchronization
   :deep(.ag-header-viewport),

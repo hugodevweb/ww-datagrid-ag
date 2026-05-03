@@ -1,5 +1,6 @@
 import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { findRowNode } from '../utils/rowLookup.js';
+import { getTranslations } from '../../shared/utils/sharedHelpers.js';
 
 // The grouping feature: state, computed views (orderedGroups, groupedRowData),
 // the per-view persisted collapsed-state machinery, all group-grid event handlers
@@ -240,7 +241,7 @@ export function useGrouping(
   };
 
   const getGroupLabel = (colId, groupValue) => {
-    if (groupValue === UNASSIGNED_GROUP) return 'Unassigned';
+    if (groupValue === UNASSIGNED_GROUP) return getTranslations(cfg.value?.lang || 'en').kanbanUnassigned;
     const col = findColumnByField(colId);
     const options = Array.isArray(col?.options) ? col.options : [];
     const match = options.find(o => String(o?.value) === String(groupValue));
@@ -350,7 +351,7 @@ export function useGrouping(
     if (showUnassigned) {
       base.push({
         value: UNASSIGNED_GROUP,
-        label: 'Unassigned',
+        label: getTranslations(cfg.value?.lang || 'en').kanbanUnassigned,
         color: '#9ca3af',
         count: unassignedCount,
         collapsed: computeCollapsed(UNASSIGNED_GROUP, unassignedCount),
