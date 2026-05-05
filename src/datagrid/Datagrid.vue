@@ -695,6 +695,7 @@ export default {
       groupingState, pendingGroupingColumnId, isGroupingTransitionLoading,
       groupGridApis, groupSelections, groupInfiniteCounts,
       pendingGroupingMoves, setPendingGroupingMove, clearPendingGroupingMove,
+      bumpGroupingDataVersion,
       groupHorizontalScrollRef, groupHorizontalScrollWidth,
       groupHorizontalViewportWidth, groupHorizontalScrollLeft,
       groupDragValue, groupDragOverValue,
@@ -830,6 +831,7 @@ export default {
       isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
       setPendingGroupingMove,
+      bumpGroupingDataVersion,
       // Thunk: useInfiniteScroll is created AFTER useCellEditing, so the
       // scheduleRefreshGroupCounts function isn't bound yet at construction
       // time. Resolve it lazily so cross-group cell edits can refresh the
@@ -1822,7 +1824,13 @@ export default {
       'ww-row-leaving': (params) => {
         const colId = groupingColumnId.value;
         if (!colId) return false;
-        const raw = params?.data?.[colId];
+        // Skip when AG Grid is rendering a loading-state placeholder row
+        // (data is undefined while the infinite cache refetches). Without
+        // this guard, every placeholder row collapses to the Unassigned
+        // sentinel and gets flagged as leaving — making the entire source
+        // group flash grey during a purgeInfiniteCache.
+        if (!params?.data) return false;
+        const raw = params.data[colId];
         const expected = (raw === null || raw === undefined || raw === '')
           ? '__unassigned__'
           : String(raw);
@@ -3568,17 +3576,15 @@ export default {
     min-height: 0 !important;
   }
 
-  // Row whose grouping-column value no longer matches its grid's group —
-  // applied via rowClassRules right after the user edits the grouping
-  // column locally. The row fades + slides out while the per-group
-  // datasource refetch is in flight; once the refetch lands the row is
-  // dropped from the source group and reappears in the destination
-  // group via animateRows.
+  // Row whose grouping-column value no longer matches its grid's group.
+  // After purgeInfiniteCache / applyTransaction({ remove }), AG Grid keeps
+  // the old row nodes in DOM (animateRows + the row buffer) until the next
+  // viewport invalidation — so the source group flashes a list of phantom
+  // rows whose statuses are visibly wrong. Hide them outright instead of
+  // fading: the row count badge already reflects the post-move state, so
+  // the rule cleanly drops anything AG Grid hasn't released yet.
   :deep(.ag-row.ww-row-leaving) {
-    opacity: 0.25;
-    transform: translateX(-12px);
-    transition: opacity 0.35s ease, transform 0.35s ease;
-    pointer-events: none;
+    display: none !important;
   }
 }
 

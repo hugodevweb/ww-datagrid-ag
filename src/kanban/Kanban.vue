@@ -1091,7 +1091,7 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: 12px 0 0 12px;
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;

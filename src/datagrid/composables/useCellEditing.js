@@ -50,6 +50,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // datasource can drop the row from the source group on the next
   // refetch, regardless of whether Supabase has caught up. From useGrouping.
   setPendingGroupingMove,
+  // Forces `groupedRowData` to re-partition after an in-place mutation of
+  // a row's grouping-column value (non-infinite-scroll mode). From useGrouping.
+  bumpGroupingDataVersion,
   // Thunk — useInfiniteScroll runs AFTER this composable, so we resolve
   // scheduleRefreshGroupCounts lazily.
   getScheduleRefreshGroupCounts,
@@ -172,72 +175,75 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       (col) => col?.field === columnId || col?.actionName === columnId
     );
 
-    // Cross-group refresh in infinite-scroll + grouping mode.
-    // When the user edits the grouping column itself, the row needs to move
-    // from its old group grid to the new group grid. Since each group owns
-    // its own infinite cache, we purge the cache of both the old and new
-    // group APIs so AG Grid refetches the visible block on each side.
-    //
-    // Two-phase timing for a smooth move:
-    //   1. Immediately redraw the source row. Its data was just mutated to
-    //      the new group value, so the per-grid `rowClassRules` lookup —
-    //      which compares row.data[groupingColumnId] against the grid's
-    //      `context.groupValue` — flips on .ww-row-leaving and the row
-    //      fades out in place.
-    //   2. Wait long enough for the parent's Supabase update to round-trip
-    //      (the previous 50ms fired before the write landed, so the
-    //      refetch returned stale rows and the move appeared not to take).
-    //      Then purge both source & destination caches; AG Grid's
-    //      animateRows fades the row in on the destination side.
+    // Set when the row has been moved out of its source group below — used
+    // to skip downstream operations (junction-record refreshCells, the
+    // conditional-row-styles redraw) that target `event.node`. After the
+    // applyTransaction/purgeInfiniteCache the node is detached from its
+    // grid, and AG Grid's redrawRows reads `.length` off internal state
+    // that's now undefined, throwing on the second / third move.
+    let crossGroupMoved = false;
+
+    // Cross-group move when the grouping column itself was edited.
+    // The source group's grid is `event.api` — the grid that fired the
+    // event. We rely on this rather than deriving a source key from
+    // `event.oldValue` because the select column has a valueGetter that
+    // returns the option *label*, so `event.oldValue` is the old label
+    // and a `groupGridApis.get(oldLabel)` lookup (the Map is keyed by
+    // raw option values) would always miss.
     if (
       isGroupingActive.value &&
-      isInfiniteScrollEnabled.value &&
       groupingState.value?.columnId === columnId &&
-      groupGridApis.value &&
-      groupGridApis.value.size > 0
+      event.api
     ) {
       const normalize = (v) => (v === null || v === undefined || v === '' ? null : String(v));
-      const oldGroupVal = normalize(event.oldValue);
       const newGroupVal = normalize(event.data?.[columnId]);
-      if (oldGroupVal !== newGroupVal) {
-        // Map null/'' to the Unassigned-group sentinel (matches the
-        // UNASSIGNED_GROUP constant used by groupGridApis Map keys).
-        const UNASSIGNED = '__unassigned__';
-        const sourceKey = oldGroupVal ?? UNASSIGNED;
-        const destKey = newGroupVal ?? UNASSIGNED;
+      const UNASSIGNED = '__unassigned__';
+      const destKey = newGroupVal ?? UNASSIGNED;
 
-        // Record the pending move BEFORE the source-side purge fires so
-        // the per-group datasource's filter drops this row on the next
-        // refetch — even if Supabase still has the old grouping value.
-        // Without this, the refetch returns the row unchanged and it
-        // pops back into the source group.
+      if (isInfiniteScrollEnabled.value) {
+        // Each group owns its own infinite cache.
+        //   - Source: register a pending-move filter (so the per-group
+        //     datasource excludes this row on its next getRows even if
+        //     Supabase hasn't landed the write yet) and purge the source
+        //     cache immediately. The row vanishes from the source group
+        //     in one refetch — no fade-out intermediate state.
+        //   - Destination: purge after a delay so Supabase has time to
+        //     land the write; otherwise the destination's getRows query
+        //     (filtering by the new group value) returns nothing for it.
         const rowId = event.node?.id ?? event.data?.id ?? null;
         try { setPendingGroupingMove?.(rowId, newGroupVal); }
         catch (_) { /* noop */ }
 
-        // Phase 1: immediate visual feedback — the source row's data already
-        // reflects the new group, so a redraw lets rowClassRules apply
-        // .ww-row-leaving and the CSS fade kicks in.
-        const sourceApi = groupGridApis.value.get(sourceKey);
-        if (sourceApi && event.node) {
-          try { sourceApi.redrawRows({ rowNodes: [event.node] }); }
-          catch (_) { /* noop */ }
-        }
+        try { event.api.purgeInfiniteCache(); crossGroupMoved = true; }
+        catch (e) { debugLog?.(`[Group Infinite] source purge failed:`, e?.message); }
 
-        // Phase 2: refetch once Supabase has had time to land the write.
         setTimeout(() => {
-          [sourceKey, destKey].forEach((gv) => {
-            const api = groupGridApis.value.get(gv);
-            if (!api) return;
-            try { api.purgeInfiniteCache(); }
-            catch (e) { debugLog?.(`[Group Infinite] purge failed for "${gv}":`, e?.message); }
-          });
+          const destApi = groupGridApis.value?.get(destKey);
+          if (destApi && destApi !== event.api) {
+            try { destApi.purgeInfiniteCache(); }
+            catch (e) { debugLog?.(`[Group Infinite] purge failed for "${destKey}":`, e?.message); }
+          }
           // Refresh upfront counts so the badge on a collapsed destination
           // group (whose grid isn't mounted to update its own count via
           // its datasource) reflects the move.
           try { getScheduleRefreshGroupCounts?.()?.(); }
           catch (_) { /* noop */ }
         }, 800);
+      } else {
+        // Non-infinite-scroll. The valueSetter mutates `event.data[colId]`
+        // in place, which leaves the array references unchanged — so the
+        // prop-driven re-partition isn't forceful enough to evict the old
+        // AG Grid node, and the rowClassRules `.ww-row-leaving` fade
+        // leaves the row sitting in the source group at 0.25 opacity.
+        // Two-step: (1) explicitly remove the row from the source grid via
+        // applyTransaction so the node is gone immediately, and (2) bump
+        // the partition version so `groupedRowData` recomputes and the
+        // destination group's rowData prop picks up the row.
+        if (event.data) {
+          try { event.api.applyTransaction({ remove: [event.data] }); crossGroupMoved = true; }
+          catch (_) { /* noop */ }
+        }
+        try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
       }
     }
 
@@ -400,7 +406,10 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
     // Redraw the row to re-evaluate conditional row styles
     // This is needed because getRowStyle is only called when rows are rendered
     // Only do this if conditional styles are defined (avoid unnecessary redraws)
-    if (gridApi.value && event.node && props.content?.conditionalRowStyles?.length > 0) {
+    // Skip when we just moved the row out of its source group — `event.node`
+    // is detached and `redrawRows({ rowNodes: [event.node] })` then reads
+    // `.length` off internal AG Grid state that's been cleared, throwing.
+    if (!crossGroupMoved && gridApi.value && event.node && props.content?.conditionalRowStyles?.length > 0) {
       // Use a slightly longer timeout to batch with any other updates
       setTimeout(() => {
         if (gridApi.value && !isGridRendering.value) {

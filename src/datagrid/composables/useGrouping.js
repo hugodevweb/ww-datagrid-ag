@@ -145,6 +145,13 @@ export function useGrouping(
   const PENDING_MOVE_TTL_MS = 10000;
   const pendingMoveTimers = new Map();
 
+  // Bumped whenever a row's grouping-column value is mutated in place (no
+  // array-reference change), so `groupedRowData` re-partitions and each
+  // per-group grid receives the corrected `rowData`. Without this, the row
+  // stays in its source group until something else invalidates the array.
+  const groupingDataVersion = ref(0);
+  const bumpGroupingDataVersion = () => { groupingDataVersion.value++; };
+
   const setPendingGroupingMove = (rowId, newGroupValue) => {
     if (rowId == null || rowId === '') return;
     const key = String(rowId);
@@ -271,6 +278,8 @@ export function useGrouping(
 
   // Map<groupValue, row[]>
   const groupedRowData = computed(() => {
+    // Track in-place row mutations of the grouping column.
+    void groupingDataVersion.value;
     if (!isGroupingActive.value) return new Map();
     const colId = groupingColumnId.value;
     const out = new Map();
@@ -947,6 +956,7 @@ export function useGrouping(
     pendingGroupingMoves,
     setPendingGroupingMove,
     clearPendingGroupingMove,
+    bumpGroupingDataVersion,
     groupHorizontalScrollRef,
     groupHorizontalScrollWidth,
     groupHorizontalViewportWidth,
