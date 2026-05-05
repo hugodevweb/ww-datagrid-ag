@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive }" :style="[cssVars, style]" ref="gridContainerRef">
+  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive, 'ww-datagrid--auto-layout': cfg.layout === 'auto' }" :style="[cssVars, style]" ref="gridContainerRef">
     <!-- Single-grid mode: unchanged behavior -->
     <ag-grid-vue
       v-if="!isGroupingActive"
@@ -82,7 +82,6 @@
           'ww-group--dragging': groupDragValue === group.value,
           'ww-group--drag-over': groupDragOverValue === group.value && groupDragValue !== group.value,
           'ww-group--collapsed': group.collapsed,
-          'ww-group--master-scroll': group.value === lastExpandedGroupValue,
         }"
       >
         <div
@@ -196,6 +195,21 @@
             class="ww-group__footer-count"
           >{{ formatItemCount(group.count) }}</span>
         </div>
+      </div>
+
+      <div
+        ref="groupHorizontalScrollRef"
+        class="ww-group__hscroll"
+        v-show="hasGroupHorizontalOverflow"
+        @scroll="onGroupHorizontalScrollbarScroll"
+      >
+        <div
+          class="ww-group__hscroll-spacer"
+          :style="{
+            width: groupHorizontalScrollWidth + 'px',
+            marginLeft: groupHorizontalScrollLeft + 'px',
+          }"
+        ></div>
       </div>
 
     </template>
@@ -719,19 +733,6 @@ export default {
       getSortValue: () => sortValue,
       getColumnOrder: () => columnOrder,
       getCurrentConfig: () => currentConfig,
-    });
-
-    // The last expanded group owns the visible horizontal scrollbar — same
-    // bar AG Grid renders for the non-grouped view (.ag-body-horizontal-scroll).
-    // All groups stay aligned via `alignedGrids`, so scrolling that one bar
-    // scrolls every group horizontally. Other groups keep their bar suppressed
-    // to avoid stacking duplicates.
-    const lastExpandedGroupValue = computed(() => {
-      const groups = orderedGroups.value;
-      for (let i = groups.length - 1; i >= 0; i--) {
-        if (!groups[i].collapsed) return groups[i].value;
-      }
-      return null;
     });
 
     // Composable: column state — owns columnOrder/hiddenColumns WeWeb
@@ -2271,7 +2272,6 @@ export default {
       // ========== GROUPING EXPORTS ==========
       isGroupingActive,
       orderedGroups,
-      lastExpandedGroupValue,
       groupRowData,
       groupingState,
       groupDragValue,
@@ -2435,6 +2435,11 @@ export default {
   isolation: isolate; // Create a new stacking context to contain AG Grid elements
   box-sizing: border-box; // padding stays inside cfg.height so we don't exceed the WeWeb wrapper
   min-height: 0; // let a flex-parent (WeWeb wrapper) actually constrain us
+  // Hard cap at the WeWeb wrapper's bounds. Wins over any inline cfg.height
+  // and prevents auto-layout grouped mode (stacked autoHeight grids) from
+  // pushing past the wrapper.
+  max-width: 100%;
+  max-height: 100%;
 
   // Fix horizontal scroll alignment between header and body
   // Optimize scroll containers for better synchronization
@@ -3287,14 +3292,83 @@ export default {
   // Top padding keeps the first group from sitting flush against whatever
   // sits above the component (toolbar, tabs, page header, etc.). !important
   // because the host wrapper sometimes resets padding on the root element.
-  padding: 16px 4px 12px !important;
-  // Each per-group ag-grid uses domLayout="autoHeight" so it sizes to its
-  // own row count. Without overflow handling here, the stacked groups would
-  // blow past the configured Grid Height (cfg.height) in fixed-layout mode.
+  // Bottom padding is 0: the sticky .ww-group__hscroll bar provides the
+  // visual bottom inset.
+  padding: 16px 4px 0 !important;
+  // Fixed-layout only: each per-group ag-grid uses domLayout="autoHeight" so
+  // it sizes to its own row count. Without overflow handling here, the
+  // stacked groups would blow past the configured Grid Height (cfg.height).
   // overflow-y:auto makes the container respect that height and scroll
-  // through the groups internally. In auto-layout mode the component itself
-  // has no fixed height, so the auto overflow is a no-op.
-  overflow-y: auto;
+  // through the groups internally — and gives the sticky scrollbar below a
+  // scroll context to stick within.
+  // In auto-layout mode (handled below) the component sizes to content and
+  // the WeWeb wrapper is the scrolling ancestor, so we deliberately do NOT
+  // set overflow-y here — that would make .ww-datagrid.grouped the scrolling
+  // ancestor of the sticky bar (even though it doesn't actually scroll),
+  // preventing the bar from sticking to the wrapper viewport.
+  &:not(.ww-datagrid--auto-layout) {
+    overflow-y: auto;
+  }
+
+  // Shared horizontal scrollbar pinned to the bottom of the grouped
+  // component. Drives every group's horizontal scroll via the composable's
+  // onGroupHorizontalScrollbarScroll handler, kept in sync the other way
+  // by each ag-grid-vue's @body-scroll → onGroupBodyScroll.
+  .ww-group__hscroll {
+    position: sticky;
+    bottom: 0;
+    width: 100%;
+    height: 8px;
+    min-height: 8px;
+    // Prevent the flex column layout from shrinking the bar when groups
+    // expand to fill the container.
+    flex: 0 0 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    z-index: 100;
+    background: #f1f1f1;
+    // Force the native scrollbar thumb to match the 8px bar height so the
+    // browser's default-taller thumb doesn't get clipped to the top half.
+    scrollbar-width: thin;
+    scrollbar-color: #888 #f1f1f1;
+
+    &::-webkit-scrollbar {
+      height: 8px;
+      width: 8px;
+      -webkit-appearance: none;
+      appearance: none;
+    }
+    &::-webkit-scrollbar-button,
+    &::-webkit-scrollbar-button:single-button,
+    &::-webkit-scrollbar-button:start:decrement,
+    &::-webkit-scrollbar-button:end:increment,
+    &::-webkit-scrollbar-button:horizontal:start:decrement,
+    &::-webkit-scrollbar-button:horizontal:end:increment {
+      display: none !important;
+      width: 0 !important;
+      height: 0 !important;
+      background: transparent !important;
+    }
+    &::-webkit-scrollbar-corner {
+      background: transparent;
+    }
+    &::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 0;
+    }
+    &::-webkit-scrollbar-thumb {
+      background: #888;
+      border-radius: 0;
+
+      &:hover {
+        background: #555;
+      }
+    }
+  }
+
+  .ww-group__hscroll-spacer {
+    height: 1px;
+  }
 }
 
 .ww-group-loading-overlay {
@@ -3508,10 +3582,10 @@ export default {
   }
 }
 
-// Hide AG Grid's per-group horizontal scrollbar on every group EXCEPT the
-// master. The master group exposes the native bar (see .ww-group--master-scroll
-// rules below), all groups stay synced via `alignedGrids`.
-.ww-group:not(.ww-group--master-scroll) .ww-group__grid {
+// Every per-group grid hides AG Grid's native horizontal scrollbar — the
+// shared sticky .ww-group__hscroll bar at the bottom of .ww-datagrid.grouped
+// drives all groups via `alignedGrids` + onGroupBodyScroll.
+.ww-group__grid {
   :deep(.ag-body-horizontal-scroll) {
     height: 0 !important;
     min-height: 0 !important;
@@ -3558,25 +3632,4 @@ export default {
   white-space: nowrap;
 }
 
-// Master horizontal scrollbar: only the last expanded group exposes AG Grid's
-// native .ag-body-horizontal-scroll (the same bar used in non-grouped mode).
-// All groups stay in sync via `alignedGrids`, so scrolling that one bar
-// scrolls every group horizontally. The non-master groups keep their bar
-// suppressed via the .ww-group__grid block above.
-.ww-group--master-scroll .ww-group__grid {
-  // Drop overflow:hidden so the sticky scrollbar can bind to the outer
-  // .ww-datagrid.grouped scroll viewport instead of being clipped here.
-  overflow: visible;
-
-  :deep(.ag-body-horizontal-scroll) {
-    height: 8px !important;
-    min-height: 8px !important;
-    max-height: 8px !important;
-    overflow: visible !important;
-  }
-
-  :deep(.ag-body-horizontal-scroll-viewport) {
-    overflow-x: scroll !important;
-  }
-}
 </style>

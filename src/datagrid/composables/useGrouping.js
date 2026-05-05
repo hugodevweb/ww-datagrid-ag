@@ -388,10 +388,16 @@ export function useGrouping(
 
   // ========== HORIZONTAL SCROLLBAR SYNC ==========
 
+  // Read scroll geometry from .ag-center-cols-viewport (visible width via
+  // clientWidth) and its .ag-center-cols-container child (content width via
+  // scrollWidth). We previously read from .ag-body-horizontal-scroll-viewport,
+  // but per-group CSS forces that element to height:0/overflow:hidden, which
+  // makes scrollWidth unreliable in autoHeight mode and causes the shared
+  // sticky bar to never appear.
   const getGroupHorizontalScrollViewports = () => {
     if (!gridContainerRef.value) return [];
     return Array.from(
-      gridContainerRef.value.querySelectorAll('.ww-group__grid .ag-body-horizontal-scroll-viewport')
+      gridContainerRef.value.querySelectorAll('.ww-group__grid .ag-center-cols-viewport')
     );
   };
 
@@ -407,8 +413,10 @@ export function useGrouping(
 
   const updateGroupHorizontalScrollbarMetrics = () => {
     runAfterGroupLayout(() => {
-      const viewport = getGroupHorizontalScrollViewports().find(el => el.scrollWidth > 0);
-      groupHorizontalScrollWidth.value = viewport?.scrollWidth || 0;
+      const viewport = getGroupHorizontalScrollViewports().find(el => el.clientWidth > 0);
+      const container = viewport?.querySelector('.ag-center-cols-container');
+      const contentWidth = container?.scrollWidth || viewport?.scrollWidth || 0;
+      groupHorizontalScrollWidth.value = contentWidth;
       groupHorizontalViewportWidth.value = viewport?.clientWidth || 0;
       if (viewport && gridContainerRef.value) {
         const containerRect = gridContainerRef.value.getBoundingClientRect();
@@ -432,7 +440,6 @@ export function useGrouping(
     getGroupHorizontalScrollViewports().forEach((viewport) => {
       if (Math.abs((viewport.scrollLeft || 0) - nextLeft) > 1) {
         viewport.scrollLeft = nextLeft;
-        viewport.dispatchEvent(new Event('scroll', { bubbles: true }));
       }
     });
 
@@ -484,9 +491,19 @@ export function useGrouping(
     { flush: 'post' }
   );
 
+  let groupHorizontalResizeObserver = null;
+
   onMounted(() => {
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.addEventListener('resize', handleGroupHorizontalResize);
+    // Container-level RO catches column resizes / layout shifts that don't
+    // fire window.resize, keeping the shared bar's spacer width fresh.
+    if (typeof ResizeObserver !== 'undefined' && gridContainerRef.value) {
+      groupHorizontalResizeObserver = new ResizeObserver(() => {
+        if (isGroupingActive.value) updateGroupHorizontalScrollbarMetrics();
+      });
+      groupHorizontalResizeObserver.observe(gridContainerRef.value);
+    }
     updateGroupHorizontalScrollbarMetrics();
   });
 
@@ -911,6 +928,10 @@ export function useGrouping(
     pendingMoveTimers.clear();
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
+    if (groupHorizontalResizeObserver) {
+      groupHorizontalResizeObserver.disconnect();
+      groupHorizontalResizeObserver = null;
+    }
   });
 
   return {
