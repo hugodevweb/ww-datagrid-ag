@@ -1836,6 +1836,11 @@ export default {
           : String(raw);
         return expected !== params?.context?.groupValue;
       },
+      // AG Grid renders a placeholder row (data === undefined) while the
+      // infinite cache fetches a block. With cell renderers that show empty
+      // for missing data this looks like a blank row inserted into the
+      // group. Tag it so CSS can hide it until real data arrives.
+      'ww-row-loading': (params) => !params?.data,
     }));
 
     // ===== S7: inlined Options-API leftovers =====
@@ -3584,6 +3589,12 @@ export default {
   // fading: the row count badge already reflects the post-move state, so
   // the rule cleanly drops anything AG Grid hasn't released yet.
   :deep(.ag-row.ww-row-leaving) {
+    display: none !important;
+  }
+
+  // Hide infinite-cache loading placeholder rows so they don't show as
+  // empty rows inside a group while a block is being fetched.
+  :deep(.ag-row.ww-row-loading) {
     display: none !important;
   }
 }

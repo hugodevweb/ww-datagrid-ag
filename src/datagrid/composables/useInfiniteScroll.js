@@ -55,10 +55,14 @@ export function useInfiniteScroll(
     orderedGroups,
     groupGridApis,
     groupInfiniteCounts,
-    // Map<rowId, { newGroupValue }> from useGrouping — rows whose grouping
-    // value was just edited locally; the per-group datasource uses this to
-    // hide the row from its old group on the next refetch even if Supabase
-    // hasn't been updated yet (parent workflow round-trip).
+    // Map<rowId, { newGroupValue, rowData }> from useGrouping — rows whose
+    // grouping value was just edited locally. The per-group datasource uses
+    // this to (a) hide the row from its old group on the next refetch even
+    // if Supabase hasn't been updated yet, and (b) optimistically inject
+    // the row into the destination group so the move appears instantly.
+    // Pending entries are kept until their TTL expires (see useGrouping)
+    // rather than cleared on Supabase confirmation, so a stale in-flight
+    // getRows resolving late can't leave the destination empty.
     pendingGroupingMoves,
   }
 ) {
@@ -265,40 +269,76 @@ export function useInfiniteScroll(
             searchValue
           );
 
-          // Drop rows that have a pending move out of this group. This is the
-          // mechanism that makes a grouping-column edit "stick" visually:
-          // even if Supabase still has the row's old grouping value, we
-          // know locally that it's about to change, and the user shouldn't
-          // see the row in the source group while waiting for the write to
-          // round-trip. See useGrouping.pendingGroupingMoves for the writer.
+          // Reconcile the fetched block with the pending-move map (see
+          // useGrouping.pendingGroupingMoves):
+          //   - Drop rows whose pending move targets a *different* group —
+          //     even if Supabase still has the old value, the user just
+          //     edited it locally and shouldn't see the row in the source
+          //     group while we wait for the write to land.
+          //   - Inject pending rows whose target *is* this group but that
+          //     Supabase hasn't returned yet, so the destination shows the
+          //     moved row instantly instead of after the round-trip.
+          //
+          // We deliberately do NOT clear the pending entry when Supabase
+          // catches up: a stale in-flight getRows (from an earlier purge)
+          // can resolve later with data that doesn't yet contain the row,
+          // and an eager clear would leave nothing to inject — so the row
+          // would briefly appear and then vanish on every rapid sequence of
+          // moves. Keeping the pending entry around for its full TTL plus
+          // the `fetchedIds` de-dup below means duplicates are impossible
+          // and the row stays visible regardless of which getRows wins the
+          // race.
           const pendingMap = pendingGroupingMoves?.value;
-          let visibleData = data;
+          const idFormula = props.content?.idFormula;
+          let visibleData = Array.isArray(data) ? data : [];
           let droppedCount = 0;
-          if (pendingMap && pendingMap.size > 0 && Array.isArray(data) && data.length > 0) {
-            const idFormula = props.content?.idFormula;
-            visibleData = data.filter((row) => {
-              const rid = resolveMappingFormula?.(idFormula, row);
-              if (rid == null || rid === '') return true;
-              const entry = pendingMap.get(String(rid));
-              if (!entry) return true;
-              const target = (entry.newGroupValue === null || entry.newGroupValue === undefined || entry.newGroupValue === '')
+          let injectedCount = 0;
+          if (pendingMap && pendingMap.size > 0) {
+            const fetchedIds = new Set();
+            if (visibleData.length > 0) {
+              for (const row of visibleData) {
+                const rid = resolveMappingFormula?.(idFormula, row);
+                if (rid != null && rid !== '') fetchedIds.add(String(rid));
+              }
+              const beforeLen = visibleData.length;
+              visibleData = visibleData.filter((row) => {
+                const rid = resolveMappingFormula?.(idFormula, row);
+                if (rid == null || rid === '') return true;
+                const entry = pendingMap.get(String(rid));
+                if (!entry) return true;
+                const target = (entry.newGroupValue === null || entry.newGroupValue === undefined || entry.newGroupValue === '')
+                  ? UNASSIGNED_GROUP
+                  : String(entry.newGroupValue);
+                return target === groupValue;
+              });
+              droppedCount = beforeLen - visibleData.length;
+            }
+
+            const injected = [];
+            pendingMap.forEach((entry, rid) => {
+              const target = (entry?.newGroupValue === null || entry?.newGroupValue === undefined || entry?.newGroupValue === '')
                 ? UNASSIGNED_GROUP
                 : String(entry.newGroupValue);
-              return target === groupValue;
+              if (target !== groupValue) return;
+              if (fetchedIds.has(rid)) return; // Already in the fetched block — let the TTL clean up later.
+              if (entry?.rowData) injected.push(entry.rowData);
             });
-            droppedCount = data.length - visibleData.length;
+            if (injected.length > 0) {
+              visibleData = [...injected, ...visibleData];
+              injectedCount = injected.length;
+            }
           }
 
-          // Cache per-group total so badge counts stay accurate. Subtract
-          // the rows we dropped so the badge reflects what the user sees.
+          // Cache per-group total so badge counts stay accurate.
+          //   adjusted = totalCount - dropped (out) + injected (in)
           if (typeof totalCount === 'number' && totalCount >= 0) {
             const next = new Map(groupInfiniteCounts.value);
-            next.set(groupValue, Math.max(0, totalCount - droppedCount));
+            next.set(groupValue, Math.max(0, totalCount - droppedCount + injectedCount));
             groupInfiniteCounts.value = next;
           }
 
           const adjustedTotal = typeof totalCount === 'number'
-            ? Math.max(0, totalCount - droppedCount)
+            ? Math.max(0, totalCount - droppedCount + injectedCount)
             : totalCount;
           const rowCount = visibleData.length;
           const isLastBlock =

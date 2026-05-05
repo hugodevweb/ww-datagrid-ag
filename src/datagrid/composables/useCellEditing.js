@@ -201,34 +201,53 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       const destKey = newGroupVal ?? UNASSIGNED;
 
       if (isInfiniteScrollEnabled.value) {
-        // Each group owns its own infinite cache.
-        //   - Source: register a pending-move filter (so the per-group
-        //     datasource excludes this row on its next getRows even if
-        //     Supabase hasn't landed the write yet) and purge the source
-        //     cache immediately. The row vanishes from the source group
-        //     in one refetch — no fade-out intermediate state.
-        //   - Destination: purge after a delay so Supabase has time to
-        //     land the write; otherwise the destination's getRows query
-        //     (filtering by the new group value) returns nothing for it.
+        // Each group owns its own infinite cache. Both sides update
+        // immediately — no waiting for the Supabase round-trip:
+        //   - Source: the pending-move filter excludes the row on the
+        //     next getRows, so the source-cache purge below evicts it
+        //     on the spot.
+        //   - Destination: the pending-move entry carries the row data
+        //     itself, so the destination's getRows optimistically injects
+        //     the row into its visible block — the user sees the move
+        //     land instantly.
+        // Because the optimistic injection runs on the *first* refetch
+        // and Supabase may not have landed the write yet, we also queue
+        // a follow-up purge ~1.5s later. By then the parent workflow's
+        // Supabase update has typically completed, so the destination
+        // refetches against fresh truth and any other rows that were
+        // missing from the optimistic block become visible too.
         const rowId = event.node?.id ?? event.data?.id ?? null;
-        try { setPendingGroupingMove?.(rowId, newGroupVal); }
+        try { setPendingGroupingMove?.(rowId, newGroupVal, event.data); }
         catch (_) { /* noop */ }
 
         try { event.api.purgeInfiniteCache(); crossGroupMoved = true; }
         catch (e) { debugLog?.(`[Group Infinite] source purge failed:`, e?.message); }
 
+        const destApi = groupGridApis.value?.get(destKey);
+        if (destApi && destApi !== event.api) {
+          try { destApi.purgeInfiniteCache(); }
+          catch (e) { debugLog?.(`[Group Infinite] purge failed for "${destKey}":`, e?.message); }
+        }
+        // Refresh upfront counts so the badge on a collapsed destination
+        // group (whose grid isn't mounted to update its own count via
+        // its datasource) reflects the move.
+        try { getScheduleRefreshGroupCounts?.()?.(); }
+        catch (_) { /* noop */ }
+
+        // Reconciliation pass — re-purge both source and destination once
+        // Supabase has had time to land the write. Cleans up any stale
+        // optimistic state, restores rows that the first refetch missed,
+        // and refreshes counts.
         setTimeout(() => {
-          const destApi = groupGridApis.value?.get(destKey);
-          if (destApi && destApi !== event.api) {
-            try { destApi.purgeInfiniteCache(); }
-            catch (e) { debugLog?.(`[Group Infinite] purge failed for "${destKey}":`, e?.message); }
+          const reSource = event.api;
+          const reDest = groupGridApis.value?.get(destKey);
+          try { reSource?.purgeInfiniteCache?.(); } catch (_) { /* noop */ }
+          if (reDest && reDest !== reSource) {
+            try { reDest.purgeInfiniteCache(); } catch (_) { /* noop */ }
           }
-          // Refresh upfront counts so the badge on a collapsed destination
-          // group (whose grid isn't mounted to update its own count via
-          // its datasource) reflects the move.
           try { getScheduleRefreshGroupCounts?.()?.(); }
           catch (_) { /* noop */ }
-        }, 800);
+        }, 1500);
       } else {
         // Non-infinite-scroll. The valueSetter mutates `event.data[colId]`
         // in place, which leaves the array references unchanged — so the

@@ -11,6 +11,7 @@
             <div
                 ref="dropdownWrapper"
                 class="select-dropdown-wrapper"
+                :class="{ 'placement-above': dropdownPlacement === 'above' }"
                 :style="dropdownStyle"
             >
                 <div
@@ -85,8 +86,10 @@ export default {
         return {
             selectedValue: null,
             originalValue: null,
-            dropdownPosition: { top: 100, left: 100, width: 200 }, // Better initial values
+            dropdownPosition: { top: 100, cellTop: 100, left: 100, width: 200 }, // Better initial values
             dropdownLeftAdjustment: 0, // Pixel shift applied after viewport clamping
+            dropdownPlacement: 'below', // 'below' or 'above' depending on viewport room
+            dropdownMaxHeight: null, // Set when neither side fits the full panel
             teleportTarget: null,
             highlightedIndex: -1,
             hasEverRendered: optionsAlreadyAvailable, // Skip skeleton if options already loaded
@@ -276,18 +279,31 @@ export default {
             const columns = this.dropdownColumns;
             const minWidth = Math.max(200, columns * 200); // 200px per column minimum
             const maxWidth = columns * 300; // 300px per column maximum
-            
+
             const centerLeft = this.dropdownPosition.left + this.dropdownLeftAdjustment;
-            return {
+            const isAbove = this.dropdownPlacement === 'above';
+            const top = isAbove
+                ? this.dropdownPosition.cellTop - 8
+                : this.dropdownPosition.top + 8;
+            const transform = isAbove
+                ? 'translate(-50%, -100%)'
+                : 'translateX(-50%)';
+
+            const style = {
                 position: 'fixed',
-                top: `${this.dropdownPosition.top + 8}px`, // Add gap for the arrow
+                top: `${top}px`,
                 left: `${centerLeft}px`,
-                transform: 'translateX(-50%)', // Center on the column
+                transform,
                 minWidth: `${minWidth}px`,
                 maxWidth: `${maxWidth}px`,
                 zIndex: 2000, // Above filter menus (1000) but reasonable
                 '--dropdown-columns': columns,
             };
+            if (this.dropdownMaxHeight != null) {
+                style.maxHeight = `${this.dropdownMaxHeight}px`;
+                style.overflowY = 'auto';
+            }
+            return style;
         },
     },
     mounted() {
@@ -459,11 +475,14 @@ export default {
                 // Ensure we have valid dimensions
                 const width = rect.width > 0 ? rect.width : 200; // fallback to 200px
                 const top = rect.bottom > 0 ? rect.bottom : rect.top + 30;
+                const cellTop = rect.top;
                 // Center the dropdown on the cell column
                 const center = rect.left + rect.width / 2;
 
                 this.dropdownLeftAdjustment = 0;
-                this.dropdownPosition = { top, left: center, width };
+                this.dropdownPlacement = 'below';
+                this.dropdownMaxHeight = null;
+                this.dropdownPosition = { top, cellTop, left: center, width };
 
                 // After the dropdown renders at the centered position, clamp to viewport
                 this.$nextTick(() => this.clampDropdownToViewport());
@@ -473,9 +492,12 @@ export default {
             const wrapper = this.$refs.dropdownWrapper;
             if (!wrapper) return;
 
+            const frontWindow = wwLib?.getFrontWindow?.() || window;
             const rect = wrapper.getBoundingClientRect();
-            const viewportWidth = (wwLib?.getFrontWindow?.() || window).innerWidth
+            const viewportWidth = frontWindow.innerWidth
                 || document.documentElement.clientWidth;
+            const viewportHeight = frontWindow.innerHeight
+                || document.documentElement.clientHeight;
             const margin = 8;
 
             let adjustment = 0;
@@ -487,6 +509,30 @@ export default {
             }
             if (adjustment !== 0) {
                 this.dropdownLeftAdjustment = adjustment;
+            }
+
+            // Vertical clamping: flip above the cell when there isn't room below.
+            if (!this.$refs.cellElement) return;
+            const cellRect = this.$refs.cellElement.getBoundingClientRect();
+            const dropdownHeight = rect.height;
+            const spaceBelow = viewportHeight - cellRect.bottom - margin;
+            const spaceAbove = cellRect.top - margin;
+
+            if (dropdownHeight <= spaceBelow) {
+                // Fits below — leave default placement
+                return;
+            }
+            if (dropdownHeight <= spaceAbove) {
+                this.dropdownPlacement = 'above';
+                return;
+            }
+            // Neither side fits the full panel — pick the larger side and clamp height.
+            if (spaceAbove > spaceBelow) {
+                this.dropdownPlacement = 'above';
+                this.dropdownMaxHeight = Math.max(0, spaceAbove);
+            } else {
+                this.dropdownPlacement = 'below';
+                this.dropdownMaxHeight = Math.max(0, spaceBelow);
             }
         },
         // AG Grid editor interface method
@@ -667,7 +713,7 @@ export default {
     line-height: inherit;
     position: relative;
     padding-top: 8px;
-    
+
     // Arrow pointing to the cell
     &::before {
         content: '';
@@ -680,6 +726,21 @@ export default {
         border-right: 8px solid transparent;
         border-bottom: 8px solid white;
         transform: translateX(-50%) translateY(-100%);
+    }
+
+    // When the dropdown opens above the cell, point the arrow downward
+    // and move it to the bottom edge of the panel.
+    &.placement-above {
+        padding-top: 0;
+        padding-bottom: 8px;
+
+        &::before {
+            top: auto;
+            bottom: 0;
+            border-bottom: none;
+            border-top: 8px solid white;
+            transform: translateX(-50%) translateY(100%);
+        }
     }
 }
 

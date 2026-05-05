@@ -152,11 +152,14 @@ export function useGrouping(
   const groupingDataVersion = ref(0);
   const bumpGroupingDataVersion = () => { groupingDataVersion.value++; };
 
-  const setPendingGroupingMove = (rowId, newGroupValue) => {
+  const setPendingGroupingMove = (rowId, newGroupValue, rowData = null) => {
     if (rowId == null || rowId === '') return;
     const key = String(rowId);
     const next = new Map(pendingGroupingMoves.value);
-    next.set(key, { newGroupValue });
+    // rowData is what the destination's per-group datasource injects so the
+    // moved row appears in the new group instantly — no waiting for the
+    // Supabase write to round-trip before the user sees their move land.
+    next.set(key, { newGroupValue, rowData });
     pendingGroupingMoves.value = next;
     // Reset the expiry timer if this row is moved again before the previous
     // pending entry expired.
