@@ -36,6 +36,7 @@ export async function fetchSupabaseDataUnified(config) {
     searchableColumns,
     filterModel,
     sortModel,
+    defaultSortField,
     pagination,
     applyManualFilters,
     applySearchToSupabase,
@@ -67,7 +68,8 @@ export async function fetchSupabaseDataUnified(config) {
   }
 
   // Apply sorting
-  if (sortModel && Array.isArray(sortModel) && sortModel.length > 0) {
+  const hasUserSort = sortModel && Array.isArray(sortModel) && sortModel.length > 0;
+  if (hasUserSort) {
     for (const sort of sortModel) {
       const columnId = sort.colId;
       // Get the Supabase field path for this column (supports nested relationships)
@@ -75,6 +77,8 @@ export async function fetchSupabaseDataUnified(config) {
       const order = sort.sort === 'asc' ? true : false;
       query = query.order(supabaseField, { ascending: order });
     }
+  } else if (defaultSortField) {
+    query = query.order(defaultSortField, { ascending: false });
   }
 
   // Apply pagination based on mode
@@ -92,9 +96,9 @@ export async function fetchSupabaseDataUnified(config) {
 
   // Log query details
   const filtersText = formatFiltersForLog ? formatFiltersForLog(filterModel) : 'unknown';
-  const sortText = sortModel && sortModel.length > 0 
+  const sortText = hasUserSort
     ? sortModel.map(s => `${s.colId} ${s.sort}`).join(', ')
-    : 'none';
+    : (defaultSortField ? `default: ${defaultSortField} desc` : 'none');
   const searchText = (searchValue && searchValue.trim()) 
     ? `"${searchValue}"` 
     : 'none';

@@ -2,10 +2,15 @@ import { ref, nextTick, onBeforeUnmount } from 'vue';
 
 // Filters & sort: owns the `filters` and `sort` WeWeb component variables and
 // the `onFilterChanged` / `onSortChanged` event handlers (single-grid mode).
-// The handlers debounce Supabase requests by 300ms when in paginated mode.
+// The handlers debounce Supabase requests by 300ms.
 //
 // Group-mode filter/sort handlers (onGroupFilterChanged, onGroupSortChanged)
 // live in useGrouping and call back into onFilterChanged/onSortChanged.
+//
+// In paged-append mode (isInfiniteScrollEnabled), filter/sort changes call
+// refetchAll on useInfiniteScroll, which discards the loaded rows and fetches
+// a fresh first block from the server with the new model. In pagination mode,
+// the existing fetchSupabaseData(page, pageSize, …) path is unchanged.
 //
 // Inputs:
 //   props, ctx
@@ -14,8 +19,11 @@ import { ref, nextTick, onBeforeUnmount } from 'vue';
 //   isInfiniteScrollEnabled  — computed ref from useDataFetch
 //   isApplyingViewConfig     — ref (still inline in setup() until useViewConfig in S3)
 //   updateCurrentConfig      — function (still inline in setup() until useViewConfig in S3)
-//   fetchSupabaseData        — function from useDataFetch
+//   fetchSupabaseData        — function from useDataFetch (paginated path)
 //   updateRecordsFromGrid    — function from useDataFetch
+//   getRefetchAll            — thunk from useInfiniteScroll (paged-append path).
+//                              Late-bound because useInfiniteScroll is created
+//                              after useFiltersAndSort in the orchestrator.
 export function useFiltersAndSort(props, ctx, {
   gridApi,
   debugLog,
@@ -24,6 +32,7 @@ export function useFiltersAndSort(props, ctx, {
   updateCurrentConfig,
   fetchSupabaseData,
   updateRecordsFromGrid,
+  getRefetchAll,
 }) {
   // WeWeb component variables
   const { value: filterValue, setValue: setFilters } =
@@ -78,13 +87,16 @@ export function useFiltersAndSort(props, ctx, {
 
         filterDebounceTimer.value = setTimeout(() => {
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, AG Grid automatically handles filter changes.
-            // It resets its cache and calls getRows with the new filterModel.
-            // We do NOT need to manually set the datasource - that causes duplicate queries.
+            // Paged-append mode: discard loaded rows and fetch fresh first
+            // block with the new filter. AG Grid's prop diff resets the
+            // viewport when pagedRowData is reassigned.
+            const state = gridApi.value.getState();
+            const sortModel = state?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            const refetchAll = getRefetchAll?.();
+            refetchAll?.(filterModel, sortModel, searchValue);
             nextTick(() => {
-              setTimeout(() => {
-                updateRecordsFromGrid();
-              }, 200);
+              setTimeout(() => { updateRecordsFromGrid(); }, 200);
             });
           } else {
             // For pagination mode, fetch data
@@ -133,11 +145,14 @@ export function useFiltersAndSort(props, ctx, {
       // If using Supabase, refetch data with new sort
       if (props.content?.dataSource === 'supabase') {
         if (isInfiniteScrollEnabled.value) {
-          // For infinite scrolling, AG Grid automatically handles sort changes.
+          // Paged-append mode: refetch first block with the new sort.
+          const filterModel = gridApi.value.getFilterModel();
+          const sortModel = state.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+          const refetchAll = getRefetchAll?.();
+          refetchAll?.(filterModel, sortModel, searchValue);
           nextTick(() => {
-            setTimeout(() => {
-              updateRecordsFromGrid();
-            }, 200);
+            setTimeout(() => { updateRecordsFromGrid(); }, 200);
           });
         } else {
           // For pagination mode, fetch data

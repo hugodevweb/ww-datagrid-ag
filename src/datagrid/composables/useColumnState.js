@@ -177,6 +177,10 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
         cfg.value.recordPillAccentWidth,
       "--ww-data-grid_record-pill-hover-shadow":
         cfg.value.recordPillHoverShadow,
+      // Mirrors `:rowHeight="cfg.rowHeight ?? 40"` so CSS rules that need
+      // the row height (e.g. empty-group min-height) follow the configured
+      // value rather than relying on AG Grid's --ag-row-height being set.
+      "--ww-data-grid_row-height": `${Number(cfg.value.rowHeight) || 40}px`,
     };
   });
 

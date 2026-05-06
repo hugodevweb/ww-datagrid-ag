@@ -1,34 +1,45 @@
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, shallowRef, computed, watch } from 'vue';
 import { fetchSupabaseDataCount } from '../../shared/utils/supabaseUtils.js';
 
-// Owns the AG Grid infinite-scroll datasource (single-grid mode), the per-group
-// memoized datasource cache (multi-grid grouping mode), and the upfront-count
-// machinery that populates group badges before each group's grid is opened.
+// Paged-append composable. Despite the filename, this is no longer the AG Grid
+// `infinite` row-model integration — the grid now runs in plain client-side mode
+// and this module owns the segmented fetch + scroll-triggered append behavior
+// that mimics infinite scroll while keeping filter and sort resolution on the
+// server.
+//
+// Modes managed here:
+//   • Single grid: pagedRowData is bound as :rowData. loadInitial seeds the
+//     first block, loadMore appends the next block, refetchAll resets on
+//     filter/sort change.
+//   • Per-group grids: a Map<groupValue, { rowData, total, offset, loadingMore,
+//     loaded }> mirrors the same lifecycle for each visible group grid.
+//
+// Filter/sort changes are picked up by useFiltersAndSort and dispatched to
+// refetchAll / refetchAllForGroup. Group badges still use upfront count
+// requests via fetchSupabaseGroupCount + scheduleRefreshGroupCounts so a
+// collapsed group's count is accurate without mounting its grid.
 //
 // Inputs:
 //   cfg                              — computed merged config ref
 //   props
-//   resolveMappingFormula            — for row-id extraction
-//   gridApi (from useGridApi)
-//   gridReady, isGridRendering       — refs from useGridApi
-//   isInfiniteScrollEnabled          — computed ref from useDataFetch
-//   isUpdatingDataLocally            — ref from useDataFetch
-//   supabaseData, supabaseTotalCount — refs from useDataFetch (datasource reads/writes)
-//   removedRowIds                    — ref<Set> from useDataFetch
-//   fetchSupabaseDataForInfinite     — function from useDataFetch
-//   waitForSupabaseInstance          — function from useDataFetch
-//   updateRecordsFromGrid            — function from useDataFetch
-//   formatFiltersForLog,
-//     applySearchToSupabase,
-//     applyManualFilters,
-//     convertFilterToSupabase        — helpers from useDataFetch (count requests)
-//   grouping deps (still inline in setup until useGrouping in S3):
-//     UNASSIGNED_GROUP                — constant string sentinel
-//     isGroupingActive                — computed ref
-//     groupingColumnId                — computed ref
-//     orderedGroups                   — computed ref
-//     groupGridApis                   — shallowRef<Map<groupValue, GridApi>>
-//     groupInfiniteCounts             — ref<Map<groupValue, number>>
+//   resolveMappingFormula            — for row-id extraction (unused here today
+//                                      but kept for future ID-aware reconciliation)
+//   gridApi                          — shallowRef from useGridApi (single-grid api)
+//   gridReady                        — ref from useGridApi
+//   isInfiniteScrollEnabled          — computed ref from useDataFetch (semantics
+//                                      now: paged-append + server filter/sort)
+//   supabaseTotalCount               — ref from useDataFetch (mirrored for the
+//                                      single-grid totalCount path)
+//   fetchSupabaseDataForInfinite     — paged fetch primitive from useDataFetch
+//   waitForSupabaseInstance, applyManualFilters, applySearchToSupabase,
+//     convertFilterToSupabase, formatFiltersForLog
+//                                    — used for group-count requests
+//   UNASSIGNED_GROUP                  — sentinel string from useGrouping
+//   isGroupingActive, groupingColumnId, orderedGroups, groupGridApis,
+//     groupInfiniteCounts             — refs from useGrouping (count map name
+//                                      kept as `groupInfiniteCounts` for
+//                                      compatibility — meaning is unchanged:
+//                                      total matching rows per group)
 export function useInfiniteScroll(
   cfg,
   props,
@@ -36,15 +47,10 @@ export function useInfiniteScroll(
   {
     gridApi,
     gridReady,
-    isGridRendering,
     isInfiniteScrollEnabled,
-    isUpdatingDataLocally,
-    supabaseData,
     supabaseTotalCount,
-    removedRowIds,
     fetchSupabaseDataForInfinite,
     waitForSupabaseInstance,
-    updateRecordsFromGrid,
     formatFiltersForLog,
     applySearchToSupabase,
     applyManualFilters,
@@ -55,186 +61,134 @@ export function useInfiniteScroll(
     orderedGroups,
     groupGridApis,
     groupInfiniteCounts,
-    // Map<rowId, { newGroupValue, rowData }> from useGrouping — rows whose
-    // grouping value was just edited locally. The per-group datasource uses
-    // this to (a) hide the row from its old group on the next refetch even
-    // if Supabase hasn't been updated yet, and (b) optimistically inject
-    // the row into the destination group so the move appears instantly.
-    // Pending entries are kept until their TTL expires (see useGrouping)
-    // rather than cleared on Supabase confirmation, so a stale in-flight
-    // getRows resolving late can't leave the destination empty.
-    pendingGroupingMoves,
   }
 ) {
-  // Row model type - 'infinite' if enabled, otherwise undefined (defaults to client-side)
-  const rowModelType = computed(() => {
-    return isInfiniteScrollEnabled.value ? 'infinite' : undefined;
-  });
+  // ========== SINGLE-GRID PAGED-APPEND STATE ==========
+  // pagedRowData is bound as the grid's :rowData prop. AG Grid diffs by
+  // getRowId on prop changes — appending preserves existing rendered rows
+  // and only mounts the new ones.
+  const pagedRowData = ref([]);
+  const loadedOffset = ref(0);
+  const isLoadingMore = ref(false);
+  const totalCount = ref(0);
+  const hasInitialLoaded = ref(false);
 
-  // Row drag managed - disabled for infinite row model (not supported by AG Grid)
-  const rowDragManaged = computed(() => {
-    return !isInfiniteScrollEnabled.value;
-  });
+  const blockSize = computed(() => Number(cfg.value?.infiniteBlockSize) || 200);
 
-  // Pagination should be disabled when infinite scrolling is enabled
+  // No row model: client-side default. Drag is always managed (the prior
+  // false-when-infinite branch is gone). Pagination stays disabled in
+  // paged-append mode — scrolling drives fetches instead.
+  const rowModelType = computed(() => undefined);
+  const rowDragManaged = computed(() => true);
   const paginationEnabled = computed(() => {
-    if (isInfiniteScrollEnabled.value) {
-      return false;
-    }
+    if (isInfiniteScrollEnabled.value) return false;
     return props.content?.pagination;
   });
 
-  // Cache block size for infinite scrolling
-  const cacheBlockSize = computed(() => {
-    if (isInfiniteScrollEnabled.value) {
-      return cfg.value?.infiniteBlockSize || 200;
-    }
-    return undefined;
+  const allLoaded = computed(() => {
+    if (!hasInitialLoaded.value) return false;
+    return loadedOffset.value >= totalCount.value && totalCount.value >= 0;
   });
 
-  // Create datasource for infinite scrolling
-  const datasource = computed(() => {
-    if (!isInfiniteScrollEnabled.value) {
-      return undefined;
-    }
+  const readSearchValue = () =>
+    props.content?.enableSearch ? props.content?.searchValue : null;
 
-    return {
-      rowCount: undefined, // Will be determined dynamically
-      getRows: async (params) => {
-        const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
+  const loadInitial = async (filterModel = null, sortModel = null, searchValue = readSearchValue()) => {
+    if (!isInfiniteScrollEnabled.value) return;
+    // In grouped mode the single grid is unmounted (v-if="!isGroupingActive")
+    // and the per-group composables drive their own loads — skip the wasted
+    // server round-trip that would only write to an unbound pagedRowData.
+    if (isGroupingActive.value) return;
+    const size = blockSize.value;
+    const { data, totalCount: total } = await fetchSupabaseDataForInfinite(
+      0,
+      size,
+      filterModel,
+      sortModel,
+      searchValue
+    );
+    pagedRowData.value = Array.isArray(data) ? data : [];
+    loadedOffset.value = pagedRowData.value.length;
+    totalCount.value = typeof total === 'number' ? total : pagedRowData.value.length;
+    supabaseTotalCount.value = totalCount.value;
+    hasInitialLoaded.value = true;
+  };
 
-        // Skip fetching if we're updating data locally (e.g., removing a row)
-        // This prevents unnecessary re-fetches when we're making local modifications.
-        // For infinite scroll, AG Grid will automatically try to refetch when rows are removed.
-        // We prevent this by checking the flag and using the current supabaseData cache.
-        if (isUpdatingDataLocally.value) {
-          // Return filtered cached data — if cached data is empty or we filtered everything
-          // out, return empty with adjusted total. This tells AG Grid there's no data for
-          // this block, which will hide empty rows.
-          let cachedData = Array.isArray(supabaseData.value) ? [...supabaseData.value] : [];
-          let cachedTotal = supabaseTotalCount.value || 0;
-
-          // CRITICAL: Filter out any removed rows (tracked in removedRowIds ref)
-          if (removedRowIds.value && removedRowIds.value.size > 0) {
-            const beforeFilter = cachedData.length;
-            cachedData = cachedData.filter(row => {
-              if (!row) return false;
-              const rowId = resolveMappingFormula(props.content?.idFormula, row);
-              const rowIdStr = rowId != null ? String(rowId) : '';
-              return !removedRowIds.value.has(rowIdStr);
-            });
-            const afterFilter = cachedData.length;
-            if (beforeFilter > afterFilter && cachedTotal > 0) {
-              cachedTotal = Math.max(0, cachedTotal - (beforeFilter - afterFilter));
-            }
-          }
-
-          const finalTotal = cachedData.length > 0 ? cachedTotal : (cachedTotal > 0 ? cachedTotal : 0);
-          // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
-          isGridRendering.value = true;
-          setTimeout(() => {
-            try {
-              successCallback(cachedData, finalTotal > 0 ? finalTotal : (cachedData.length > 0 ? undefined : 0));
-            } finally {
-              setTimeout(() => {
-                isGridRendering.value = false;
-              }, 50);
-            }
-          }, 0);
-          return;
-        }
-        const requestedBlockSize = endRow - startRow;
-
-        try {
-          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-
-          const { data, totalCount } = await fetchSupabaseDataForInfinite(
-            startRow,
-            endRow,
-            filterModel,
-            sortModel,
-            searchValue
-          );
-
-          const rowCount = data.length;
-
-          // CRITICAL FIX: Handle 0 rows case
-          // If totalCount is 0, we're definitely done (no rows to show)
-          // If we got fewer rows than requested, we're done (last block)
-          // If we've reached or exceeded totalCount, we're done
-          const isLastBlock = totalCount === 0 ||
-                              rowCount < requestedBlockSize ||
-                              (totalCount > 0 && endRow >= totalCount);
-
-          // CRITICAL FIX: Set lastRow to 0 when totalCount is 0 (no rows)
-          const lastRow = isLastBlock ? (totalCount === 0 ? 0 : totalCount) : undefined;
-
-          // Update supabaseData for records variable first (before callback)
-          // Note: In infinite scroll mode, supabaseData will only contain the current block;
-          // the grid manages the full dataset internally.
-          supabaseData.value = data;
-          supabaseTotalCount.value = totalCount;
-
-          // CRITICAL FIX: Use setTimeout to defer successCallback, preventing error #252
-          isGridRendering.value = true;
-          setTimeout(() => {
-            try {
-              successCallback(data, lastRow);
-            } catch (error) {
-              console.error('[Infinite Scroll] Error in successCallback:', error);
-            } finally {
-              setTimeout(() => {
-                isGridRendering.value = false;
-                nextTick(() => {
-                  setTimeout(() => {
-                    updateRecordsFromGrid();
-                  }, 50);
-                });
-              }, 50);
-            }
-          }, 0);
-        } catch (error) {
-          console.error('[Infinite Scroll] Error in getRows:', error);
-          isGridRendering.value = false;
-          setTimeout(() => {
-            failCallback();
-          }, 0);
-        }
-      },
-    };
-  });
-
-  // CRITICAL FIX: Delay datasource initialization to prevent error #252
-  // AG Grid can call getRows during its initial render cycle, causing conflicts.
-  // We use a ref that's set after grid is ready, not a computed, to have better control.
-  const delayedDatasource = ref(undefined);
-
-  // Watch for grid ready to set the datasource after a delay
-  watch(
-    () => [gridReady.value, isInfiniteScrollEnabled.value, datasource.value],
-    ([ready, infiniteEnabled, ds]) => {
-      if (ready && infiniteEnabled && ds && !delayedDatasource.value) {
-        setTimeout(() => {
-          delayedDatasource.value = ds;
-        }, 100);
-      } else if (!infiniteEnabled) {
-        delayedDatasource.value = undefined;
+  // Append next block via api.applyTransaction so the existing rendered
+  // viewport isn't reset. We also push to pagedRowData so the prop and
+  // grid stay in sync (AG Grid's diff is a no-op in this case because
+  // every existing rowId is preserved).
+  const loadMore = async (api, filterModel = null, sortModel = null, searchValue = readSearchValue()) => {
+    if (!isInfiniteScrollEnabled.value) return;
+    if (isGroupingActive.value) return; // Per-group grids use loadMoreForGroup instead.
+    if (isLoadingMore.value) return;
+    if (allLoaded.value) return;
+    isLoadingMore.value = true;
+    try {
+      const start = loadedOffset.value;
+      const end = start + blockSize.value;
+      const { data, totalCount: total } = await fetchSupabaseDataForInfinite(
+        start,
+        end,
+        filterModel,
+        sortModel,
+        searchValue
+      );
+      const batch = Array.isArray(data) ? data : [];
+      if (batch.length > 0 && api) {
+        try { api.applyTransaction({ add: batch }); }
+        catch (e) { console.warn('[PagedAppend] applyTransaction add failed:', e?.message); }
       }
-    },
-    { immediate: true }
-  );
+      pagedRowData.value = [...pagedRowData.value, ...batch];
+      loadedOffset.value = pagedRowData.value.length;
+      if (typeof total === 'number') {
+        totalCount.value = total;
+        supabaseTotalCount.value = total;
+      }
+    } finally {
+      isLoadingMore.value = false;
+    }
+  };
 
-  // ========== PER-GROUP INFINITE-SCROLL DATASOURCES ==========
-  // Each group grid gets its own IDatasource whose getRows injects a filter
-  // for its group value. Datasources are memoized by groupValue so the prop
-  // identity is stable across renders — AG Grid only resets its cache when
-  // the datasource reference itself changes.
+  // Filter/sort changes call this to discard loaded rows and refetch from
+  // offset 0. AG Grid's prop diff resets the viewport when pagedRowData is
+  // reassigned to a fresh array.
+  const refetchAll = async (filterModel = null, sortModel = null, searchValue = readSearchValue()) => {
+    if (!isInfiniteScrollEnabled.value) return;
+    // In grouped mode the orchestrator routes to refetchAllVisibleGroups —
+    // the single-grid path is dormant. Skip so we don't double-fetch.
+    if (isGroupingActive.value) return;
+    pagedRowData.value = [];
+    loadedOffset.value = 0;
+    hasInitialLoaded.value = false;
+    await loadInitial(filterModel, sortModel, searchValue);
+  };
 
-  const groupDatasourceCache = new Map();
+  // ========== PER-GROUP PAGED-APPEND STATE ==========
+  // Map<groupValue, { rowData: row[], total: number, offset: number,
+  //                    loadingMore: boolean, loaded: boolean }>
+  const groupPagedState = shallowRef(new Map());
 
-  // Build a filter model that forces the grouping column to match `groupValue`.
-  // For UNASSIGNED_GROUP we use the `__empty__` sentinel which convertFilterToSupabase
-  // translates to `IS NULL`.
+  const getGroupEntry = (groupValue) => {
+    const map = groupPagedState.value;
+    let entry = map.get(groupValue);
+    if (!entry) {
+      entry = { rowData: [], total: 0, offset: 0, loadingMore: false, loaded: false };
+      const next = new Map(map);
+      next.set(groupValue, entry);
+      groupPagedState.value = next;
+    }
+    return entry;
+  };
+
+  // Reactive accessor for a group's rowData — used by the template binding.
+  const groupPagedRowData = (groupValue) => {
+    return groupPagedState.value.get(groupValue)?.rowData || [];
+  };
+
+  // Inject the grouping-column filter into every per-group fetch so the
+  // server only returns rows belonging to that group. UNASSIGNED maps to the
+  // `__empty__` sentinel that convertFilterToSupabase translates to IS NULL.
   const buildGroupFilterModel = (baseFilterModel, groupValue) => {
     const colId = groupingColumnId.value;
     if (!colId) return baseFilterModel || {};
@@ -244,149 +198,218 @@ export function useInfiniteScroll(
     return merged;
   };
 
-  // Returns a memoized IDatasource for the given group value.
-  // Returns undefined when not in grouping + infinite-scroll mode.
-  const groupDatasourceFor = (groupValue) => {
-    if (!isGroupingActive.value || !isInfiniteScrollEnabled.value) return undefined;
-    const key = String(groupValue);
-    const existing = groupDatasourceCache.get(key);
-    if (existing) return existing;
-
-    const ds = {
-      rowCount: undefined,
-      getRows: async (params) => {
-        const { startRow, endRow, sortModel, filterModel, successCallback, failCallback } = params;
-        const mergedFilter = buildGroupFilterModel(filterModel, groupValue);
-        const requestedBlockSize = endRow - startRow;
-
-        try {
-          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
-          const { data, totalCount } = await fetchSupabaseDataForInfinite(
-            startRow,
-            endRow,
-            mergedFilter,
-            sortModel,
-            searchValue
-          );
-
-          // Reconcile the fetched block with the pending-move map (see
-          // useGrouping.pendingGroupingMoves):
-          //   - Drop rows whose pending move targets a *different* group —
-          //     even if Supabase still has the old value, the user just
-          //     edited it locally and shouldn't see the row in the source
-          //     group while we wait for the write to land.
-          //   - Inject pending rows whose target *is* this group but that
-          //     Supabase hasn't returned yet, so the destination shows the
-          //     moved row instantly instead of after the round-trip.
-          //
-          // We deliberately do NOT clear the pending entry when Supabase
-          // catches up: a stale in-flight getRows (from an earlier purge)
-          // can resolve later with data that doesn't yet contain the row,
-          // and an eager clear would leave nothing to inject — so the row
-          // would briefly appear and then vanish on every rapid sequence of
-          // moves. Keeping the pending entry around for its full TTL plus
-          // the `fetchedIds` de-dup below means duplicates are impossible
-          // and the row stays visible regardless of which getRows wins the
-          // race.
-          const pendingMap = pendingGroupingMoves?.value;
-          const idFormula = props.content?.idFormula;
-          let visibleData = Array.isArray(data) ? data : [];
-          let droppedCount = 0;
-          let injectedCount = 0;
-          if (pendingMap && pendingMap.size > 0) {
-            const fetchedIds = new Set();
-            if (visibleData.length > 0) {
-              for (const row of visibleData) {
-                const rid = resolveMappingFormula?.(idFormula, row);
-                if (rid != null && rid !== '') fetchedIds.add(String(rid));
-              }
-              const beforeLen = visibleData.length;
-              visibleData = visibleData.filter((row) => {
-                const rid = resolveMappingFormula?.(idFormula, row);
-                if (rid == null || rid === '') return true;
-                const entry = pendingMap.get(String(rid));
-                if (!entry) return true;
-                const target = (entry.newGroupValue === null || entry.newGroupValue === undefined || entry.newGroupValue === '')
-                  ? UNASSIGNED_GROUP
-                  : String(entry.newGroupValue);
-                return target === groupValue;
-              });
-              droppedCount = beforeLen - visibleData.length;
-            }
-
-            const injected = [];
-            pendingMap.forEach((entry, rid) => {
-              const target = (entry?.newGroupValue === null || entry?.newGroupValue === undefined || entry?.newGroupValue === '')
-                ? UNASSIGNED_GROUP
-                : String(entry.newGroupValue);
-              if (target !== groupValue) return;
-              if (fetchedIds.has(rid)) return; // Already in the fetched block — let the TTL clean up later.
-              if (entry?.rowData) injected.push(entry.rowData);
-            });
-            if (injected.length > 0) {
-              visibleData = [...injected, ...visibleData];
-              injectedCount = injected.length;
-            }
-          }
-
-          // Cache per-group total so badge counts stay accurate.
-          //   adjusted = totalCount - dropped (out) + injected (in)
-          if (typeof totalCount === 'number' && totalCount >= 0) {
-            const next = new Map(groupInfiniteCounts.value);
-            next.set(groupValue, Math.max(0, totalCount - droppedCount + injectedCount));
-            groupInfiniteCounts.value = next;
-          }
-
-          const adjustedTotal = typeof totalCount === 'number'
-            ? Math.max(0, totalCount - droppedCount + injectedCount)
-            : totalCount;
-          const rowCount = visibleData.length;
-          const isLastBlock =
-            adjustedTotal === 0 ||
-            rowCount < requestedBlockSize ||
-            (typeof adjustedTotal === 'number' && adjustedTotal > 0 && endRow >= adjustedTotal);
-          const lastRow = isLastBlock ? (adjustedTotal === 0 ? 0 : adjustedTotal) : undefined;
-
-          // Defer to avoid AG Grid error #252 (callback during render cycle).
-          setTimeout(() => {
-            try { successCallback(visibleData, lastRow); }
-            catch (e) { console.error(`[Group Infinite] successCallback error for "${groupValue}":`, e); }
-          }, 0);
-        } catch (error) {
-          console.error(`[Group Infinite] getRows error for "${groupValue}":`, error);
-          setTimeout(() => { try { failCallback(); } catch (_) { /* noop */ } }, 0);
-        }
-      },
-    };
-    groupDatasourceCache.set(key, ds);
-    return ds;
+  const writeGroupEntry = (groupValue, partial) => {
+    const map = groupPagedState.value;
+    const prev = map.get(groupValue) || { rowData: [], total: 0, offset: 0, loadingMore: false, loaded: false };
+    const next = new Map(map);
+    next.set(groupValue, { ...prev, ...partial });
+    groupPagedState.value = next;
   };
 
-  // Invalidate the datasource cache (and counts) when grouping column changes
-  // or infinite-scroll toggles. A new cache entry produces a new reference,
-  // which causes AG Grid to rebuild its infinite cache for each group.
+  const loadInitialForGroup = async (
+    groupValue,
+    filterModel = null,
+    sortModel = null,
+    searchValue = readSearchValue()
+  ) => {
+    if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+    // Idempotent: if state is already populated (initial fetch already
+    // resolved earlier, OR a cross-group cell edit just optimistically
+    // injected a row), do not overwrite. This is critical for the
+    // empty-group → first-row case: the group's count flipped 0→1, its
+    // grid mounted (v-if), grid-ready fired, and the staggered call to
+    // this function would otherwise refetch from Supabase before the
+    // user-side workflow's write has landed — getting stale rows back
+    // and clobbering the optimistic injection. Explicit refetch paths
+    // (refetchAllForGroup / refetchAllVisibleGroups) reset `loaded` to
+    // false before calling this, so they bypass the guard cleanly.
+    const existing = groupPagedState.value.get(groupValue);
+    if (existing?.loaded) return;
+    // Fast path for known-empty groups: the upfront count request
+    // (refreshGroupCounts) has already established the group has zero
+    // matching rows. Skip the no-op data fetch and write an empty entry
+    // so AG Grid's noRowsOverlay can render immediately.
+    const knownCount = groupInfiniteCounts.value.get(groupValue);
+    if (knownCount === 0) {
+      writeGroupEntry(groupValue, {
+        rowData: [],
+        total: 0,
+        offset: 0,
+        loadingMore: false,
+        loaded: true,
+      });
+      return;
+    }
+    const merged = buildGroupFilterModel(filterModel, groupValue);
+    const size = blockSize.value;
+    const { data, totalCount: total } = await fetchSupabaseDataForInfinite(
+      0,
+      size,
+      merged,
+      sortModel,
+      searchValue
+    );
+    const rows = Array.isArray(data) ? data : [];
+    writeGroupEntry(groupValue, {
+      rowData: rows,
+      total: typeof total === 'number' ? total : rows.length,
+      offset: rows.length,
+      loadingMore: false,
+      loaded: true,
+    });
+    if (typeof total === 'number') {
+      const counts = new Map(groupInfiniteCounts.value);
+      counts.set(groupValue, total);
+      groupInfiniteCounts.value = counts;
+    }
+  };
+
+  const loadMoreForGroup = async (
+    groupValue,
+    api,
+    filterModel = null,
+    sortModel = null,
+    searchValue = readSearchValue()
+  ) => {
+    if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+    const entry = getGroupEntry(groupValue);
+    if (entry.loadingMore) return;
+    if (entry.loaded && entry.offset >= entry.total) return;
+    writeGroupEntry(groupValue, { loadingMore: true });
+    try {
+      const merged = buildGroupFilterModel(filterModel, groupValue);
+      const start = entry.offset;
+      const end = start + blockSize.value;
+      const { data, totalCount: total } = await fetchSupabaseDataForInfinite(
+        start,
+        end,
+        merged,
+        sortModel,
+        searchValue
+      );
+      const batch = Array.isArray(data) ? data : [];
+      if (batch.length > 0 && api) {
+        try { api.applyTransaction({ add: batch }); }
+        catch (e) { console.warn(`[PagedAppend group="${groupValue}"] applyTransaction add failed:`, e?.message); }
+      }
+      const refreshed = getGroupEntry(groupValue);
+      writeGroupEntry(groupValue, {
+        rowData: [...refreshed.rowData, ...batch],
+        offset: refreshed.offset + batch.length,
+        total: typeof total === 'number' ? total : refreshed.total,
+        loadingMore: false,
+      });
+      if (typeof total === 'number') {
+        const counts = new Map(groupInfiniteCounts.value);
+        counts.set(groupValue, total);
+        groupInfiniteCounts.value = counts;
+      }
+    } catch (e) {
+      writeGroupEntry(groupValue, { loadingMore: false });
+      throw e;
+    }
+  };
+
+  const refetchAllForGroup = async (
+    groupValue,
+    filterModel = null,
+    sortModel = null,
+    searchValue = readSearchValue()
+  ) => {
+    if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+    writeGroupEntry(groupValue, { rowData: [], offset: 0, loaded: false, loadingMore: false });
+    await loadInitialForGroup(groupValue, filterModel, sortModel, searchValue);
+  };
+
+  // Filter/sort/search/table changes in grouped mode dispatch through here.
+  // Strategy: clear state for unmounted groups (so their next expand fetches
+  // fresh), then refetch every currently-mounted group in parallel. Badge
+  // counts are refreshed separately via scheduleRefreshGroupCounts so the
+  // collapsed groups' badges stay accurate without mounting their grids.
+  const refetchAllVisibleGroups = async (
+    filterModel = null,
+    sortModel = null,
+    searchValue = readSearchValue()
+  ) => {
+    if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+    const mountedKeys = new Set(groupGridApis.value.keys());
+    // Drop stale state for collapsed groups so when they expand again their
+    // grid-ready triggers a fresh loadInitialForGroup with the new model.
+    const next = new Map();
+    groupPagedState.value.forEach((entry, key) => {
+      if (mountedKeys.has(key)) next.set(key, entry);
+    });
+    groupPagedState.value = next;
+    await Promise.all(
+      Array.from(mountedKeys).map(gv =>
+        refetchAllForGroup(gv, filterModel, sortModel, searchValue)
+          .catch(e => console.warn(`[PagedAppend] refetch group="${gv}" failed:`, e?.message))
+      )
+    );
+  };
+
+  // Cross-group cell edits & drags drive these directly so the source/dest
+  // grids reflect the move without waiting for the server.
+  // `target` may be a row reference (matched by ===) or a predicate function.
+  // Reference equality is preferred — the rows held in groupPagedState are
+  // the same Supabase result objects that AG Grid passes back as event.data,
+  // so the caller can hand us the data object directly without worrying
+  // about id-formula resolution.
+  const removeRowFromGroupState = (groupValue, target) => {
+    const entry = groupPagedState.value.get(groupValue);
+    if (!entry) return false;
+    const predicate = typeof target === 'function'
+      ? target
+      : (row) => row === target;
+    const filtered = entry.rowData.filter(row => !predicate(row));
+    const removed = entry.rowData.length - filtered.length;
+    if (removed === 0) return false;
+    writeGroupEntry(groupValue, {
+      rowData: filtered,
+      offset: Math.max(0, entry.offset - removed),
+      total: Math.max(0, entry.total - removed),
+    });
+    if (typeof entry.total === 'number') {
+      const counts = new Map(groupInfiniteCounts.value);
+      counts.set(groupValue, Math.max(0, entry.total - removed));
+      groupInfiniteCounts.value = counts;
+    }
+    return true;
+  };
+
+  const addRowToGroupState = (groupValue, row) => {
+    const entry = getGroupEntry(groupValue);
+    // Dedup by reference — if some path has already optimistically inserted
+    // this row (e.g., a drag-drop preview that wrote to state, or two adds
+    // racing), don't prepend a duplicate. Without this, the prop binding
+    // can briefly emit [R, R, ...rest] and AG Grid's id-based diff treats
+    // both R nodes as the same row, causing visual duplicates until the
+    // next clean refresh.
+    if (Array.isArray(entry.rowData) && entry.rowData.includes(row)) return;
+    writeGroupEntry(groupValue, {
+      rowData: [row, ...entry.rowData],
+      offset: entry.offset + 1,
+      total: entry.total + 1,
+      loaded: true,
+    });
+    const counts = new Map(groupInfiniteCounts.value);
+    counts.set(groupValue, entry.total + 1);
+    groupInfiniteCounts.value = counts;
+  };
+
+  // Reset all per-group state when grouping toggles or column changes — the
+  // previous group keys no longer apply.
   watch(
     () => [groupingColumnId.value, isInfiniteScrollEnabled.value],
     () => {
-      groupDatasourceCache.clear();
+      groupPagedState.value = new Map();
       groupInfiniteCounts.value = new Map();
     }
   );
 
-  // Refresh a specific group's infinite cache (e.g. after a cross-group cell edit).
-  const refreshGroupInfiniteCache = (groupValue) => {
-    if (!isInfiniteScrollEnabled.value) return;
-    const api = groupGridApis.value.get(groupValue);
-    if (!api) return;
-    try { api.purgeInfiniteCache(); }
-    catch (e) { console.warn(`[Group Infinite] purge failed for "${groupValue}":`, e?.message); }
-  };
-
   // ========== UPFRONT GROUP COUNTS ==========
-  // Without this, group badges only display once a group's grid is opened
-  // (the count is a side-effect of the rows fetch in groupDatasourceFor).
-  // Here we fire a count-only Supabase request per group up front so badges
-  // are populated even while groups are collapsed.
+  // Count-only Supabase requests so badges show correct totals even for
+  // collapsed groups whose grids are unmounted.
 
   const fetchSupabaseGroupCount = async (filterModel) => {
     if (props.content?.dataSource !== 'supabase') return null;
@@ -413,10 +436,9 @@ export function useInfiniteScroll(
     }
   };
 
-  // Pull the AG Grid filter model that's currently active. In multi-grid mode
-  // all group grids share the same filter (synced by onGroupFilterChanged), so
-  // any one will do. Falls back to viewConfiguration.filters if grids aren't
-  // mounted yet (initial load).
+  // All group grids share the same column-filter state (synced by
+  // onGroupFilterChanged), so any one's filterModel works for the count
+  // requests. Falls back to viewConfiguration.filters when no grid is mounted.
   const getCurrentFilterModelForCount = () => {
     for (const api of groupGridApis.value.values()) {
       try {
@@ -429,8 +451,9 @@ export function useInfiniteScroll(
     return null;
   };
 
-  // Generation counter so a stale set of in-flight requests can't stomp on a
-  // newer one (e.g. user changes filter while previous counts are still loading).
+  // Generation counter so a stale set of in-flight requests doesn't stomp on
+  // a newer one (e.g. user changes filter while previous counts are still
+  // resolving).
   let groupCountsGeneration = 0;
   let groupCountsTimer = null;
 
@@ -449,7 +472,6 @@ export function useInfiniteScroll(
       })
     );
 
-    // Bail if a newer refresh started while this one was in flight.
     if (myGen !== groupCountsGeneration) return;
 
     const next = new Map(groupInfiniteCounts.value);
@@ -459,7 +481,7 @@ export function useInfiniteScroll(
     groupInfiniteCounts.value = next;
   };
 
-  // Debounce so that bursts of triggers (e.g. grouping + filter applied in the
+  // Debounce so bursts of triggers (e.g. grouping + filter applied in the
   // same tick from view configuration) collapse into a single request batch.
   const scheduleRefreshGroupCounts = () => {
     if (groupCountsTimer) clearTimeout(groupCountsTimer);
@@ -485,15 +507,33 @@ export function useInfiniteScroll(
   );
 
   return {
+    // Grid options (kept for compatibility — single source of truth lives here)
     rowModelType,
     rowDragManaged,
     paginationEnabled,
-    cacheBlockSize,
-    datasource,
-    delayedDatasource,
-    groupDatasourceFor,
-    refreshGroupInfiniteCache,
+    // Single-grid paged-append API
+    pagedRowData,
+    loadedOffset,
+    totalCount,
+    isLoadingMore,
+    hasInitialLoaded,
+    allLoaded,
+    blockSize,
+    loadInitial,
+    loadMore,
+    refetchAll,
+    // Per-group paged-append API
+    groupPagedState,
+    groupPagedRowData,
+    loadInitialForGroup,
+    loadMoreForGroup,
+    refetchAllForGroup,
+    refetchAllVisibleGroups,
+    addRowToGroupState,
+    removeRowFromGroupState,
+    // Group counts
     fetchSupabaseGroupCount,
+    refreshGroupCounts,
     scheduleRefreshGroupCounts,
   };
 }

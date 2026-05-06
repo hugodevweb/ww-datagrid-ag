@@ -16,13 +16,6 @@
       :theme="theme"
       :getRowId="getRowId"
       :popup-parent="popupParent"
-      :rowModelType="rowModelType"
-      :datasource="delayedDatasource"
-      :cacheBlockSize="cacheBlockSize"
-      :maxBlocksInCache="cfg.maxBlocksInCache ?? 10"
-      :cacheOverflowSize="cfg.cacheOverflowSize ?? 2"
-      :maxConcurrentDatasourceRequests="cfg.maxConcurrentRequests ?? 2"
-      :blockLoadDebounceMillis="cfg.blockLoadDebounce ?? 100"
       :pagination="paginationEnabled"
       :paginationPageSize="
         forcedPaginationPageSize
@@ -39,7 +32,7 @@
       :getRowStyle="rowStyle"
       enableCellTextSelection
       ensureDomOrder
-      :row-drag-managed="rowDragManaged"
+      row-drag-managed
       :rowBuffer="cfg.rowBuffer ?? 25"
       :rowHeight="cfg.rowHeight ?? 40"
       :suppressRowVirtualisation="false"
@@ -77,6 +70,7 @@
         v-for="group in orderedGroups"
         :key="group.value"
         class="ww-group"
+        :data-group-value="group.value"
         :style="{ '--group-color': group.color }"
         :class="{
           'ww-group--dragging': groupDragValue === group.value,
@@ -125,9 +119,7 @@
         <ag-grid-vue
           v-if="!group.collapsed"
           :components="gridComponents"
-          :rowData="isInfiniteScrollEnabled ? undefined : groupRowData(group.value)"
-          :rowModelType="rowModelType"
-          :cacheBlockSize="cacheBlockSize"
+          :rowData="groupRowData(group.value)"
           :alignedGrids="alignedGridApisForGroup"
           :columnDefs="columnDefs"
           :defaultColDef="defaultColDef"
@@ -157,7 +149,8 @@
           :getRowStyle="rowStyle"
           enableCellTextSelection
           ensureDomOrder
-          :row-drag-managed="false"
+          :row-drag-managed="true"
+          :suppressMoveWhenRowDragging="false"
           :rowBuffer="cfg.rowBuffer ?? 25"
           :rowHeight="cfg.rowHeight ?? 40"
           :suppressRowVirtualisation="false"
@@ -179,7 +172,7 @@
           @row-clicked="onRowClicked"
           @column-moved="(e) => onGroupColumnMoved(group.value, e)"
           @column-resized="(e) => onGroupColumnResized(group.value, e)"
-          @body-scroll="onGroupBodyScroll"
+          @body-scroll="(e) => onGroupBodyScrollWrapper(group.value, e)"
           @first-data-rendered="onFirstDataRendered"
           @model-updated="onModelUpdated"
         >
@@ -694,7 +687,6 @@ export default {
       UNASSIGNED_GROUP,
       groupingState, pendingGroupingColumnId, isGroupingTransitionLoading,
       groupGridApis, groupSelections, groupInfiniteCounts,
-      pendingGroupingMoves, setPendingGroupingMove, clearPendingGroupingMove,
       bumpGroupingDataVersion,
       groupHorizontalScrollRef, groupHorizontalScrollWidth,
       groupHorizontalViewportWidth, groupHorizontalScrollLeft,
@@ -725,7 +717,11 @@ export default {
       getIsVirtualColumn: () => isVirtualColumn,
       getUpdateCurrentConfig: () => updateCurrentConfig,
       getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
-      getGroupDatasourceFor: () => groupDatasourceFor,
+      getLoadInitialForGroup: () => loadInitialForGroup,
+      getRefetchAllVisibleGroups: () => refetchAllVisibleGroups,
+      getGroupPagedRowData: () => groupPagedRowData,
+      getAddRowToGroupState: () => addRowToGroupState,
+      getRemoveRowFromGroupState: () => removeRowFromGroupState,
       getOnFilterChanged: () => onFilterChanged,
       getOnSortChanged: () => onSortChanged,
       getOnColumnMoved: () => onColumnMoved,
@@ -830,14 +826,12 @@ export default {
       isGroupingActive, groupingState, groupGridApis,
       isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
-      setPendingGroupingMove,
       bumpGroupingDataVersion,
-      // Thunk: useInfiniteScroll is created AFTER useCellEditing, so the
-      // scheduleRefreshGroupCounts function isn't bound yet at construction
-      // time. Resolve it lazily so cross-group cell edits can refresh the
-      // badge counts on collapsed destination groups (whose grids aren't
-      // mounted, so their per-group datasource isn't called).
+      // Thunks: useInfiniteScroll is created AFTER useCellEditing, so its
+      // handles aren't bound yet at construction time. Resolve lazily.
       getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
+      getAddRowToGroupState: () => addRowToGroupState,
+      getRemoveRowFromGroupState: () => removeRowFromGroupState,
     });
 
     // Composable: grid actions — programmatic actions exposed to WeWeb
@@ -865,8 +859,9 @@ export default {
       removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
       supabaseData, supabaseTotalCount,
       waitForSupabaseInstance,
-      // Thunk: useInfiniteScroll is created AFTER useGridActions
-      getDatasource: () => datasource,
+      // getDatasource thunk is no longer used (paged-append owns its own
+      // state); kept undefined for shape compatibility with the destructure.
+      getDatasource: () => undefined,
       gridContainerRef,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
       _lastActiveCellEdit,
@@ -916,25 +911,26 @@ export default {
 
 
 
-    // Composable: infinite-scroll datasource (single-grid + per-group), upfront
-    // group counts, and the row-model-type / cacheBlockSize / paginationEnabled
-    // computeds. Depends on useDataFetch + the inline grouping refs above.
+    // Composable: paged-append data lifecycle (single-grid + per-group),
+    // upfront group counts, and the rowModelType / paginationEnabled /
+    // rowDragManaged computeds. Depends on useDataFetch + grouping refs.
     const {
-      rowModelType, rowDragManaged, paginationEnabled, cacheBlockSize,
-      datasource, delayedDatasource,
-      groupDatasourceFor, refreshGroupInfiniteCache,
+      rowModelType, rowDragManaged, paginationEnabled,
+      pagedRowData, totalCount: pagedTotalCount, isLoadingMore, allLoaded, blockSize,
+      loadInitial, loadMore, refetchAll,
+      groupPagedRowData, loadInitialForGroup, loadMoreForGroup, refetchAllForGroup,
+      refetchAllVisibleGroups,
+      addRowToGroupState, removeRowFromGroupState,
       fetchSupabaseGroupCount, scheduleRefreshGroupCounts,
     } = useInfiniteScroll(cfg, props, resolveMappingFormula, {
-      gridApi, gridReady, isGridRendering,
-      isInfiniteScrollEnabled, isUpdatingDataLocally,
-      supabaseData, supabaseTotalCount, removedRowIds,
+      gridApi, gridReady,
+      isInfiniteScrollEnabled,
+      supabaseTotalCount,
       fetchSupabaseDataForInfinite, waitForSupabaseInstance,
-      updateRecordsFromGrid,
       formatFiltersForLog, applySearchToSupabase, applyManualFilters, convertFilterToSupabase,
       UNASSIGNED_GROUP,
       isGroupingActive, groupingColumnId, orderedGroups,
       groupGridApis, groupInfiniteCounts,
-      pendingGroupingMoves,
     });
 
     // Helper function to get current column widths from the grid
@@ -1096,6 +1092,7 @@ export default {
       isInfiniteScrollEnabled, isApplyingViewConfig,
       updateCurrentConfig,
       fetchSupabaseData, updateRecordsFromGrid,
+      getRefetchAll: () => refetchAll,
     });
 
 
@@ -1158,28 +1155,38 @@ export default {
       gridMonitor.trackScroll();
 
       const api = event?.api || gridApi.value;
-      
+
       // Get scroll container dimensions from the grid container ref
       if (!gridContainerRef.value) return;
-      
+
       const scrollContainer = gridContainerRef.value.querySelector('.ag-body-viewport');
       if (!scrollContainer) return;
-      
+
       const scrollHeight = scrollContainer.scrollHeight;
       const clientHeight = scrollContainer.clientHeight;
       const scrollTopPos = scrollContainer.scrollTop || event?.top || 0;
       const scrollLeftPos = scrollContainer.scrollLeft || event?.left || 0;
-      
+
       // Calculate if near bottom (within 100px of bottom)
       const distanceFromBottom = scrollHeight - (scrollTopPos + clientHeight);
       const isNearBottom = distanceFromBottom <= 100;
       const isAtBottom = distanceFromBottom <= 5;
-      
+
+      // Paged-append: when the user scrolls within ~200px of the bottom,
+      // fetch the next block and append. The composable de-dupes concurrent
+      // calls via isLoadingMore and short-circuits when allLoaded is true.
+      if (isInfiniteScrollEnabled.value && distanceFromBottom <= 200) {
+        const filterModel = api.getFilterModel?.() || null;
+        const sortModel = api.getState?.()?.sort?.sortModel || [];
+        const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+        loadMore(api, filterModel, sortModel, searchValue);
+      }
+
       // Debounce to avoid too many events
       if (scrollDebounceTimer.value) {
         clearTimeout(scrollDebounceTimer.value);
       }
-      
+
       scrollDebounceTimer.value = setTimeout(() => {
         // Emit scroll event with useful information for pagination management
         ctx.emit("trigger-event", {
@@ -1196,6 +1203,31 @@ export default {
           },
         });
       }, 100); // 100ms debounce to reduce event frequency
+    };
+
+    // Group-grid scroll wrapper. Forwards horizontal-scroll syncing to the
+    // existing handler from useGrouping, and triggers per-group loadMore in
+    // paged-append mode when the user nears the bottom of a group's grid.
+    const onGroupBodyScrollWrapper = (groupValue, event) => {
+      onGroupBodyScroll(event);
+      if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+      const api = event?.api;
+      if (!api) return;
+      try {
+        const lastIdx = typeof api.getLastDisplayedRowIndex === 'function'
+          ? api.getLastDisplayedRowIndex()
+          : (api.getDisplayedRowCount?.() ?? 0) - 1;
+        const total = api.getDisplayedRowCount?.() ?? 0;
+        if (total === 0) return;
+        // Trigger loadMore when the last visible row is within 10 of the
+        // current loaded count.
+        if (lastIdx >= total - 10) {
+          const filterModel = api.getFilterModel?.() || null;
+          const sortModel = api.getState?.()?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+          loadMoreForGroup(groupValue, api, filterModel, sortModel, searchValue);
+        }
+      } catch (_) { /* noop */ }
     };
 
     /* wwEditor:start */
@@ -1223,9 +1255,11 @@ export default {
 
 
     const rowData = computed(() => {
-      // If using infinite scrolling, rowData should be undefined (grid uses datasource)
+      // Paged-append mode: bind the per-block accumulator. AG Grid diffs by
+      // getRowId on prop changes, so appending a new block leaves existing
+      // rendered rows intact and only mounts the new ones.
       if (isInfiniteScrollEnabled.value) {
-        return undefined;
+        return pagedRowData.value;
       }
       // If using Supabase with pagination, return Supabase data
       if (props.content?.dataSource === 'supabase') {
@@ -1261,12 +1295,12 @@ export default {
       rowDataLength.value = newLength;
       rowDataRef.value = newData;
 
-      // For non-infinite scroll modes, update records from rowData
-      // For infinite scroll, records will be updated via grid API watchers
+      // For non-paged-append modes, update records from rowData. In paged-
+      // append mode, AG Grid is the source of truth — pull records from the
+      // grid api after the prop diff has settled.
       if (!isInfiniteScrollEnabled.value) {
         setRecords(Array.isArray(newData) ? [...newData] : []);
       } else {
-        // For infinite scroll, update from grid API after a short delay to let grid update
         nextTick(() => {
           setTimeout(() => {
             updateRecordsFromGrid();
@@ -1284,8 +1318,11 @@ export default {
           dataRendered.value = true;
         }
         
-        // Only apply transaction if there was an actual array or length change
-        if (isArrayChange || isLengthChange) {
+        // Only apply transaction if there was an actual array or length change.
+        // In paged-append mode, AG Grid's prop diff handles add/remove on its
+        // own — bypass the bulk update transaction (which would re-emit row
+        // mutations for every loaded row on every append).
+        if ((isArrayChange || isLengthChange) && !isInfiniteScrollEnabled.value) {
           nextTick(() => {
             const hasActiveEditor = typeof gridApi.value?.getEditingCells === 'function' &&
               gridApi.value.getEditingCells().length > 0;
@@ -1304,14 +1341,14 @@ export default {
                     return gridApi.value.applyTransaction({ update: clonedRows });
                   }
                 },
-                { 
-                  priority: 0, 
+                {
+                  priority: 0,
                   description: 'applyTransaction for rowData update',
-                  condition: () => !!gridApi.value 
+                  condition: () => !!gridApi.value
                 }
               );
             }
-            
+
             // Then refresh cells
             gridApiUtils.refreshCells(gridApi.value, { force: true }).catch(error => {
               console.warn('[Datagrid] Error during rowData refresh:', error);
@@ -1524,22 +1561,16 @@ export default {
         // Only fetch if source actually changed to supabase
         if (newSource === 'supabase' && newSource !== oldSource && gridApi.value) {
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, set the datasource
-            // CRITICAL FIX: Preserve filters and sorts when switching to server-side mode
-            const currentFilters = gridApi.value.getFilterModel();
-            const currentSort = gridApi.value.getState()?.sort?.sortModel;
-            gridApi.value.setGridOption('datasource', datasource.value);
-            nextTick(() => {
-              if (currentFilters && Object.keys(currentFilters).length > 0) {
-                gridApi.value.setFilterModel(currentFilters);
-              }
-              if (currentSort && currentSort.length > 0) {
-                gridApi.value.applyColumnState({
-                  state: currentSort,
-                  defaultState: { sort: null },
-                });
-              }
-            });
+            // Paged-append: kick off the first-block fetch with current
+            // filter/sort state. Routed per-group when grouping is active.
+            const filterModel = gridApi.value.getFilterModel();
+            const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            if (isGroupingActive.value) {
+              refetchAllVisibleGroups(filterModel, sortModel, searchValue);
+            } else {
+              refetchAll(filterModel, sortModel, searchValue);
+            }
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -1577,16 +1608,16 @@ export default {
         
         if (props.content?.dataSource === 'supabase' && gridApi.value) {
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, refresh the datasource
-            // CRITICAL FIX: Preserve filters and sorts when table/query changes
-            // Use queue-based approach instead of setTimeout cascade
-            gridApiUtils.refreshDatasourceWithState(
-              gridApi.value, 
-              datasource.value, 
-              'Supabase query change refresh'
-            ).catch(error => {
-              console.warn('[Datagrid] Error during datasource refresh:', error);
-            });
+            // Paged-append: refetch first block on table/query change. In
+            // grouped mode, dispatch to every mounted group.
+            const filterModel = gridApi.value.getFilterModel();
+            const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            if (isGroupingActive.value) {
+              refetchAllVisibleGroups(filterModel, sortModel, searchValue);
+            } else {
+              refetchAll(filterModel, sortModel, searchValue);
+            }
           } else {
             // Reset last fetch params to allow new fetch
             lastFetchParams.value = null;
@@ -1629,21 +1660,17 @@ export default {
         // Handle initial setup
         if (ready && source === 'supabase' && table && gridApi.value && !initialFetchDone.value) {
           initialFetchDone.value = true;
-          
+
           if (isInfiniteScrollEnabled.value) {
-            // For infinite scrolling, set the datasource
-            // Note: rowModelType is set via computed property at grid initialization
-            // and cannot be changed dynamically (AG Grid limitation)
-            // CRITICAL FIX: Preserve filters and sorts when initializing infinite scroll
-            // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-            // Use queue-based approach instead of setTimeout cascade
-            gridApiUtils.refreshDatasourceWithState(
-              gridApi.value, 
-              datasource.value, 
-              'Infinite scroll toggle refresh'
-            ).catch(error => {
-              console.warn('[Datagrid] Error during infinite scroll toggle refresh:', error);
-            });
+            // Paged-append: kick off the first block fetch. In grouped mode
+            // each group's grid-ready handles its own loadInitialForGroup,
+            // so the single-grid call short-circuits inside loadInitial.
+            const filterModel = gridApi.value.getFilterModel();
+            const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+            const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+            if (!isGroupingActive.value) {
+              loadInitial(filterModel, sortModel, searchValue);
+            }
           } else {
             // For pagination mode, fetch initial data
             lastFetchParams.value = null;
@@ -1657,30 +1684,42 @@ export default {
       { immediate: true       }
     );
 
-    // Watch for infinite scrolling configuration changes
-    // Note: rowModelType and cacheBlockSize are initial properties and cannot be changed after grid init
-    // Users must reload the page to switch between row model types
+    // Grouping toggle — when grouping turns off in paged-append mode the
+    // single grid remounts (v-if swap) and needs an initial fetch since
+    // initialFetchDone has already fired. When grouping turns on, the
+    // per-group grids' grid-ready triggers their own loadInitialForGroup,
+    // so nothing extra is required here.
+    watch(
+      () => isGroupingActive.value,
+      (active, wasActive) => {
+        if (wasActive && !active && isInfiniteScrollEnabled.value && gridApi.value) {
+          const filterModel = gridApi.value.getFilterModel();
+          const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+          loadInitial(filterModel, sortModel, searchValue);
+        }
+      }
+    );
+
+    // Watch for paged-append configuration changes — block size or toggle.
+    // Both refetch the first block; AG Grid's prop diff handles the visual
+    // reset when pagedRowData is reassigned.
     watch(
       () => [cfg.value?.enableInfiniteScroll, cfg.value?.infiniteBlockSize],
       (newValues, oldValues) => {
-        // Only update if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {
           return;
         }
 
         if (cfg.value?.dataSource === 'supabase' && cfg.value?.enableInfiniteScroll && gridApi.value) {
-          // Refresh the datasource when infinite scrolling settings change
-          // Note: cacheBlockSize is an initial property and cannot be changed dynamically
-          // CRITICAL FIX: Preserve filters and sorts when refreshing infinite scroll
-          // CRITICAL FIX: Wrap in setTimeout to prevent error #252
-          // Use queue-based approach instead of setTimeout cascade
-          gridApiUtils.refreshDatasourceWithState(
-            gridApi.value, 
-            datasource.value, 
-            'Search configuration refresh'
-          ).catch(error => {
-            console.warn('[Datagrid] Error during search configuration refresh:', error);
-          });
+          const filterModel = gridApi.value.getFilterModel();
+          const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+          if (isGroupingActive.value) {
+            refetchAllVisibleGroups(filterModel, sortModel, searchValue);
+          } else {
+            refetchAll(filterModel, sortModel, searchValue);
+          }
         }
       }
     );
@@ -1708,18 +1747,17 @@ export default {
           // Debounce search changes (300ms)
           searchDebounceTimer.value = setTimeout(() => {
             if (isInfiniteScrollEnabled.value) {
-              // For infinite scrolling, refresh the datasource
-              // CRITICAL FIX: Preserve filters and sorts when search changes
-              // CRITICAL FIX: Wrap in setTimeout to prevent error #252
+              // Paged-append: refetch first block with the new search value.
+              // In grouped mode, dispatch per-group.
               if (gridApi.value) {
-                // Use queue-based approach instead of setTimeout cascade
-                gridApiUtils.refreshDatasourceWithState(
-                  gridApi.value, 
-                  datasource.value, 
-                  'Searchable columns refresh'
-                ).catch(error => {
-                  console.warn('[Datagrid] Error during searchable columns refresh:', error);
-                });
+                const filterModel = gridApi.value.getFilterModel();
+                const sortModel = gridApi.value.getState()?.sort?.sortModel || [];
+                const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+                if (isGroupingActive.value) {
+                  refetchAllVisibleGroups(filterModel, sortModel, searchValue);
+                } else {
+                  refetchAll(filterModel, sortModel, searchValue);
+                }
               }
             } else {
               // For pagination mode, fetch data
@@ -1822,13 +1860,20 @@ export default {
     // of abrupt.
     const groupRowClassRules = markRaw(Object.freeze({
       'ww-row-leaving': (params) => {
+        // In paged-append mode the cross-group cell edit calls
+        // applyTransaction({ remove }) synchronously, so AG Grid removes
+        // the row from its rowModel before any redraw. Tagging the row as
+        // "leaving" is unnecessary there and harmful: AG Grid's autoHeight
+        // layout reserves a slot for every row in the rowModel, and our
+        // .ww-row-leaving { display: none } CSS leaves a blank gap during
+        // the brief window between the cell-edit redraw and the transaction
+        // taking effect. Short-circuit so the rule only fires in the
+        // legacy in-place-mutation path (full client-side / paginated mode).
+        if (isInfiniteScrollEnabled.value) return false;
         const colId = groupingColumnId.value;
         if (!colId) return false;
-        // Skip when AG Grid is rendering a loading-state placeholder row
-        // (data is undefined while the infinite cache refetches). Without
-        // this guard, every placeholder row collapses to the Unassigned
-        // sentinel and gets flagged as leaving — making the entire source
-        // group flash grey during a purgeInfiniteCache.
+        // Skip rows whose data isn't bound (defensive — placeholder rows
+        // shouldn't reach this rule in client-side mode).
         if (!params?.data) return false;
         const raw = params.data[colId];
         const expected = (raw === null || raw === undefined || raw === '')
@@ -1836,10 +1881,9 @@ export default {
           : String(raw);
         return expected !== params?.context?.groupValue;
       },
-      // AG Grid renders a placeholder row (data === undefined) while the
-      // infinite cache fetches a block. With cell renderers that show empty
-      // for missing data this looks like a blank row inserted into the
-      // group. Tag it so CSS can hide it until real data arrives.
+      // Defensive only — the old infinite-cache placeholder rows (data
+      // undefined while a block was fetching) are gone in client-side mode.
+      // Keeps the CSS rule a no-op rather than removing it everywhere.
       'ww-row-loading': (params) => !params?.data,
     }));
 
@@ -2207,15 +2251,11 @@ export default {
       onColumnResized,
       onPaginationChanged,
       onBodyScroll,
+      onGroupBodyScrollWrapper,
       gridContainerRef,
       initialState,
       refreshData,
       rowData,
-      rowModelType,
-      rowDragManaged,
-      datasource,
-      delayedDatasource,
-      cacheBlockSize,
       paginationEnabled,
       isLoading,
       isInfiniteScrollEnabled,
@@ -2313,8 +2353,6 @@ export default {
       hasGroupHorizontalOverflow,
       onGroupHorizontalScrollbarScroll,
       onGroupBodyScroll,
-      groupDatasourceFor,
-      refreshGroupInfiniteCache,
       groupInfiniteCounts,
       groupRowClassRules,
       // ========== /GROUPING EXPORTS ==========
@@ -3459,6 +3497,16 @@ export default {
     box-shadow: 0 0 0 2px var(--ag-active-color, #3b9eff);
   }
 
+  // Cross-group row-drag drop target. Class is toggled by useGrouping on
+  // addRowDropZone's onDragEnter / onDragLeave callbacks while a row from
+  // another group is hovered over this container — gives the user clear
+  // feedback about where the drop would land. Distinct from
+  // .ww-group--drag-over (which is for reordering group headers).
+  &.ww-group--drop-target {
+    box-shadow: 0 0 0 2px var(--group-color, #10b981);
+    background: color-mix(in srgb, var(--group-color, #10b981) 6%, transparent);
+  }
+
   &.ww-group--collapsed {
     .ww-group__header {
       border-bottom-left-radius: 6px;
@@ -3581,13 +3629,27 @@ export default {
     min-height: 0 !important;
   }
 
+  // Empty group: AG Grid renders a noRowsOverlay ("Aucune ligne à afficher")
+  // when rowData is empty, but with autoHeight the body collapses to 0px
+  // and pins the overlay container (.ag-overlay) to the same height — any
+  // min-height on the wrapper inside is then clipped by the parent. The
+  // fix is to force a floor on the body itself, scoped via :has() so it
+  // only applies when the no-rows overlay wrapper is actually in the DOM
+  // (AG Grid mounts/removes that wrapper as the overlay shows/hides).
+  // Non-empty groups still match the :deep(.ag-center-cols-viewport)
+  // min-height:0 rule above and continue to hug their rows.
+  :deep(.ag-root-wrapper:has(.ag-overlay-no-rows-wrapper)) .ag-body-viewport,
+  :deep(.ag-root-wrapper:has(.ag-overlay-no-rows-wrapper)) .ag-center-cols-viewport {
+    min-height: var(--ww-data-grid_row-height, 40px) !important;
+  }
+
   // Row whose grouping-column value no longer matches its grid's group.
-  // After purgeInfiniteCache / applyTransaction({ remove }), AG Grid keeps
-  // the old row nodes in DOM (animateRows + the row buffer) until the next
-  // viewport invalidation — so the source group flashes a list of phantom
-  // rows whose statuses are visibly wrong. Hide them outright instead of
-  // fading: the row count badge already reflects the post-move state, so
-  // the rule cleanly drops anything AG Grid hasn't released yet.
+  // After applyTransaction({ remove }), AG Grid keeps the old row nodes in
+  // DOM (animateRows + the row buffer) until the next viewport invalidation
+  // — so the source group can flash a list of phantom rows whose statuses
+  // are visibly wrong. Hide them outright instead of fading: the row count
+  // badge already reflects the post-move state, so the rule cleanly drops
+  // anything AG Grid hasn't released yet.
   :deep(.ag-row.ww-row-leaving) {
     display: none !important;
   }
@@ -3596,6 +3658,25 @@ export default {
   // empty rows inside a group while a block is being fetched.
   :deep(.ag-row.ww-row-loading) {
     display: none !important;
+  }
+
+  // Fade the source row while it's being dragged so the user sees it lift
+  // out of the group. AG Grid adds .ag-row-dragging during managed drag.
+  :deep(.ag-row.ag-row-dragging) {
+    opacity: 0.4;
+    transition: opacity 0.15s ease-out;
+  }
+
+  // Ghost preview row: inserted into a dest grid while the cursor hovers
+  // over it during drag (see useGrouping.handleCrossGroupDragEnter). Reads
+  // as "not really here yet" — desaturated, dimmed, dashed border — until
+  // the drop turns it into a real row (class stripped in handleCrossGroupDrop).
+  :deep(.ag-row.ww-row-drag-preview) {
+    opacity: 0.45;
+    filter: grayscale(0.85);
+    background-color: rgba(0, 0, 0, 0.03) !important;
+    pointer-events: none;
+    transition: opacity 0.15s ease-out, filter 0.15s ease-out;
   }
 }
 

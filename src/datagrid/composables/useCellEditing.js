@@ -46,16 +46,15 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   isInfiniteScrollEnabled, setUpdatingDataLocally,
   // Inline refs in setup() (record column's onCreateClick writes these):
   activeCreateColumnField, activeCreateRow, activeCreateRowId,
-  // Records a pending grouping-column move so the per-group infinite
-  // datasource can drop the row from the source group on the next
-  // refetch, regardless of whether Supabase has caught up. From useGrouping.
-  setPendingGroupingMove,
   // Forces `groupedRowData` to re-partition after an in-place mutation of
-  // a row's grouping-column value (non-infinite-scroll mode). From useGrouping.
+  // a row's grouping-column value (non-paged-append mode). From useGrouping.
   bumpGroupingDataVersion,
-  // Thunk — useInfiniteScroll runs AFTER this composable, so we resolve
-  // scheduleRefreshGroupCounts lazily.
+  // Thunks — useInfiniteScroll runs AFTER this composable, so we resolve
+  // its handles lazily. In paged-append mode these mutate the per-group
+  // state when a cross-group cell edit moves a row.
   getScheduleRefreshGroupCounts,
+  getAddRowToGroupState,
+  getRemoveRowFromGroupState,
 }) {
   // Tracks the currently active cell edit (set in onCellEditingStarted,
   // cleared in onCellEditingStopped). Consumed by useGridActions.refreshRow
@@ -178,9 +177,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
     // Set when the row has been moved out of its source group below — used
     // to skip downstream operations (junction-record refreshCells, the
     // conditional-row-styles redraw) that target `event.node`. After the
-    // applyTransaction/purgeInfiniteCache the node is detached from its
-    // grid, and AG Grid's redrawRows reads `.length` off internal state
-    // that's now undefined, throwing on the second / third move.
+    // applyTransaction({ remove }) the node is detached from its grid, and
+    // AG Grid's redrawRows reads `.length` off internal state that's now
+    // undefined, throwing on the second / third move.
     let crossGroupMoved = false;
 
     // Cross-group move when the grouping column itself was edited.
@@ -195,73 +194,141 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       groupingState.value?.columnId === columnId &&
       event.api
     ) {
+      // Validation pre-check (mirrors the drag-drop path in useGrouping):
+      // if the grouping column has validation rules, run them against the
+      // new raw value. AG Grid's invalidEditValueMode + getValidationErrors
+      // is supposed to revert invalid edits before cellValueChanged fires,
+      // but the custom select editor's flow doesn't always trigger that
+      // pipeline. So we run a defensive validation here and, on failure,
+      // revert the row's grouping value (looking the raw value back up via
+      // the column's options since `event.oldValue` is the label produced
+      // by the column's valueGetter), refresh the cell, fire the same
+      // `validationFailed` event + toast as the cell-editor flow would,
+      // and abort the cross-group move + cellValueChanged emit.
+      const groupingColumnConfig = (cfg.value?.columns || []).find(
+        (c) => c?.field === columnId
+      );
+      if (
+        groupingColumnConfig?.validation &&
+        Array.isArray(groupingColumnConfig.validation) &&
+        groupingColumnConfig.validation.length > 0
+      ) {
+        let validationErrors = null;
+        try {
+          const validationFn = createValidationFunction(groupingColumnConfig, resolveMappingFormula);
+          validationErrors = validationFn(event.data?.[columnId], event.data);
+        } catch (e) {
+          debugLog?.('[CellEdit] grouping-column validation threw — allowing edit:', e?.message);
+        }
+        if (validationErrors && validationErrors.length > 0) {
+          // Reverse-lookup the raw old value. For select columns,
+          // event.oldValue is the option label (because valueGetter
+          // returns labels for sort/filter/display).
+          let rawOldValue = event.oldValue;
+          if (groupingColumnConfig?.cellDataType === 'select' && Array.isArray(groupingColumnConfig?.options)) {
+            const matchingOption = groupingColumnConfig.options.find(
+              (o) => String(o?.label ?? o?.value ?? '') === String(event.oldValue ?? '')
+            );
+            rawOldValue = matchingOption ? matchingOption.value : null;
+          }
+          // Revert the row's grouping value so the cell, the per-group
+          // grid the row currently sits in, and any downstream consumers
+          // see the unchanged value.
+          try { event.data[columnId] = rawOldValue; } catch (_) { /* noop */ }
+          try {
+            event.api.refreshCells({
+              rowNodes: [event.node],
+              columns: [columnId],
+              force: true,
+            });
+          } catch (_) { /* noop */ }
+          // Fire the same trigger event + toast useGrouping fires for
+          // drag-drop validation failures, so user workflows can react
+          // identically regardless of whether the change came from a
+          // cell edit or a drag.
+          const rowId = event.data?.[cfg.value?.idKey] ?? event.node?.id ?? null;
+          ctx.emit('trigger-event', {
+            name: 'validationFailed',
+            event: {
+              field: columnId,
+              value: event.data?.[columnId],
+              oldValue: rawOldValue,
+              errors: validationErrors,
+              rowId,
+              data: event.data,
+            },
+          });
+          try {
+            wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
+              body: validationErrors.join('\n'),
+              title: `Champ invalide : ${groupingColumnConfig?.headerName || columnId}`,
+              type: 'error',
+            });
+          } catch (e) {
+            console.warn('[CellEdit] toast workflow failed:', e?.message);
+          }
+          return;
+        }
+      }
+
       const normalize = (v) => (v === null || v === undefined || v === '' ? null : String(v));
       const newGroupVal = normalize(event.data?.[columnId]);
       const UNASSIGNED = '__unassigned__';
       const destKey = newGroupVal ?? UNASSIGNED;
 
+      // Find which group key currently maps to event.api so we can update
+      // its per-group state in paged-append mode (event.data already has
+      // the new grouping value, so we can't derive the source from it).
+      let sourceKey = null;
+      try {
+        for (const [gv, api] of groupGridApis.value.entries()) {
+          if (api === event.api) { sourceKey = gv; break; }
+        }
+      } catch (_) { /* noop */ }
+
+      // Remove the row from the source grid immediately so its node is gone
+      // before any downstream redraw runs against a row whose grouping value
+      // no longer matches its grid.
+      if (event.data) {
+        try { event.api.applyTransaction({ remove: [event.data] }); crossGroupMoved = true; }
+        catch (_) { /* noop */ }
+      }
+
       if (isInfiniteScrollEnabled.value) {
-        // Each group owns its own infinite cache. Both sides update
-        // immediately — no waiting for the Supabase round-trip:
-        //   - Source: the pending-move filter excludes the row on the
-        //     next getRows, so the source-cache purge below evicts it
-        //     on the spot.
-        //   - Destination: the pending-move entry carries the row data
-        //     itself, so the destination's getRows optimistically injects
-        //     the row into its visible block — the user sees the move
-        //     land instantly.
-        // Because the optimistic injection runs on the *first* refetch
-        // and Supabase may not have landed the write yet, we also queue
-        // a follow-up purge ~1.5s later. By then the parent workflow's
-        // Supabase update has typically completed, so the destination
-        // refetches against fresh truth and any other rows that were
-        // missing from the optimistic block become visible too.
-        const rowId = event.node?.id ?? event.data?.id ?? null;
-        try { setPendingGroupingMove?.(rowId, newGroupVal, event.data); }
+        // Paged-append: keep the per-group state in sync so collapse/expand
+        // and badge counts reflect the move. Match the row by reference —
+        // groupPagedState holds the same data object that AG Grid handed
+        // back as event.data, so === is reliable and avoids any id-formula
+        // resolution mismatch.
+        if (sourceKey != null) {
+          try { getRemoveRowFromGroupState?.()?.(sourceKey, event.data); }
+          catch (_) { /* noop */ }
+        }
+        try { getAddRowToGroupState?.()?.(destKey, event.data); }
         catch (_) { /* noop */ }
 
-        try { event.api.purgeInfiniteCache(); crossGroupMoved = true; }
-        catch (e) { debugLog?.(`[Group Infinite] source purge failed:`, e?.message); }
-
+        // If the destination grid is mounted, push the row in directly so
+        // the user sees it land without waiting for any refetch.
         const destApi = groupGridApis.value?.get(destKey);
         if (destApi && destApi !== event.api) {
-          try { destApi.purgeInfiniteCache(); }
-          catch (e) { debugLog?.(`[Group Infinite] purge failed for "${destKey}":`, e?.message); }
+          try { destApi.applyTransaction({ add: [event.data], addIndex: 0 }); }
+          catch (e) { debugLog?.(`[PagedAppend] dest add failed for "${destKey}":`, e?.message); }
         }
-        // Refresh upfront counts so the badge on a collapsed destination
-        // group (whose grid isn't mounted to update its own count via
-        // its datasource) reflects the move.
-        try { getScheduleRefreshGroupCounts?.()?.(); }
-        catch (_) { /* noop */ }
 
-        // Reconciliation pass — re-purge both source and destination once
-        // Supabase has had time to land the write. Cleans up any stale
-        // optimistic state, restores rows that the first refetch missed,
-        // and refreshes counts.
+        // Refresh upfront badge counts (server is the source of truth even
+        // though we optimistically updated locally). Defer slightly so the
+        // user-side WeWeb workflow has a window to land the Supabase write
+        // before we read the count back — without this delay the immediate
+        // count fetch usually returns the pre-write totals and the badges
+        // briefly snap back to the wrong values.
         setTimeout(() => {
-          const reSource = event.api;
-          const reDest = groupGridApis.value?.get(destKey);
-          try { reSource?.purgeInfiniteCache?.(); } catch (_) { /* noop */ }
-          if (reDest && reDest !== reSource) {
-            try { reDest.purgeInfiniteCache(); } catch (_) { /* noop */ }
-          }
           try { getScheduleRefreshGroupCounts?.()?.(); }
           catch (_) { /* noop */ }
         }, 1500);
       } else {
-        // Non-infinite-scroll. The valueSetter mutates `event.data[colId]`
-        // in place, which leaves the array references unchanged — so the
-        // prop-driven re-partition isn't forceful enough to evict the old
-        // AG Grid node, and the rowClassRules `.ww-row-leaving` fade
-        // leaves the row sitting in the source group at 0.25 opacity.
-        // Two-step: (1) explicitly remove the row from the source grid via
-        // applyTransaction so the node is gone immediately, and (2) bump
-        // the partition version so `groupedRowData` recomputes and the
-        // destination group's rowData prop picks up the row.
-        if (event.data) {
-          try { event.api.applyTransaction({ remove: [event.data] }); crossGroupMoved = true; }
-          catch (_) { /* noop */ }
-        }
+        // Non-paged-append: bump the partition version so `groupedRowData`
+        // recomputes and the destination group's rowData prop picks up the
+        // row. (Source is already detached via the applyTransaction above.)
         try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
       }
     }
@@ -1117,10 +1184,17 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       });
     }
 
-    // Enable row drag only if rowReorder is enabled AND infinite scroll is NOT enabled
-    // (row dragging is not supported with infinite row model)
-    if (cfg.value.rowReorder && columns[0] && !isInfiniteScrollEnabled.value) {
-      columns[0].rowDrag = true;
+    // Enable row drag if rowReorder is enabled OR grouping is active. In
+    // grouped mode the drag handle is the only way to move a row to another
+    // group (cross-grid drop zones registered in useGrouping). Target the
+    // first VISIBLE column — column[0] may be a hidden virtual column (used
+    // for sort/filter only) or a column the user toggled off via the
+    // chooser, in which case its drag handle would never render.
+    if (cfg.value.rowReorder || isGroupingActive.value) {
+      const firstVisibleColumn = columns.find(c => c && !c.hide && !c.__virtualColumn);
+      if (firstVisibleColumn) {
+        firstVisibleColumn.rowDrag = true;
+      }
     }
 
     return columns;

@@ -1,6 +1,7 @@
 import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { findRowNode } from '../utils/rowLookup.js';
 import { getTranslations } from '../../shared/utils/sharedHelpers.js';
+import { createValidationFunction } from '../utils/columnFactories.js';
 
 // The grouping feature: state, computed views (orderedGroups, groupedRowData),
 // the per-view persisted collapsed-state machinery, all group-grid event handlers
@@ -28,7 +29,8 @@ import { getTranslations } from '../../shared/utils/sharedHelpers.js';
 //     getIsVirtualColumn                 — function still inline in setup()
 //     getUpdateCurrentConfig             — from useViewConfig (S4)
 //     getScheduleRefreshGroupCounts      — from useInfiniteScroll
-//     getGroupDatasourceFor              — from useInfiniteScroll
+//     getLoadInitialForGroup             — from useInfiniteScroll (paged-append)
+//     getGroupPagedRowData               — from useInfiniteScroll (paged-append)
 //     getOnFilterChanged, getOnSortChanged          — from useFiltersAndSort
 //     getOnColumnMoved, getOnColumnResized          — still inline in setup()
 //     getFilterValue, getSortValue       — refs from useFiltersAndSort
@@ -51,7 +53,11 @@ export function useGrouping(
     getIsVirtualColumn,
     getUpdateCurrentConfig,
     getScheduleRefreshGroupCounts,
-    getGroupDatasourceFor,
+    getLoadInitialForGroup,
+    getRefetchAllVisibleGroups,
+    getGroupPagedRowData,
+    getAddRowToGroupState,
+    getRemoveRowFromGroupState,
     getOnFilterChanged,
     getOnSortChanged,
     getOnColumnMoved,
@@ -131,61 +137,13 @@ export function useGrouping(
   // Map<groupValue, row[]> — aggregated selection across group grids.
   const groupSelections = ref(new Map());
 
-  // Map<rowId, { newGroupValue }> — rows whose grouping-column value was just
-  // edited in the current grid. The per-group infinite datasource consults
-  // this Map and filters out any row whose pending move targets a different
-  // group, so the row disappears from its old group immediately on the next
-  // refetch — regardless of whether the parent workflow has finished writing
-  // to Supabase. Without this, the post-edit refetch returns the row with
-  // its old (pre-write) grouping value and the row pops back into the
-  // source group.
-  // Entries auto-expire after PENDING_MOVE_TTL_MS so a missing/failed write
-  // doesn't permanently hide rows.
-  const pendingGroupingMoves = shallowRef(new Map());
-  const PENDING_MOVE_TTL_MS = 10000;
-  const pendingMoveTimers = new Map();
-
   // Bumped whenever a row's grouping-column value is mutated in place (no
   // array-reference change), so `groupedRowData` re-partitions and each
   // per-group grid receives the corrected `rowData`. Without this, the row
   // stays in its source group until something else invalidates the array.
+  // Used only in non-paged-append modes (full / paginated client-side).
   const groupingDataVersion = ref(0);
   const bumpGroupingDataVersion = () => { groupingDataVersion.value++; };
-
-  const setPendingGroupingMove = (rowId, newGroupValue, rowData = null) => {
-    if (rowId == null || rowId === '') return;
-    const key = String(rowId);
-    const next = new Map(pendingGroupingMoves.value);
-    // rowData is what the destination's per-group datasource injects so the
-    // moved row appears in the new group instantly — no waiting for the
-    // Supabase write to round-trip before the user sees their move land.
-    next.set(key, { newGroupValue, rowData });
-    pendingGroupingMoves.value = next;
-    // Reset the expiry timer if this row is moved again before the previous
-    // pending entry expired.
-    const prevTimer = pendingMoveTimers.get(key);
-    if (prevTimer) clearTimeout(prevTimer);
-    const t = setTimeout(() => {
-      pendingMoveTimers.delete(key);
-      const cur = new Map(pendingGroupingMoves.value);
-      if (cur.has(key)) {
-        cur.delete(key);
-        pendingGroupingMoves.value = cur;
-      }
-    }, PENDING_MOVE_TTL_MS);
-    pendingMoveTimers.set(key, t);
-  };
-
-  const clearPendingGroupingMove = (rowId) => {
-    if (rowId == null || rowId === '') return;
-    const key = String(rowId);
-    const t = pendingMoveTimers.get(key);
-    if (t) { clearTimeout(t); pendingMoveTimers.delete(key); }
-    if (!pendingGroupingMoves.value.has(key)) return;
-    const cur = new Map(pendingGroupingMoves.value);
-    cur.delete(key);
-    pendingGroupingMoves.value = cur;
-  };
 
   // Reentry guards for cross-grid synchronization.
   const isSyncingLayout = ref(false);
@@ -207,6 +165,17 @@ export function useGrouping(
   // empty groups to the default collapsed display while preserving the
   // stored "expanded when populated" intent.
   const manuallyExpandedEmptyGroups = ref(new Set());
+
+  // Session-only set of groups that have been observed with rows at any
+  // point during this session. Once a group has had items, it transitions
+  // from "default-collapsed-when-empty" to "follows the user's collapse
+  // choice (collapsedSet)" — even if its server-reported count later drops
+  // to 0 (last row moved out, optimistic write pending, filter excluding
+  // its rows). Without this, momentary count==0 transitions cause groups
+  // to auto-collapse, then auto-expand when the count returns, producing
+  // the "random close/expand" behaviour. Cleared when the grouping column
+  // changes (the seen state no longer applies to a different group set).
+  const groupsSeenWithItems = ref(new Set());
 
   // Track which invalid-columnId warning has already been logged (avoid log spam).
   const warnedInvalidGroupingColumn = ref(null);
@@ -267,8 +236,9 @@ export function useGrouping(
 
   // Source data for grouping — unified across data sources.
   // Local: rowData. Supabase paginated: supabaseData.
-  // Infinite scroll: empty — each group grid owns its own IDatasource via
-  // groupDatasourceFor(). Counts come from groupInfiniteCounts instead.
+  // Paged-append: empty — each group grid's rows are owned by useInfiniteScroll's
+  // per-group state map and accessed via getGroupPagedRowData(groupValue).
+  // Counts come from groupInfiniteCounts instead.
   const groupingSourceRows = computed(() => {
     if (!isGroupingActive.value) return [];
     if (isInfiniteScrollEnabled.value) return [];
@@ -279,7 +249,7 @@ export function useGrouping(
     return Array.isArray(data) ? data : [];
   });
 
-  // Map<groupValue, row[]>
+  // Map<groupValue, row[]> — used in non-paged-append modes only.
   const groupedRowData = computed(() => {
     // Track in-place row mutations of the grouping column.
     void groupingDataVersion.value;
@@ -295,7 +265,13 @@ export function useGrouping(
     return out;
   });
 
-  const groupRowData = (groupValue) => groupedRowData.value.get(groupValue) || [];
+  const groupRowData = (groupValue) => {
+    if (isInfiniteScrollEnabled.value) {
+      const accessor = getGroupPagedRowData?.();
+      return accessor ? accessor(groupValue) : [];
+    }
+    return groupedRowData.value.get(groupValue) || [];
+  };
 
   // Row counts for badge display in infinite-scroll mode — populated by each
   // per-group datasource's getRows on successful fetch. Map<groupValue, totalCount>
@@ -322,18 +298,27 @@ export function useGrouping(
       return dataMap.get(value)?.length || 0;
     };
 
+    // Collapse policy:
+    //  - count == null (still loading) → collapsed (avoids flicker on init).
+    //  - count === 0 AND group has never had items in this session → empty
+    //    by default → collapsed unless the user manually expanded it
+    //    (session-only manualExpand). Keeps empty groups out of the way on
+    //    initial load.
+    //  - count === 0 BUT group was previously seen with items this session
+    //    → respect collapsedSet only. Prevents transient 0-counts (last row
+    //    moved out, optimistic write pending, filter excluding all rows)
+    //    from collapsing a group the user is actively looking at, then
+    //    re-expanding it when the count returns.
+    //  - count > 0 → respect the persisted collapsedSet (open by default
+    //    unless the user explicitly collapsed it).
     const manualExpand = manuallyExpandedEmptyGroups.value;
-    // Default-closed policy: a group is only opened once we know it has rows
-    // AND the persisted cache says it should be expanded (i.e. not in
-    // collapsedSet). While the count is still unknown (infinite-scroll
-    // pre-fetch, count === null) the group stays closed — the previous
-    // policy opened it from the cache and then collapsed it on a 0 count,
-    // which produced a visible flicker on load.
-    // Empty groups (confirmed count === 0) remain closed unless the user
-    // manually expanded them this session.
+    const seenWithItems = groupsSeenWithItems.value;
     const computeCollapsed = (value, count) => {
-      if (count === 0) return !manualExpand.has(value);
       if (count == null) return true;
+      if (count === 0) {
+        if (seenWithItems.has(value)) return collapsedSet.has(value);
+        return !manualExpand.has(value);
+      }
       return collapsedSet.has(value);
     };
     const base = options.map((o) => {
@@ -380,6 +365,32 @@ export function useGrouping(
     byValue.forEach(g => ordered.push(g));
     return ordered;
   });
+
+  // Mark groups as seen-with-items as soon as they're observed with count>0.
+  // Drives the "stick to collapsedSet on transient 0-counts" branch in
+  // computeCollapsed. Cleared when the grouping column or active state
+  // changes (different group set entirely) so a session can start fresh.
+  watch(
+    () => orderedGroups.value.map(g => `${g.value}:${g.count ?? 'null'}`).join('|'),
+    () => {
+      const groups = orderedGroups.value;
+      let changed = false;
+      const next = new Set(groupsSeenWithItems.value);
+      for (const g of groups) {
+        if (typeof g.count === 'number' && g.count > 0 && !next.has(g.value)) {
+          next.add(g.value);
+          changed = true;
+        }
+      }
+      if (changed) groupsSeenWithItems.value = next;
+    },
+    { flush: 'post' }
+  );
+
+  watch(
+    () => [groupingColumnId.value, isGroupingActive.value],
+    () => { groupsSeenWithItems.value = new Set(); }
+  );
 
   const hasGroupHorizontalOverflow = computed(() => (
     isGroupingActive.value &&
@@ -519,6 +530,398 @@ export function useGrouping(
     updateGroupHorizontalScrollbarMetrics();
   });
 
+  // ========== CROSS-GROUP DRAG & DROP ==========
+
+  // AG Grid's `addRowDropZone` lets one grid accept rows dragged from another
+  // grid. We register zones bidirectionally between every pair of mounted
+  // group grids so the user can drag a row from any group to any other to
+  // change its grouping-column value. Per-group `rowDragManaged` is false so
+  // the drop never auto-reorders within the source — we own the move entirely
+  // via applyTransaction + per-group state mutations + a synthesised
+  // cellValueChanged emit (mirrors what the cross-group cell edit path does).
+  //
+  // Tracking map shape: Map<sourceGroupValue, Map<destGroupValue, params>>
+  // The params object is the same one we passed to addRowDropZone — AG Grid
+  // requires it (by reference) for removeRowDropZone.
+  const dropZoneRegistry = new Map();
+
+  const findGroupContainerByValue = (destGroupValue) => {
+    if (!gridContainerRef.value) return null;
+    const safe = String(destGroupValue).replace(/"/g, '\\"');
+    return gridContainerRef.value.querySelector(`.ww-group[data-group-value="${safe}"]`);
+  };
+
+  // Drag-hover preview: while the cursor is over a destination group during
+  // a row drag, we insert the dragged row at the top of that group's grid
+  // via applyTransaction({ add }). AG Grid's animateRows then slides the
+  // existing rows down to make room — the user gets the same visual feedback
+  // they'd get from intra-grid managed drag, only across grids. Removed on
+  // dragLeave; on drop the row is already in dest and the drop handler
+  // skips the add.
+  const dragPreview = { destGroupValue: null, data: null };
+
+  // Toggle a `ww-row-drag-preview` CSS class on the dest grid's row DOM
+  // element so the preview row reads as "ghost" (grayed-out, semi-transparent)
+  // until the user actually drops. Walks the DOM via the row-id attribute
+  // because AG Grid's row class rules only re-evaluate on transactions —
+  // direct DOM toggling is more reliable and one-shot.
+  const togglePreviewClass = (groupValue, data, add) => {
+    const container = findGroupContainerByValue(groupValue);
+    if (!container) return;
+    let rowId = '';
+    try { rowId = String(resolveMappingFormula(cfg.value?.idFormula, data) ?? ''); }
+    catch (_) { rowId = ''; }
+    if (!rowId) return;
+    const apply = () => {
+      const rowEl = container.querySelector(`.ag-row[row-id="${rowId.replace(/"/g, '\\"')}"]`);
+      if (!rowEl) return;
+      if (add) rowEl.classList.add('ww-row-drag-preview');
+      else rowEl.classList.remove('ww-row-drag-preview');
+    };
+    if (add && typeof requestAnimationFrame === 'function') {
+      // Wait for AG Grid to render the newly-added row's DOM.
+      requestAnimationFrame(() => requestAnimationFrame(apply));
+    } else {
+      apply();
+    }
+  };
+
+  const clearDragPreview = () => {
+    if (!dragPreview.destGroupValue || !dragPreview.data) return;
+    const api = groupGridApis.value.get(dragPreview.destGroupValue);
+    if (api) {
+      try { api.applyTransaction({ remove: [dragPreview.data] }); }
+      catch (_) { /* noop */ }
+    }
+    dragPreview.destGroupValue = null;
+    dragPreview.data = null;
+  };
+
+  const handleCrossGroupDragEnter = (sourceGroupValue, destGroupValue, dragParams) => {
+    if (sourceGroupValue === destGroupValue) return;
+    const data = dragParams?.node?.data;
+    if (!data) return;
+    // Already previewing this exact row in this dest → no-op (rapid
+    // enter/leave bouncing on the boundary shouldn't replay the animation).
+    if (dragPreview.destGroupValue === destGroupValue && dragPreview.data === data) return;
+    // Move the preview from a previous dest to this one.
+    if (dragPreview.destGroupValue && dragPreview.destGroupValue !== destGroupValue) {
+      clearDragPreview();
+    }
+    const destApi = groupGridApis.value.get(destGroupValue);
+    if (!destApi) return; // collapsed dest — no grid to preview into
+    try {
+      destApi.applyTransaction({ add: [data], addIndex: 0 });
+      dragPreview.destGroupValue = destGroupValue;
+      dragPreview.data = data;
+      togglePreviewClass(destGroupValue, data, true);
+    } catch (e) {
+      debugLog?.(`[GroupDrag] preview add failed for "${destGroupValue}":`, e?.message);
+    }
+  };
+
+  const handleCrossGroupDragLeave = (sourceGroupValue, destGroupValue, dragParams) => {
+    if (dragPreview.destGroupValue === destGroupValue) {
+      clearDragPreview();
+    }
+  };
+
+  const handleCrossGroupDrop = (sourceGroupValue, destGroupValue, dragParams) => {
+    if (sourceGroupValue === destGroupValue) return;
+    const node = dragParams?.node;
+    const data = node?.data;
+    if (!data) return;
+
+    const colId = groupingColumnId.value;
+    if (!colId) return;
+
+    const oldValue = data[colId];
+    const newValue = destGroupValue === UNASSIGNED_GROUP ? null : destGroupValue;
+    const normalizedOld = (oldValue === null || oldValue === undefined || oldValue === '')
+      ? null
+      : oldValue;
+    if (normalizedOld === newValue) return;
+
+    // Validation pre-check: run the same validation rules the cell editor
+    // would have, BEFORE applying any optimistic state. If the new value
+    // fails validation, cancel the move outright (no DOM mutations, no
+    // event), fire `validationFailed` so the user's WeWeb workflow can
+    // react, and trigger the global toast workflow with the same payload
+    // useCellEditing.getValidationErrors uses (so the user sees the same
+    // error UI for drag and direct-edit alike).
+    const groupingColumnConfig = (cfg.value?.columns || []).find(
+      (c) => c?.field === colId
+    );
+    if (groupingColumnConfig?.validation && Array.isArray(groupingColumnConfig.validation) && groupingColumnConfig.validation.length > 0) {
+      let validationErrors = null;
+      try {
+        const validationFn = createValidationFunction(groupingColumnConfig, resolveMappingFormula);
+        validationErrors = validationFn(newValue, data);
+      } catch (e) {
+        debugLog?.('[GroupDrag] validation function threw — allowing move:', e?.message);
+      }
+      if (validationErrors && validationErrors.length > 0) {
+        // Validation failed → the move is cancelled. Remove any preview row
+        // we inserted into the dest during dragEnter so the dest's grid
+        // returns to its pre-drag state.
+        clearDragPreview();
+        const rowId = data?.[cfg.value?.idKey] ?? node?.id ?? null;
+        ctx.emit('trigger-event', {
+          name: 'validationFailed',
+          event: {
+            field: colId,
+            value: newValue,
+            oldValue: normalizedOld,
+            errors: validationErrors,
+            rowId,
+            data,
+          },
+        });
+        try {
+          wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
+            body: validationErrors.join('\n'),
+            title: `Champ invalide : ${groupingColumnConfig?.headerName || colId}`,
+            type: 'error',
+          });
+        } catch (e) {
+          console.warn('[GroupDrag] toast workflow failed:', e?.message);
+        }
+        return;
+      }
+    }
+
+    // Validation passed (or none configured) — apply the move optimistically.
+    // Mutate the row's grouping value (mirrors the cell-editor valueSetter)
+    // and move it across grids. Persistence is owned by the user's WeWeb
+    // workflow listening to `cellValueChanged` — same path the cell editor
+    // uses for the grouping column.
+    data[colId] = newValue;
+
+    const sourceApi = groupGridApis.value.get(sourceGroupValue);
+    if (sourceApi) {
+      try { sourceApi.applyTransaction({ remove: [data] }); }
+      catch (e) { debugLog?.(`[GroupDrag] source remove failed for "${sourceGroupValue}":`, e?.message); }
+    }
+
+    const destApi = groupGridApis.value.get(destGroupValue);
+
+    // The drop may follow a hover preview that already inserted the row at
+    // the top of dest via dragEnter. If so, skip the add below — re-adding
+    // the same row would either duplicate or fail. Capture this BEFORE
+    // resetting the preview state so we know whether to add at the bottom
+    // of this handler.
+    const previewWasInDest = (
+      dragPreview.destGroupValue === destGroupValue &&
+      dragPreview.data === data
+    );
+    dragPreview.destGroupValue = null;
+    dragPreview.data = null;
+
+    if (isInfiniteScrollEnabled.value) {
+      try { getRemoveRowFromGroupState?.()?.(sourceGroupValue, data); }
+      catch (_) { /* noop */ }
+
+      if (destApi) {
+        // Dest grid is mounted — add to its per-group state so the row is
+        // immediately visible.
+        try { getAddRowToGroupState?.()?.(destGroupValue, data); }
+        catch (_) { /* noop */ }
+      } else {
+        // Dest is collapsed — DON'T addRowToGroupState (it sets loaded:true
+        // which would make loadInitialForGroup skip the server fetch on
+        // expand and the user would see only this one optimistic row in a
+        // group that may have many more on the server). Just bump the
+        // badge count optimistically; the next expand fetches fresh from
+        // the server (which by then includes the dropped row, assuming the
+        // user's workflow has persisted it).
+        const counts = new Map(groupInfiniteCounts.value);
+        const cur = counts.get(destGroupValue);
+        counts.set(destGroupValue, (typeof cur === 'number' ? cur : 0) + 1);
+        groupInfiniteCounts.value = counts;
+      }
+    } else {
+      try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
+    }
+
+    if (destApi && destApi !== sourceApi && !previewWasInDest) {
+      try { destApi.applyTransaction({ add: [data], addIndex: 0 }); }
+      catch (e) { debugLog?.(`[GroupDrag] dest add failed for "${destGroupValue}":`, e?.message); }
+    } else if (previewWasInDest) {
+      // Preview row was already inserted during dragEnter — promote it from
+      // ghost to real by stripping the preview class.
+      togglePreviewClass(destGroupValue, data, false);
+    }
+
+    // Carry over the grouping column's `isDirectUpdate` flag so the user's
+    // workflow handles the drag identically to a direct cell edit on that
+    // same column. Column config was looked up above for validation.
+    ctx.emit('trigger-event', {
+      name: 'cellValueChanged',
+      event: {
+        oldValue: normalizedOld,
+        newValue,
+        columnId: colId,
+        row: data,
+        isDirectUpdate: groupingColumnConfig?.isDirectUpdate || false,
+      },
+    });
+
+    // Cascade the collapse state to follow the move:
+    //  - Dest: if persisted as collapsed (or auto-collapsed because it was
+    //    empty), open it so the user immediately sees where the dropped
+    //    row landed.
+    //  - Source: if the move emptied it, collapse it. The user just moved
+    //    its last row out, so keeping it open eats vertical space for no
+    //    content.
+    // Both writes go through writeGroupingToViewConfig so they persist via
+    // the same WeWeb variable the chevron toggles use.
+    const collapsedList = Array.isArray(groupingState.value?.collapsed)
+      ? [...groupingState.value.collapsed]
+      : [];
+    let collapsedListChanged = false;
+
+    const destIdx = collapsedList.indexOf(destGroupValue);
+    if (destIdx >= 0) {
+      collapsedList.splice(destIdx, 1);
+      collapsedListChanged = true;
+    }
+    // If the dest was empty + manually expanded (session-only set), nothing
+    // to clear there — count is now > 0 so manualExpand is irrelevant for
+    // this group going forward.
+
+    const sourceCountAfter = isInfiniteScrollEnabled.value
+      ? (() => {
+          const c = groupInfiniteCounts.value.get(sourceGroupValue);
+          return typeof c === 'number' ? c : null;
+        })()
+      : (groupedRowData.value.get(sourceGroupValue)?.length ?? null);
+
+    if (sourceCountAfter === 0 && !collapsedList.includes(sourceGroupValue)) {
+      collapsedList.push(sourceGroupValue);
+      collapsedListChanged = true;
+    }
+
+    if (collapsedListChanged) {
+      writeGroupingToViewConfig({ collapsed: collapsedList });
+      updateGroupHorizontalScrollbarMetrics();
+    }
+
+    // Defer count refresh — match the 1.5 s delay the cell-editor cross-group
+    // path uses so the user-side write workflow has a window to land.
+    if (isInfiniteScrollEnabled.value) {
+      setTimeout(() => {
+        try { getScheduleRefreshGroupCounts?.()?.(); }
+        catch (_) { /* noop */ }
+      }, 1500);
+    }
+  };
+
+  const setDropTargetHighlight = (destValue, on) => {
+    const el = findGroupContainerByValue(destValue);
+    if (!el) return;
+    el.classList.toggle('ww-group--drop-target', !!on);
+  };
+
+  const clearAllDropTargetHighlights = () => {
+    if (!gridContainerRef.value) return;
+    gridContainerRef.value
+      .querySelectorAll('.ww-group.ww-group--drop-target')
+      .forEach((el) => el.classList.remove('ww-group--drop-target'));
+  };
+
+  const registerDropZone = (sourceValue, sourceApi, destValue) => {
+    if (!sourceApi || sourceValue === destValue) return;
+    if (typeof sourceApi.addRowDropZone !== 'function') return;
+    let bucket = dropZoneRegistry.get(sourceValue);
+    if (!bucket) { bucket = new Map(); dropZoneRegistry.set(sourceValue, bucket); }
+    if (bucket.has(destValue)) return;
+    const zoneParams = {
+      getContainer: () => findGroupContainerByValue(destValue),
+      onDragEnter: (dragParams) => {
+        setDropTargetHighlight(destValue, true);
+        handleCrossGroupDragEnter(sourceValue, destValue, dragParams);
+      },
+      onDragLeave: (dragParams) => {
+        setDropTargetHighlight(destValue, false);
+        handleCrossGroupDragLeave(sourceValue, destValue, dragParams);
+      },
+      onDragStop: (dragParams) => {
+        // Always clear the highlight, even if the drop is a no-op (same
+        // group, dropped outside any meaningful area, etc).
+        clearAllDropTargetHighlights();
+        handleCrossGroupDrop(sourceValue, destValue, dragParams);
+      },
+    };
+    try {
+      sourceApi.addRowDropZone(zoneParams);
+      bucket.set(destValue, zoneParams);
+    } catch (e) {
+      debugLog?.(`[GroupDrag] addRowDropZone failed (${sourceValue} -> ${destValue}):`, e?.message);
+    }
+  };
+
+  // Register drop zones from every mounted source grid into every group in
+  // orderedGroups — including collapsed ones. Collapsed groups have no grid
+  // api but their `.ww-group` container is still in the DOM, and AG Grid's
+  // drop zone only needs the container element + an onDragStop callback.
+  // Idempotent: existing entries are skipped via the bucket check.
+  const refreshAllDropZones = () => {
+    if (!isGroupingActive.value) return;
+    const allGroupValues = orderedGroups.value.map(g => g.value);
+    groupGridApis.value.forEach((sourceApi, sourceValue) => {
+      if (!sourceApi) return;
+      for (const destValue of allGroupValues) {
+        if (destValue === sourceValue) continue;
+        registerDropZone(sourceValue, sourceApi, destValue);
+      }
+    });
+  };
+
+  const setupCrossGroupDropZones = (newGroupValue, newApi) => {
+    if (!isGroupingActive.value || !newApi) return;
+    // Register zones FROM the newly-mounted grid TO every other group
+    // (collapsed or not).
+    for (const group of orderedGroups.value) {
+      if (group.value === newGroupValue) continue;
+      registerDropZone(newGroupValue, newApi, group.value);
+    }
+    // …and ensure every existing source has a zone targeting this newly
+    // mounted group too (no-op if it was already registered when the source
+    // first set up its zones against the full group list).
+    groupGridApis.value.forEach((existingApi, existingValue) => {
+      if (existingApi === newApi || existingValue === newGroupValue) return;
+      registerDropZone(existingValue, existingApi, newGroupValue);
+    });
+  };
+
+  // Remove every registered zone associated with `groupValue` — both inbound
+  // (other sources targeting it) and outbound (zones owned by its api are
+  // torn down by AG Grid when the grid destroys, but we still need to drop
+  // our registry entry for it).
+  const tearDownDropZonesForGroup = (groupValue) => {
+    dropZoneRegistry.forEach((bucket, sourceValue) => {
+      if (sourceValue === groupValue) return;
+      const zoneParams = bucket.get(groupValue);
+      if (!zoneParams) return;
+      const sourceApi = groupGridApis.value.get(sourceValue);
+      if (sourceApi && typeof sourceApi.removeRowDropZone === 'function') {
+        try { sourceApi.removeRowDropZone(zoneParams); }
+        catch (_) { /* noop */ }
+      }
+      bucket.delete(groupValue);
+    });
+    dropZoneRegistry.delete(groupValue);
+  };
+
+  // Rerun zone setup when the set of groups changes (e.g., a new option is
+  // added to the grouping select column, or the user toggles showUnassigned).
+  // Watching just the values keeps the watcher quiet on count updates.
+  watch(
+    () => orderedGroups.value.map(g => g.value).join('|'),
+    () => { refreshAllDropZones(); },
+    { flush: 'post' }
+  );
+
   // ========== PER-GRID EVENT HANDLERS ==========
 
   // Called when each group grid fires grid-ready. Registers the api and
@@ -570,32 +973,88 @@ export function useGrouping(
 
     updateGroupHorizontalScrollbarMetrics();
 
-    // In infinite-scroll mode, assign this group's datasource — but stagger
-    // the assignment across groups so N grids don't fire getRows in the same
-    // tick (which can trigger AG Grid error #252 on initial mount and also
-    // hammer Supabase with N parallel requests). Stagger = 100ms + 50ms × index.
+    // Wire bidirectional cross-group drop zones with every other mounted
+    // group grid so the user can drag a row between groups to change its
+    // grouping value. Safe to call before / after any other group's
+    // grid-ready — the registry dedupes pairs.
+    try { setupCrossGroupDropZones(groupValue, params.api); }
+    catch (e) { debugLog?.('[GroupDrag] setupCrossGroupDropZones failed:', e?.message); }
+
+    // Paged-append mode: kick off this group's first-block fetch. Stagger
+    // across groups so N grids don't fire identical requests in the same
+    // tick when several open simultaneously after a grouping-column change.
     if (isInfiniteScrollEnabled.value && isGroupingActive.value) {
+      // Show the loading overlay if we know the group has rows but state
+      // hasn't fetched them yet, to suppress the noRowsOverlay flash that
+      // would otherwise appear during the staggered delay + fetch round-
+      // trip. Skipped when state is already loaded (re-expand of a group
+      // we previously fetched) or when count is known to be 0 (the fast
+      // path in loadInitialForGroup writes an empty entry immediately and
+      // noRowsOverlay is the correct display).
+      const initialState = getGroupPagedRowData ? null : null;
+      const stateEntry = (() => {
+        try { return getGroupPagedRowData?.() ? null : null; }
+        catch (_) { return null; }
+      })();
+      const hasLoadedData = (() => {
+        const accessor = getGroupPagedRowData?.();
+        if (!accessor) return false;
+        const arr = accessor(groupValue);
+        return Array.isArray(arr) && arr.length > 0;
+      })();
+      const knownCount = groupInfiniteCounts.value?.get(groupValue);
+      const shouldShowLoading = !hasLoadedData && (knownCount == null || knownCount > 0);
+      if (shouldShowLoading) {
+        try { params.api.showLoadingOverlay?.(); }
+        catch (_) { /* noop */ }
+      }
+
       const idx = orderedGroups.value.findIndex(g => g.value === groupValue);
       const delay = 100 + Math.max(0, idx) * 50;
       setTimeout(() => {
-        // Guard: grid might have been unmounted (collapsed) or grouping disabled
-        // before the timer fires.
         const stillMounted = groupGridApis.value.get(groupValue) === params.api;
-        if (!stillMounted || !isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
-        const groupDatasourceFor = getGroupDatasourceFor?.();
-        const ds = groupDatasourceFor?.(groupValue);
-        if (!ds) return;
+        if (!stillMounted || !isInfiniteScrollEnabled.value || !isGroupingActive.value) {
+          if (shouldShowLoading) {
+            try { params.api.hideOverlay?.(); } catch (_) {}
+          }
+          return;
+        }
+        const loadInitialForGroup = getLoadInitialForGroup?.();
+        if (!loadInitialForGroup) {
+          if (shouldShowLoading) {
+            try { params.api.hideOverlay?.(); } catch (_) {}
+          }
+          return;
+        }
         try {
-          params.api.setGridOption('datasource', ds);
-          debugLog(`[Group Infinite] Assigned datasource for "${groupValue}" after ${delay}ms`);
+          const filterValue2 = getFilterValue?.();
+          const filterModel = filterValue2?.value || null;
+          const sortValue2 = getSortValue?.();
+          const sortModel = Array.isArray(sortValue2?.value) ? sortValue2.value : [];
+          loadInitialForGroup(groupValue, filterModel, sortModel)
+            .catch(e => debugLog?.(`[PagedAppend] loadInitialForGroup("${groupValue}") failed:`, e?.message))
+            .finally(() => {
+              if (!shouldShowLoading) return;
+              const stillSameApi = groupGridApis.value.get(groupValue) === params.api;
+              if (!stillSameApi) return;
+              try { params.api.hideOverlay?.(); } catch (_) {}
+            });
+          debugLog(`[PagedAppend] Triggered initial load for "${groupValue}" after ${delay}ms`);
         } catch (e) {
-          console.warn(`[Group Infinite] Failed to set datasource for "${groupValue}":`, e?.message);
+          console.warn(`[PagedAppend] Failed to start initial load for "${groupValue}":`, e?.message);
+          if (shouldShowLoading) {
+            try { params.api.hideOverlay?.(); } catch (_) {}
+          }
         }
       }, delay);
     }
   };
 
   const onGroupGridUnmounted = (groupValue) => {
+    // Tear down inbound drop zones BEFORE removing the api from the registry
+    // — tearDownDropZonesForGroup looks up source apis by groupValue.
+    try { tearDownDropZonesForGroup(groupValue); }
+    catch (_) { /* noop */ }
     groupGridApis.value.delete(groupValue);
     groupGridApis.value = new Map(groupGridApis.value);
     groupSelections.value.delete(groupValue);
@@ -629,6 +1088,24 @@ export function useGrouping(
     }
     const onFilterChanged = getOnFilterChanged?.();
     if (onFilterChanged) withFiringGrid(event, onFilterChanged);
+
+    // Paged-append: AG Grid only filters loaded blocks client-side, which
+    // hides anything past the loaded window. Dispatch a server-side refetch
+    // per mounted group so the visible blocks reflect the new filter.
+    if (isInfiniteScrollEnabled.value) {
+      const refetchAllVisibleGroups = getRefetchAllVisibleGroups?.();
+      if (refetchAllVisibleGroups) {
+        try {
+          const filterModel = event.api.getFilterModel();
+          const sortModel = event.api.getState()?.sort?.sortModel || [];
+          refetchAllVisibleGroups(filterModel, sortModel)
+            .catch(e => debugLog?.('[PagedAppend] group filter refetch failed:', e?.message));
+        } catch (e) {
+          debugLog?.('[PagedAppend] could not dispatch group filter refetch:', e?.message);
+        }
+      }
+    }
+
     // Refresh the per-group badge counts to reflect the new filter — counts
     // would otherwise stay stale until each group's grid is opened.
     const scheduleRefreshGroupCounts = getScheduleRefreshGroupCounts?.();
@@ -650,6 +1127,23 @@ export function useGrouping(
     }
     const onSortChanged = getOnSortChanged?.();
     if (onSortChanged) withFiringGrid(event, onSortChanged);
+
+    // Paged-append: same problem as filter — sort applied client-side only
+    // sorts the loaded subset. Refetch each mounted group so the server
+    // returns the full sorted first block.
+    if (isInfiniteScrollEnabled.value) {
+      const refetchAllVisibleGroups = getRefetchAllVisibleGroups?.();
+      if (refetchAllVisibleGroups) {
+        try {
+          const filterModel = event.api.getFilterModel();
+          const sortModel = event.api.getState()?.sort?.sortModel || [];
+          refetchAllVisibleGroups(filterModel, sortModel)
+            .catch(e => debugLog?.('[PagedAppend] group sort refetch failed:', e?.message));
+        } catch (e) {
+          debugLog?.('[PagedAppend] could not dispatch group sort refetch:', e?.message);
+        }
+      }
+    }
   };
 
   const onGroupColumnResized = (groupValue, event) => {
@@ -751,11 +1245,20 @@ export function useGrouping(
   // ========== COLLAPSE / EXPAND ==========
 
   // Toggle a single group's collapsed state and persist.
-  // Empty groups (count === 0) flip the session-only override instead of the
-  // persisted state, so the stored "expanded when populated" intent is kept.
+  // Empty groups (count === 0) flip the session-only manualExpand set so
+  // that "I expanded this empty group to look at it" doesn't get persisted
+  // as a permanent open-on-load choice — on next reload it returns to the
+  // default-closed state. Non-empty groups write to the persisted
+  // collapsedSet.
   const toggleGroupCollapsed = (groupValue) => {
     const group = orderedGroups.value.find(g => g.value === groupValue);
-    if (group && group.count === 0) {
+    // Empty AND not yet seen with items in this session → flip the
+    // session-only manualExpand set (peeking at an empty group shouldn't
+    // persist as a permanent "expanded" choice).
+    // Once a group has been seen with items, fall through to the
+    // collapsedSet path so its collapse state is sticky and doesn't get
+    // overridden by transient 0-counts.
+    if (group && group.count === 0 && !groupsSeenWithItems.value.has(groupValue)) {
       const next = new Set(manuallyExpandedEmptyGroups.value);
       if (next.has(groupValue)) next.delete(groupValue);
       else next.add(groupValue);
@@ -764,8 +1267,8 @@ export function useGrouping(
       return;
     }
     // Drive the persisted state from what the user *sees* (group.collapsed),
-    // not from the raw collapsedSet membership. With the default-closed
-    // policy, an unknown-count group can be visually closed while persisted
+    // not from raw collapsedSet membership. With the loading-state policy
+    // (count==null → closed), a group can be visually closed while persisted
     // as expanded; clicking it should open it (remove from collapsedSet),
     // not flip it to "persisted closed".
     const wasCollapsed = group?.collapsed ?? false;
@@ -936,8 +1439,6 @@ export function useGrouping(
       clearTimeout(groupingTransitionTimer);
       groupingTransitionTimer = null;
     }
-    pendingMoveTimers.forEach((t) => clearTimeout(t));
-    pendingMoveTimers.clear();
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.removeEventListener('resize', handleGroupHorizontalResize);
     if (groupHorizontalResizeObserver) {
@@ -956,9 +1457,6 @@ export function useGrouping(
     groupGridApis,
     groupSelections,
     groupInfiniteCounts,
-    pendingGroupingMoves,
-    setPendingGroupingMove,
-    clearPendingGroupingMove,
     bumpGroupingDataVersion,
     groupHorizontalScrollRef,
     groupHorizontalScrollWidth,
