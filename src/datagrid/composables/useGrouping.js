@@ -54,6 +54,7 @@ export function useGrouping(
     getUpdateCurrentConfig,
     getScheduleRefreshGroupCounts,
     getLoadInitialForGroup,
+    getLoadMoreForGroup,
     getRefetchAllVisibleGroups,
     getGroupPagedRowData,
     getAddRowToGroupState,
@@ -516,6 +517,64 @@ export function useGrouping(
 
   let groupHorizontalResizeObserver = null;
 
+  // ========== PAGED-APPEND LOAD-MORE OBSERVER ==========
+  //
+  // Per-group grids run with domLayout="autoHeight" — their bodies don't
+  // scroll; the outer .ww-datagrid container does. AG Grid's `body-scroll`
+  // event therefore never fires past the initial paint, which means the
+  // existing `onGroupBodyScrollWrapper` loadMore trigger is dead in grouped
+  // mode and only the first block ever loads (e.g., 100 of 3000 rows).
+  //
+  // Fix: observe each group's footer with an IntersectionObserver. When the
+  // footer enters a viewport-bottom margin (i.e., the user has scrolled to
+  // near the bottom of the group's loaded rows), call loadMoreForGroup. The
+  // loadMore function is idempotent — it returns early when offset >= total
+  // or when a fetch is already in flight.
+  let loadMoreObserver = null;
+  // Map<groupValue, footerEl> so we know which footer to unobserve on
+  // collapse/unmount even though the el may already have been removed by
+  // Vue's v-if teardown by then.
+  const observedFooters = new Map();
+
+  const dispatchLoadMoreForGroup = (groupValue) => {
+    if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
+    const api = groupGridApis.value.get(groupValue);
+    if (!api) return;
+    const loadMoreForGroup = getLoadMoreForGroup?.();
+    if (!loadMoreForGroup) return;
+    try {
+      const filterModel = api.getFilterModel?.() || null;
+      const sortModel = api.getState?.()?.sort?.sortModel || [];
+      const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+      loadMoreForGroup(groupValue, api, filterModel, sortModel, searchValue);
+    } catch (e) {
+      debugLog?.(`[PagedAppend] dispatchLoadMoreForGroup("${groupValue}") failed:`, e?.message);
+    }
+  };
+
+  const observeGroupFooter = (groupValue) => {
+    if (!loadMoreObserver) return;
+    const container = findGroupContainerByValue(groupValue);
+    const footer = container?.querySelector(`.ww-group__footer[data-group-value="${String(groupValue).replace(/"/g, '\\"')}"]`);
+    if (!footer) return;
+    // If we were already observing a previous footer for this group (e.g.
+    // re-mount after collapse), drop it first.
+    const prev = observedFooters.get(groupValue);
+    if (prev && prev !== footer) {
+      try { loadMoreObserver.unobserve(prev); } catch (_) { /* noop */ }
+    }
+    observedFooters.set(groupValue, footer);
+    loadMoreObserver.observe(footer);
+  };
+
+  const unobserveGroupFooter = (groupValue) => {
+    if (!loadMoreObserver) return;
+    const footer = observedFooters.get(groupValue);
+    if (!footer) return;
+    try { loadMoreObserver.unobserve(footer); } catch (_) { /* noop */ }
+    observedFooters.delete(groupValue);
+  };
+
   onMounted(() => {
     const frontWindow = wwLib?.getFrontWindow?.() || window;
     frontWindow.addEventListener('resize', handleGroupHorizontalResize);
@@ -526,6 +585,23 @@ export function useGrouping(
         if (isGroupingActive.value) updateGroupHorizontalScrollbarMetrics();
       });
       groupHorizontalResizeObserver.observe(gridContainerRef.value);
+    }
+    if (typeof IntersectionObserver !== 'undefined') {
+      // rootMargin extends the viewport-bottom by 400px so we trigger a
+      // fetch slightly before the footer is visible — gives the next block
+      // a head start on scrolling, avoiding a visible "stop at the end of
+      // loaded rows" pause.
+      loadMoreObserver = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            const groupValue = entry.target?.dataset?.groupValue;
+            if (!groupValue) continue;
+            dispatchLoadMoreForGroup(groupValue);
+          }
+        },
+        { root: null, rootMargin: '0px 0px 400px 0px', threshold: 0 }
+      );
     }
     updateGroupHorizontalScrollbarMetrics();
   });
@@ -980,6 +1056,12 @@ export function useGrouping(
     try { setupCrossGroupDropZones(groupValue, params.api); }
     catch (e) { debugLog?.('[GroupDrag] setupCrossGroupDropZones failed:', e?.message); }
 
+    // Hook this group's footer into the load-more observer so further
+    // blocks fetch as the user scrolls down. Wait one tick — the footer
+    // is rendered by the same v-if as the grid, but we want to query for
+    // it after Vue has flushed the DOM update.
+    nextTick(() => observeGroupFooter(groupValue));
+
     // Paged-append mode: kick off this group's first-block fetch. Stagger
     // across groups so N grids don't fire identical requests in the same
     // tick when several open simultaneously after a grouping-column change.
@@ -1054,6 +1136,8 @@ export function useGrouping(
     // Tear down inbound drop zones BEFORE removing the api from the registry
     // — tearDownDropZonesForGroup looks up source apis by groupValue.
     try { tearDownDropZonesForGroup(groupValue); }
+    catch (_) { /* noop */ }
+    try { unobserveGroupFooter(groupValue); }
     catch (_) { /* noop */ }
     groupGridApis.value.delete(groupValue);
     groupGridApis.value = new Map(groupGridApis.value);
@@ -1445,6 +1529,11 @@ export function useGrouping(
       groupHorizontalResizeObserver.disconnect();
       groupHorizontalResizeObserver = null;
     }
+    if (loadMoreObserver) {
+      loadMoreObserver.disconnect();
+      loadMoreObserver = null;
+    }
+    observedFooters.clear();
   });
 
   return {

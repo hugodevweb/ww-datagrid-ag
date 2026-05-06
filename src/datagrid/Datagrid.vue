@@ -181,6 +181,7 @@
         <div
           v-if="!group.collapsed"
           class="ww-group__footer"
+          :data-group-value="group.value"
           :style="{ '--group-color': group.color }"
         >
           <span
@@ -718,6 +719,7 @@ export default {
       getUpdateCurrentConfig: () => updateCurrentConfig,
       getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
       getLoadInitialForGroup: () => loadInitialForGroup,
+      getLoadMoreForGroup: () => loadMoreForGroup,
       getRefetchAllVisibleGroups: () => refetchAllVisibleGroups,
       getGroupPagedRowData: () => groupPagedRowData,
       getAddRowToGroupState: () => addRowToGroupState,
