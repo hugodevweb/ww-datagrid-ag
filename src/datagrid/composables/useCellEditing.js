@@ -935,14 +935,17 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
           };
         }
         default: {
-          // Determine the correct filter type based on cellDataType
+          // Determine the correct filter type based on cellDataType.
+          // Boolean uses our SelectFilterWrapper with synthetic True/False
+          // options because `agSetColumnFilter` is part of AG Grid
+          // Enterprise — only `AllCommunityModule` is registered, so
+          // selecting it leaves the column without a working filter.
           let filterType = false;
           if (col?.filter) {
             if (col?.cellDataType === 'number') {
               filterType = 'agNumberColumnFilter';
             } else if (col?.cellDataType === 'boolean') {
-              // Use Set Filter for boolean columns to show True/False options
-              filterType = 'agSetColumnFilter';
+              filterType = SelectFilterWrapper;
             } else {
               // Default to text filter for text, undefined, or other types
               filterType = 'agTextColumnFilter';
@@ -960,14 +963,8 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
 
           // Add boolean-specific handling
           if (col?.cellDataType === 'boolean') {
-            // Set cellDataType so AG Grid can automatically configure other features
-            // Note: We explicitly set filter type above to ensure Set Filter is used
+            // Set cellDataType so AG Grid can automatically configure other features.
             result.cellDataType = 'boolean';
-
-            // Explicitly ensure Set Filter is used (override AG Grid's default Text Filter for boolean)
-            if (col?.filter) {
-              result.filter = 'agSetColumnFilter';
-            }
 
             // Use checkbox cell renderer for boolean display
             result.cellRenderer = 'agCheckboxCellRenderer';
@@ -1003,36 +1000,52 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
               };
             }
 
-            // Configure filter params for boolean set filter
-            // Explicitly configure to ensure Set Filter shows True/False options
-            if (col?.filter && filterType === 'agSetColumnFilter') {
-              // Merge with default filter params (buttons, closeOnApply, etc.)
+            // Configure filter params for the SelectFilterWrapper-based
+            // boolean filter. Two synthetic options (True/False) are passed
+            // through the same selectOptions shape select columns use, so
+            // SelectFilterComponent renders a familiar checkbox dropdown.
+            // The model emitted by SelectFilterComponent is
+            // `{ type: 'selectFilter', values: [true|false, ...] }`, which
+            // convertFilterToSupabase already handles via its `selectFilter`
+            // branch (issuing eq/in queries against the boolean column).
+            if (col?.filter) {
+              const lang = cfg.value?.lang || 'en';
+              const trueLabels  = { en: 'True',  fr: 'Vrai',     es: 'Verdadero', de: 'Wahr',   pt: 'Verdadeiro' };
+              const falseLabels = { en: 'False', fr: 'Faux',     es: 'Falso',     de: 'Falsch', pt: 'Falso' };
+              const booleanOptions = [
+                // Colors are required: SelectFilterComponent always paints
+                // option labels white over `option.color` (defaults to
+                // `#ffffff` which renders unreadable white-on-white).
+                { value: true,  label: trueLabels[lang]  || trueLabels.en,  color: '#16a34a' },
+                { value: false, label: falseLabels[lang] || falseLabels.en, color: '#9ca3af' },
+              ];
               result.filterParams = {
-                ...(result.filterParams || {}),
-                values: (params) => {
-                  // Return boolean values for the set filter
-                  return [true, false];
+                selectOptions: {
+                  options: booleanOptions,
+                  resolveMappingFormula,
+                  get isLoading() { return false; },
                 },
-                valueFormatter: (params) => {
-                  // Format boolean values as True/False (AG Grid will handle localization)
-                  if (params.value === true || params.value === 'true' || params.value === 1 || params.value === '1') {
-                    return 'True';
-                  } else if (params.value === false || params.value === 'false' || params.value === 0 || params.value === '0') {
-                    return 'False';
-                  }
-                  return String(params.value);
-                },
-                // Ensure filter uses actual boolean values, not strings
-                filterValueGetter: (params) => {
-                  const value = params.data?.[col?.field];
-                  // Convert to actual boolean for filtering
-                  if (value === true || value === 'true' || value === 1 || value === '1') {
-                    return true;
-                  } else if (value === false || value === 'false' || value === 0 || value === '0') {
-                    return false;
-                  }
-                  return value;
-                }
+                closeOnApply: true,
+                translations: (() => {
+                  const translations = {
+                    en: { reset: 'Reset',          apply: 'Apply' },
+                    fr: { reset: 'Réinitialiser',  apply: 'Appliquer' },
+                    es: { reset: 'Restablecer',    apply: 'Aplicar' },
+                    de: { reset: 'Zurücksetzen',   apply: 'Anwenden' },
+                    pt: { reset: 'Redefinir',      apply: 'Aplicar' },
+                  };
+                  return translations[lang] || translations.en;
+                })(),
+              };
+              // Filter value getter returns the raw boolean from data so the
+              // selectFilter values (true/false) compare against an actual
+              // boolean rather than the string the default valueGetter
+              // produces.
+              result.filterValueGetter = (params) => {
+                const value = params.data?.[col?.field];
+                if (value === true || value === 'true' || value === 1 || value === '1') return true;
+                if (value === false || value === 'false' || value === 0 || value === '0') return false;
+                return value;
               };
             }
           } else if (col?.editable) {
