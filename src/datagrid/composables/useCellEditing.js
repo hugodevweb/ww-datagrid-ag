@@ -1203,7 +1203,16 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
     // first VISIBLE column — column[0] may be a hidden virtual column (used
     // for sort/filter only) or a column the user toggled off via the
     // chooser, in which case its drag handle would never render.
-    if (cfg.value.rowReorder || isGroupingActive.value) {
+    //
+    // Also read grouping intent directly from `viewConfiguration.grouping`
+    // (not just `isGroupingActive`) — when switching views, the new view's
+    // viewConfiguration is applied to cfg.value first, then
+    // applyViewConfiguration runs to update groupingState. columnDefs (which
+    // reads cfg.value.viewConfiguration via the `viewConfig` reads above)
+    // recomputes after step 1 but before step 2; without this fallback the
+    // freshly-mounted per-group grids would render without the drag column.
+    const viewHasGrouping = !!viewConfig?.grouping?.columnId;
+    if (cfg.value.rowReorder || isGroupingActive.value || viewHasGrouping) {
       const firstVisibleColumn = columns.find(c => c && !c.hide && !c.__virtualColumn);
       if (firstVisibleColumn) {
         firstVisibleColumn.rowDrag = true;
