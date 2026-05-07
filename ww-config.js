@@ -12,6 +12,7 @@ export default {
           "layout",
           "height",
           "textColor",
+          "gridBackgroundColor",
           "borderColor",
           "outerBorderColor",
           "wrapperBorderRadius",
@@ -113,6 +114,14 @@ export default {
           "columnChooserTextColor",
           "columnChooserAccentColor",
           "columnChooserWidth",
+        ],
+      },
+      {
+        label: "Group",
+        isCollapsible: true,
+        properties: [
+          "groupBorderColor",
+          "groupBorderRadius",
         ],
       },
     ],
@@ -817,6 +826,20 @@ export default {
       bindable: true,
       states: true,
       classes: true,
+    },
+    gridBackgroundColor: {
+      type: "Color",
+      label: "Grid Background",
+      options: {
+        nullable: true,
+      },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      propertyHelp: {
+        tooltip: "Background of the grid surface (the area behind groups in grouped mode, and behind the grid body in single-grid mode). Independent from the row background.",
+      },
     },
     cellColor: {
       type: "Color",
@@ -3183,6 +3206,36 @@ export default {
       responsive: true,
       states: true,
       classes: true,
+    },
+    groupBorderColor: {
+      type: "Color",
+      label: { en: "Group Border Color" },
+      options: {
+        nullable: true,
+      },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "#ECECEC",
+      propertyHelp: {
+        tooltip: "Border color for each group container in grouped mode. Independent from the grid's outer border so the single-grid view can stay borderless while groups still show borders.",
+      },
+    },
+    groupBorderRadius: {
+      label: { en: "Group Border Radius" },
+      type: "Length",
+      options: {
+        noRange: true,
+      },
+      bindable: true,
+      responsive: true,
+      states: true,
+      classes: true,
+      defaultValue: "8px",
+      propertyHelp: {
+        tooltip: "Border radius for each group container in grouped mode. Independent from the grid's outer border radius.",
+      },
     },
     rowReorder: {
       label: { en: "Row Reorder" },

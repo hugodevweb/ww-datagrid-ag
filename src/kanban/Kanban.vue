@@ -1091,7 +1091,10 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px 0 0 12px;
+  // Padding lives on .kanban-columns instead so the horizontal scrollbar
+  // (which sits at the bottom of .kanban-columns) spans the full component
+  // width, matching the single-grid and grouped datagrid views.
+  padding: 0;
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;
@@ -1109,9 +1112,48 @@ export default {
   flex-direction: row;
   align-items: flex-start;
   gap: 12px;
+  padding: 12px 0 0 12px;
   overflow-x: auto;
   overflow-y: hidden;
   min-height: 0;
+
+  // Match datagrid horizontal scrollbar so position + look are consistent
+  // across all view types.
+  scrollbar-width: auto;
+  scrollbar-color: #888 #f1f1f1;
+
+  &::-webkit-scrollbar {
+    height: 14px;
+    width: 14px;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  &::-webkit-scrollbar-button,
+  &::-webkit-scrollbar-button:single-button,
+  &::-webkit-scrollbar-button:start:decrement,
+  &::-webkit-scrollbar-button:end:increment,
+  &::-webkit-scrollbar-button:horizontal:start:decrement,
+  &::-webkit-scrollbar-button:horizontal:end:increment {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+  }
+  &::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 0;
+  }
+  &::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 0;
+
+    &:hover {
+      background: #555;
+    }
+  }
 }
 
 .kanban-column {

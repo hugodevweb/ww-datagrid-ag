@@ -21,6 +21,16 @@ export function useViewConfig(cfg, props, ctx, {
   // (filterValue, sortValue) cannot be referenced directly at construction.
   getFilterValue,
   getSortValue,
+  // Setters for the global filter/sort WeWeb variables, thunked because
+  // useFiltersAndSort is created AFTER this composable. Used by the
+  // view-config apply path so it can update `filterValue` even when ag-grid's
+  // setFilterModel silently no-ops on a stale gridApi (which happens during
+  // grouping toggle, when old per-group apis are destroyed before the new
+  // ones mount). Without this, newly-mounted group grids reapply the OLD
+  // filterValue from onGroupGridReady, reinstating a filter the view config
+  // was trying to clear/replace.
+  getSetFilters,
+  getSetSort,
   // From useGrouping (created BEFORE useViewConfig — direct refs are OK):
   groupingState, groupGridApis, groupSelections,
   getStoredCollapsedForView, isValidGroupColumn,
@@ -319,7 +329,30 @@ export function useViewConfig(cfg, props, ctx, {
         // Only skip if the key is completely absent from viewConfig
         if (viewConfig && 'filters' in viewConfig) {
           const filters = viewConfig.filters;
-          gridApi.value.setFilterModel(isEmptyConfigValue(filters) ? null : filters);
+          const isEmpty = isEmptyConfigValue(filters);
+          const modelToApply = isEmpty ? null : filters;
+          // 1) Update the global filterValue WeWeb variable FIRST. This is
+          //    the source of truth that newly-mounted per-group grids read
+          //    in onGroupGridReady — if we only call setFilterModel on the
+          //    (possibly stale) gridApi.value, a freshly-remounted group
+          //    grid will re-apply the OLD filterValue and undo our change.
+          const setFiltersFn = getSetFilters?.();
+          if (typeof setFiltersFn === 'function') {
+            setFiltersFn(modelToApply || {});
+          }
+          // 2) Apply to the primary api so single-grid mode stays in sync.
+          try { gridApi.value?.setFilterModel?.(modelToApply); } catch (_) { /* noop */ }
+          // 3) Apply to every mounted per-group api (grouped mode). The
+          //    primary api is one of these in grouped mode, but applying to
+          //    all of them keeps the column-header active-filter chip and
+          //    the underlying filter state in sync across groups even when
+          //    gridApi.value itself was destroyed by the grouping-toggle
+          //    earlier in the same apply pass.
+          try {
+            groupGridApis?.value?.forEach((api) => {
+              try { api?.setFilterModel?.(modelToApply); } catch (_) { /* noop */ }
+            });
+          } catch (_) { /* noop */ }
           debugLog('[ViewConfiguration] Applied filters:', filters, '(empty clears all filters)');
         } else {
           debugLog('[ViewConfiguration] Skipped filters (key not present, keeping current state)');

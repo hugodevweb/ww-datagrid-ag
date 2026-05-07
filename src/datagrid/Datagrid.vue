@@ -107,13 +107,6 @@
               class="ww-group__items"
             >{{ formatItemCount(group.count) }}</span>
           </div>
-          <span class="ww-group__drag-handle" aria-hidden="true">
-            <svg width="10" height="14" viewBox="0 0 10 14" fill="currentColor">
-              <circle cx="2.5" cy="3" r="1"/><circle cx="7.5" cy="3" r="1"/>
-              <circle cx="2.5" cy="7" r="1"/><circle cx="7.5" cy="7" r="1"/>
-              <circle cx="2.5" cy="11" r="1"/><circle cx="7.5" cy="11" r="1"/>
-            </svg>
-          </span>
         </div>
 
         <ag-grid-vue
@@ -178,17 +171,17 @@
         >
         </ag-grid-vue>
 
+        <!-- Invisible sentinel observed by the IntersectionObserver wired in
+             useGrouping.observeGroupLoadMoreSentinel — when it enters a
+             viewport-bottom margin the next paged-append block is fetched
+             for this group. Per-group grids run with domLayout="autoHeight"
+             so their bodies don't scroll; the sentinel sits OUTSIDE the grid
+             and rides the outer .ww-datagrid scroll context. -->
         <div
           v-if="!group.collapsed"
-          class="ww-group__footer"
+          class="ww-group__load-more-sentinel"
           :data-group-value="group.value"
-          :style="{ '--group-color': group.color }"
-        >
-          <span
-            v-if="group.count !== null && group.count !== undefined"
-            class="ww-group__footer-count"
-          >{{ formatItemCount(group.count) }}</span>
-        </div>
+        ></div>
       </div>
 
       <div
@@ -958,6 +951,10 @@ export default {
       gridApi, gridReady, debugLog,
       getFilterValue: () => filterValue,
       getSortValue: () => sortValue,
+      // Thunked because useFiltersAndSort is created AFTER useViewConfig —
+      // direct destructure here would TDZ-throw.
+      getSetFilters: () => setFilters,
+      getSetSort: () => setSort,
       groupingState, groupGridApis, groupSelections,
       getStoredCollapsedForView, isValidGroupColumn,
       setSelectedRows,
@@ -2488,6 +2485,11 @@ export default {
   isolation: isolate; // Create a new stacking context to contain AG Grid elements
   box-sizing: border-box; // padding stays inside cfg.height so we don't exceed the WeWeb wrapper
   min-height: 0; // let a flex-parent (WeWeb wrapper) actually constrain us
+  // Background of the grid surface (covers the gaps between stacked groups
+  // in grouped mode and the area around the grid body in single-grid mode).
+  // Driven by cfg.gridBackgroundColor → cssVars; defaults to transparent so
+  // unconfigured grids show whatever sits behind them.
+  background: var(--ww-data-grid_grid-background, transparent);
   // Hard cap at the WeWeb wrapper's bounds. Wins over any inline cfg.height
   // and prevents auto-layout grouped mode (stacked autoHeight grids) from
   // pushing past the wrapper.
@@ -2537,9 +2539,9 @@ export default {
   :deep(.ag-body-horizontal-scroll-viewport),
   :deep(.ag-horizontal-left-spacer),
   :deep(.ag-horizontal-right-spacer) {
-    height: 8px !important;
-    min-height: 8px !important;
-    max-height: 8px !important;
+    height: 14px !important;
+    min-height: 14px !important;
+    max-height: 14px !important;
   }
 
   :deep(.ag-body-horizontal-scroll) {
@@ -2560,12 +2562,12 @@ export default {
 
   :deep(.ag-body-horizontal-scroll-viewport) {
     overflow-x: scroll !important;
-    scrollbar-width: thin;
+    scrollbar-width: auto;
     scrollbar-color: #888 #f1f1f1;
 
     &::-webkit-scrollbar {
-      height: 8px;
-      width: 8px;
+      height: 14px;
+      width: 14px;
       -webkit-appearance: none;
       appearance: none;
     }
@@ -3346,8 +3348,15 @@ export default {
   // sits above the component (toolbar, tabs, page header, etc.). !important
   // because the host wrapper sometimes resets padding on the root element.
   // Bottom padding is 0: the sticky .ww-group__hscroll bar provides the
-  // visual bottom inset.
-  padding: 16px 4px 0 !important;
+  // visual bottom inset. Horizontal padding is 0 so .ww-group__hscroll spans
+  // the full component width — matching the single-grid and kanban views.
+  // The 4px horizontal breathing room previously provided here is now applied
+  // as a margin on each .ww-group instead (see below).
+  padding: 16px 0 0 !important;
+
+  > .ww-group {
+    margin: 0 4px;
+  }
   // Fixed-layout only: each per-group ag-grid uses domLayout="autoHeight" so
   // it sizes to its own row count. Without overflow handling here, the
   // stacked groups would blow past the configured Grid Height (cfg.height).
@@ -3370,24 +3379,28 @@ export default {
   .ww-group__hscroll {
     position: sticky;
     bottom: 0;
+    // Push the bar to the bottom of the flex column when the stacked groups
+    // don't fill the container — without this, position:sticky has nothing
+    // to stick against and the bar lays out directly under the last group.
+    // No-op when groups overflow (no free space) so the sticky-while-
+    // scrolling behaviour is preserved.
+    margin-top: auto;
     width: 100%;
-    height: 8px;
-    min-height: 8px;
+    height: 14px;
+    min-height: 14px;
     // Prevent the flex column layout from shrinking the bar when groups
     // expand to fill the container.
-    flex: 0 0 8px;
+    flex: 0 0 14px;
     overflow-x: auto;
     overflow-y: hidden;
     z-index: 100;
     background: #f1f1f1;
-    // Force the native scrollbar thumb to match the 8px bar height so the
-    // browser's default-taller thumb doesn't get clipped to the top half.
-    scrollbar-width: thin;
+    scrollbar-width: auto;
     scrollbar-color: #888 #f1f1f1;
 
     &::-webkit-scrollbar {
-      height: 8px;
-      width: 8px;
+      height: 14px;
+      width: 14px;
       -webkit-appearance: none;
       appearance: none;
     }
@@ -3482,12 +3495,15 @@ export default {
 .ww-group {
   display: flex;
   flex-direction: column;
-  border-radius: 8px;
-  // No overflow:hidden here — column filter / menu popups inside the grid
-  // need to be able to extend past the group's bottom edge. The rounded
-  // corners are produced by the header (top) and footer (bottom) themselves
-  // via their own border-top-*-radius / border-bottom-*-radius, so the parent
-  // doesn't need to clip anything to look right.
+  // No border on the .ww-group container itself. The neutral 1 px border
+  // (matching the single-grid wrapperBorder) is scoped to whichever child
+  // is actually visible:
+  //   - expanded → .ww-group__grid carries the border (title floats outside)
+  //   - collapsed → .ww-group--collapsed .ww-group__header carries the border
+  // Same thing for the 4 px coloured left line. This makes the title row
+  // visually escape the group's container in expanded state.
+  // No overflow:hidden — column filter / menu popups inside the grid need
+  // to extend past the group's bottom edge.
   transition: opacity 0.15s ease, box-shadow 0.15s ease;
 
 
@@ -3509,12 +3525,13 @@ export default {
     background: color-mix(in srgb, var(--group-color, #10b981) 6%, transparent);
   }
 
-  &.ww-group--collapsed {
-    .ww-group__header {
-      border-bottom-left-radius: 6px;
-      border-bottom-right-radius: 6px;
-      margin-bottom: 0;
-    }
+  // Collapsed: the title row IS the group's only visible surface, so it
+  // carries both the 4 px coloured line and the neutral 1 px border +
+  // radius (matching the single-grid wrapperBorder).
+  &.ww-group--collapsed .ww-group__header {
+    border: 1px solid var(--ww-data-grid_group-border-color, #ECECEC);
+    border-left: 4px solid var(--group-color);
+    border-radius: var(--ww-data-grid_group-border-radius, 8px);
   }
 }
 
@@ -3524,20 +3541,17 @@ export default {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  background: color-mix(in srgb, var(--group-color) 10%, transparent);
-  border-left: 4px solid var(--group-color);
-  border-top-left-radius: 6px;
-  border-top-right-radius: 6px;
   cursor: grab;
   user-select: none;
   font-family: inherit;
+  // No background tint, no border-radius. The colored 4 px left line is
+  // applied conditionally via `.ww-group--collapsed .ww-group__header`
+  // (defined on the .ww-group block above) so the line only appears when
+  // the group is collapsed; when expanded the title "floats" with no
+  // chrome around it.
 
   &:active {
     cursor: grabbing;
-  }
-
-  &:hover {
-    background: color-mix(in srgb, var(--group-color) 16%, transparent);
   }
 }
 
@@ -3567,11 +3581,23 @@ export default {
 
 .ww-group__title-block {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  // Default (expanded): inline — count sits right next to the title with
+  // a small gap, balancing the freed-up horizontal space the title row
+  // gains when it floats outside the grid border.
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
   cursor: pointer;
+
+  // Collapsed: stack title over count (matches the original reference
+  // mock — collapsed groups read like a small "PARIS\n18 Éléments" pill).
+  .ww-group--collapsed & {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
 }
 
 .ww-group__label {
@@ -3594,39 +3620,44 @@ export default {
   white-space: nowrap;
 }
 
-.ww-group__drag-handle {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--group-color);
-  opacity: 0.5;
-  cursor: grab;
-  flex-shrink: 0;
-  transition: opacity 0.15s ease;
-
-  .ww-group__header:hover & {
-    opacity: 0.85;
-  }
-
-  &:active {
-    cursor: grabbing;
-  }
+// Invisible sentinel inserted at the bottom of each expanded group's DOM
+// (after the AG Grid). Observed by useGrouping.observeGroupLoadMoreSentinel
+// — when it scrolls into the viewport-bottom margin the next paged-append
+// block fetches for that group. Per-group grids run with autoHeight so
+// their bodies don't scroll; this sentinel rides the outer container's
+// scroll context.
+.ww-group__load-more-sentinel {
+  height: 1px;
+  width: 100%;
+  pointer-events: none;
 }
 
 .ww-group__grid {
   width: 100%;
   min-height: 0;
-  border-left: 4px solid var(--group-color, #9ca3af);
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
   overflow: hidden;
+  // 4 px coloured line on the left + the neutral 1 px wrapperBorder + the
+  // configured wrapperBorderRadius. The grid is what carries the bordered
+  // "card" look in expanded mode — the title row above sits OUTSIDE the
+  // border so it visually escapes the group container. Element is
+  // rendered only when expanded (v-if="!group.collapsed"); collapsed
+  // groups carry the same chrome on the title row instead (see
+  // `.ww-group--collapsed .ww-group__header`).
+  border: 1px solid var(--ww-data-grid_group-border-color, #ECECEC);
+  border-left: 4px solid var(--group-color, #9ca3af);
+  border-radius: var(--ww-data-grid_group-border-radius, 8px);
+
+  // Suppress AG Grid's own wrapper border so it doesn't double up against
+  // the per-group container border above. The single-grid mode still
+  // picks it up via the shared theme; only per-group grids drop it.
+  :deep(.ag-root-wrapper) {
+    border: 0 !important;
+  }
 
   // Per-group grids run with domLayout="autoHeight" — they should hug their
   // rows. The .ww-datagrid-wide rule sets a 75px floor on .ag-center-cols-viewport
   // (useful for single-grid mode to avoid an empty-looking grid); reset it
-  // here so a group with one or two rows doesn't get padded out with whitespace
-  // before its footer.
+  // here so a group with one or two rows doesn't get padded out with whitespace.
   :deep(.ag-center-cols-viewport) {
     min-height: 0 !important;
   }
@@ -3698,38 +3729,5 @@ export default {
   }
 }
 
-// Group grid is always sandwiched between header and footer when expanded —
-// keep its corners square so the header/footer do the rounding.
-.ww-group:not(.ww-group--collapsed) .ww-group__grid {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-}
-
-// Footer mirrors the header: same color tint, same border-left accent, same
-// padding rhythm. Only difference is rounding on the bottom corners and a
-// flex-end alignment so the item count sits on the right.
-.ww-group__footer {
-  --group-color: #9ca3af;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 10px 14px;
-  background: color-mix(in srgb, var(--group-color) 10%, transparent);
-  border-left: 4px solid var(--group-color);
-  border-bottom-left-radius: 6px;
-  border-bottom-right-radius: 6px;
-  user-select: none;
-  font-family: inherit;
-}
-
-.ww-group__footer-count {
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--ag-foreground-color, #6b7280);
-  opacity: 0.75;
-  line-height: 1.2;
-  white-space: nowrap;
-}
 
 </style>

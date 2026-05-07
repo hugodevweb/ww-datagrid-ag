@@ -150,6 +150,14 @@ export function useGrouping(
   const isSyncingLayout = ref(false);
   const isSyncingFilters = ref(false);
   const isSyncingSort = ref(false);
+
+  // Bumped every time a per-group grid's api is registered or replaced
+  // (collapse → expand cycle, or any remount). The redundant filter / sort
+  // sync watcher uses this to fire even when the set of grouping keys is
+  // unchanged but the api at a given key was swapped — without it, an
+  // expand of a previously-collapsed group wouldn't trigger re-application
+  // of the global filter to the freshly-mounted grid.
+  const groupGridApiVersion = ref(0);
   const isSyncingGroupHorizontalScroll = ref(false);
   const groupHorizontalScrollRef = ref(null);
   const groupHorizontalScrollWidth = ref(0);
@@ -356,9 +364,25 @@ export function useGrouping(
       });
     }
 
+    // If the user is filtering on the grouping column itself (select filter
+    // with a `values` array), narrow the rendered group list to just the
+    // selected option values — the others can never contain matching rows so
+    // there's no point rendering an empty per-group grid for each. The
+    // SelectFilter's `doesFilterPass` rejects null row values, so the
+    // unassigned group is dropped here too.
+    let groupColFilterModel = null;
+    try { groupColFilterModel = getFilterValue?.()?.value?.[colId] ?? null; }
+    catch (_) { groupColFilterModel = null; }
+    const rawValues = Array.isArray(groupColFilterModel?.values) ? groupColFilterModel.values : null;
+    let visibleBase = base;
+    if (rawValues && rawValues.length > 0) {
+      const allowed = new Set(rawValues.map(v => String(v)));
+      visibleBase = base.filter(g => allowed.has(g.value));
+    }
+
     // Apply custom order (listed first), then append any unlisted groups at the end.
-    if (orderArr.length === 0) return base;
-    const byValue = new Map(base.map(g => [g.value, g]));
+    if (orderArr.length === 0) return visibleBase;
+    const byValue = new Map(visibleBase.map(g => [g.value, g]));
     const ordered = [];
     for (const v of orderArr) {
       if (byValue.has(v)) { ordered.push(byValue.get(v)); byValue.delete(v); }
@@ -525,16 +549,17 @@ export function useGrouping(
   // existing `onGroupBodyScrollWrapper` loadMore trigger is dead in grouped
   // mode and only the first block ever loads (e.g., 100 of 3000 rows).
   //
-  // Fix: observe each group's footer with an IntersectionObserver. When the
-  // footer enters a viewport-bottom margin (i.e., the user has scrolled to
-  // near the bottom of the group's loaded rows), call loadMoreForGroup. The
-  // loadMore function is idempotent — it returns early when offset >= total
-  // or when a fetch is already in flight.
+  // Fix: observe a tiny invisible sentinel rendered after each expanded
+  // group's grid (`.ww-group__load-more-sentinel`) with an IntersectionObserver.
+  // When the sentinel enters a viewport-bottom margin (i.e., the user has
+  // scrolled to near the bottom of the group's loaded rows), call
+  // loadMoreForGroup. The loadMore function is idempotent — it returns
+  // early when offset >= total or when a fetch is already in flight.
   let loadMoreObserver = null;
-  // Map<groupValue, footerEl> so we know which footer to unobserve on
+  // Map<groupValue, sentinelEl> so we know which element to unobserve on
   // collapse/unmount even though the el may already have been removed by
   // Vue's v-if teardown by then.
-  const observedFooters = new Map();
+  const observedSentinels = new Map();
 
   const dispatchLoadMoreForGroup = (groupValue) => {
     if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
@@ -552,27 +577,28 @@ export function useGrouping(
     }
   };
 
-  const observeGroupFooter = (groupValue) => {
+  const observeGroupLoadMoreSentinel = (groupValue) => {
     if (!loadMoreObserver) return;
     const container = findGroupContainerByValue(groupValue);
-    const footer = container?.querySelector(`.ww-group__footer[data-group-value="${String(groupValue).replace(/"/g, '\\"')}"]`);
-    if (!footer) return;
-    // If we were already observing a previous footer for this group (e.g.
-    // re-mount after collapse), drop it first.
-    const prev = observedFooters.get(groupValue);
-    if (prev && prev !== footer) {
+    const safe = String(groupValue).replace(/"/g, '\\"');
+    const sentinel = container?.querySelector(`.ww-group__load-more-sentinel[data-group-value="${safe}"]`);
+    if (!sentinel) return;
+    // If we were already observing a previous sentinel for this group
+    // (e.g. re-mount after collapse), drop it first.
+    const prev = observedSentinels.get(groupValue);
+    if (prev && prev !== sentinel) {
       try { loadMoreObserver.unobserve(prev); } catch (_) { /* noop */ }
     }
-    observedFooters.set(groupValue, footer);
-    loadMoreObserver.observe(footer);
+    observedSentinels.set(groupValue, sentinel);
+    loadMoreObserver.observe(sentinel);
   };
 
-  const unobserveGroupFooter = (groupValue) => {
+  const unobserveGroupLoadMoreSentinel = (groupValue) => {
     if (!loadMoreObserver) return;
-    const footer = observedFooters.get(groupValue);
-    if (!footer) return;
-    try { loadMoreObserver.unobserve(footer); } catch (_) { /* noop */ }
-    observedFooters.delete(groupValue);
+    const sentinel = observedSentinels.get(groupValue);
+    if (!sentinel) return;
+    try { loadMoreObserver.unobserve(sentinel); } catch (_) { /* noop */ }
+    observedSentinels.delete(groupValue);
   };
 
   onMounted(() => {
@@ -1007,6 +1033,7 @@ export function useGrouping(
     groupGridApis.value.set(groupValue, params.api);
     // Trigger reactivity
     groupGridApis.value = new Map(groupGridApis.value);
+    groupGridApiVersion.value++;
 
     // Promote the first group's api to the primary `gridApi` so existing
     // code paths that reference gridApi.value keep working.
@@ -1056,11 +1083,11 @@ export function useGrouping(
     try { setupCrossGroupDropZones(groupValue, params.api); }
     catch (e) { debugLog?.('[GroupDrag] setupCrossGroupDropZones failed:', e?.message); }
 
-    // Hook this group's footer into the load-more observer so further
-    // blocks fetch as the user scrolls down. Wait one tick — the footer
-    // is rendered by the same v-if as the grid, but we want to query for
-    // it after Vue has flushed the DOM update.
-    nextTick(() => observeGroupFooter(groupValue));
+    // Hook this group's load-more sentinel into the IntersectionObserver
+    // so further blocks fetch as the user scrolls down. Wait one tick —
+    // the sentinel is rendered by the same v-if as the grid, but we want
+    // to query for it after Vue has flushed the DOM update.
+    nextTick(() => observeGroupLoadMoreSentinel(groupValue));
 
     // Paged-append mode: kick off this group's first-block fetch. Stagger
     // across groups so N grids don't fire identical requests in the same
@@ -1137,7 +1164,7 @@ export function useGrouping(
     // — tearDownDropZonesForGroup looks up source apis by groupValue.
     try { tearDownDropZonesForGroup(groupValue); }
     catch (_) { /* noop */ }
-    try { unobserveGroupFooter(groupValue); }
+    try { unobserveGroupLoadMoreSentinel(groupValue); }
     catch (_) { /* noop */ }
     groupGridApis.value.delete(groupValue);
     groupGridApis.value = new Map(groupGridApis.value);
@@ -1451,6 +1478,122 @@ export function useGrouping(
     });
   };
 
+  // ========== FILTER / SORT REDUNDANT SYNC ==========
+
+  // Defensive sync: when the global filterValue / sortValue changes, OR when
+  // the set of mounted group grids changes (e.g. after expand/collapse, view
+  // switch, paged-append refetch remounting a grid), re-apply the latest
+  // filter & sort models to every mounted grid. The per-event handler in
+  // `onGroupFilterChanged` already covers the firing grid → peers fan-out,
+  // but it relies on `groupGridApis` being stable at the moment the event
+  // fires. Empty-group grids have a known race where `setFilterModel` lands
+  // before the column filter instances are created, leaving their header
+  // indicators stale. Awaiting `setFilterModel`'s promise guarantees the
+  // filter manager has materialised before we move on, so the active-filter
+  // chip on the column header reflects the model.
+  watch(
+    () => {
+      // The source runs once at watch() registration to collect deps. At
+      // that moment `filterValue` / `sortValue` from useFiltersAndSort may
+      // still be in the TDZ — useGrouping is constructed before
+      // useFiltersAndSort. The thunks close over those bindings, so
+      // calling them too early throws ReferenceError. Swallow the throw
+      // and let subsequent runs (after both composables are initialised)
+      // pick up the real values.
+      let filterModel = {};
+      let sortModel = [];
+      try {
+        const fv = getFilterValue?.();
+        filterModel = fv?.value || {};
+      } catch (_) { /* TDZ during initial setup */ }
+      try {
+        const sv = getSortValue?.();
+        sortModel = Array.isArray(sv?.value) ? sv.value : [];
+      } catch (_) { /* TDZ during initial setup */ }
+      return {
+        filterModel,
+        sortModel,
+        // Track api set so a new mount triggers re-sync. Using map size +
+        // sorted keys keeps the watcher cheap; the apis themselves are
+        // shallow refs.
+        apiKeys: Array.from(groupGridApis.value.keys()).sort().join('|'),
+        // Bumps on every register / re-register so collapse → expand of an
+        // existing group key (same key, fresh api) triggers re-sync too.
+        apiVersion: groupGridApiVersion.value,
+      };
+    },
+    ({ filterModel, sortModel, apiKeys }) => {
+      if (!apiKeys) return;
+      // No early return on isSyncingFilters/isSyncingSort: this watcher MUST
+      // run after `onGroupFilterChanged` (which sets those flags to suppress
+      // its own re-entry) so empty-group grids get their filter wrappers
+      // materialised via getColumnFilterInstance + the per-instance setModel
+      // fallback below + refreshHeader. Re-entry safety still holds:
+      // onGroupFilterChanged checks the flag itself, and we re-assert it
+      // here for the duration of our work.
+      isSyncingFilters.value = true;
+      isSyncingSort.value = true;
+      const apiEntries = Array.from(groupGridApis.value.entries());
+      const filterColIds = filterModel ? Object.keys(filterModel) : [];
+      // Unwrap Vue Proxy → plain object so AG Grid's internal structural
+      // checks see a vanilla object.
+      const plainModel = filterModel ? JSON.parse(JSON.stringify(filterModel)) : filterModel;
+      Promise.all(
+        apiEntries.map(async ([, api]) => {
+          if (!api) return;
+          // Force-instantiate filter wrappers for every column in the model
+          // so AG Grid's lazy-init doesn't leave them in a half-built state
+          // (custom Vue wrappers only create their `vueInstance` inside
+          // init(), which AG Grid invokes lazily).
+          try {
+            await Promise.all(
+              filterColIds.map((colId) => {
+                try { return api.getColumnFilterInstance?.(colId); }
+                catch (_) { return null; }
+              })
+            );
+          } catch (_) { /* noop */ }
+          try {
+            const result = api.setFilterModel(plainModel);
+            if (result && typeof result.then === 'function') {
+              await result.catch(() => { /* noop */ });
+            }
+            // Per-instance fallback: on empty grids AG Grid's api-level
+            // setFilterModel sometimes silently drops the model
+            // (`getModel()` returns null, `isFilterActive()` returns false).
+            // Apply the model directly to the instance and notify.
+            for (const colId of filterColIds) {
+              try {
+                const inst = await api.getColumnFilterInstance?.(colId);
+                const wantedModel = plainModel?.[colId] ?? null;
+                const active = typeof inst?.isFilterActive === 'function'
+                  ? inst.isFilterActive()
+                  : false;
+                if (inst && typeof inst.setModel === 'function' && wantedModel != null && !active) {
+                  const r = inst.setModel(wantedModel);
+                  if (r && typeof r.then === 'function') await r.catch(() => { /* noop */ });
+                  try { api.onFilterChanged?.(); } catch (_) { /* noop */ }
+                }
+              } catch (_) { /* noop */ }
+            }
+          } catch (_) { /* noop */ }
+          try {
+            api.applyColumnState({ state: sortModel, defaultState: { sort: null } });
+          } catch (_) { /* noop */ }
+          // Force header re-render so the active-filter indicator on each
+          // column updates immediately.
+          try { api.refreshHeader?.(); } catch (_) { /* noop */ }
+        })
+      ).finally(() => {
+        nextTick(() => {
+          isSyncingFilters.value = false;
+          isSyncingSort.value = false;
+        });
+      });
+    },
+    { deep: true, flush: 'post' }
+  );
+
   // ========== COLLAPSED-STATE HYDRATION (cross-view) ==========
 
   // Re-hydrate collapsed state when the active view changes (e.g. user switches
@@ -1533,7 +1676,7 @@ export function useGrouping(
       loadMoreObserver.disconnect();
       loadMoreObserver = null;
     }
-    observedFooters.clear();
+    observedSentinels.clear();
   });
 
   return {

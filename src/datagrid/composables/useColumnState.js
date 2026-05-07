@@ -181,6 +181,18 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
       // the row height (e.g. empty-group min-height) follow the configured
       // value rather than relying on AG Grid's --ag-row-height being set.
       "--ww-data-grid_row-height": `${Number(cfg.value.rowHeight) || 40}px`,
+      // Background of the outer grid surface (the .ww-datagrid container).
+      // In grouped mode this is what shows in the gaps between stacked
+      // groups; in single-grid mode it's the area around the grid. Falls
+      // back to transparent when unset so the page background shows
+      // through.
+      "--ww-data-grid_grid-background": cfg.value.gridBackgroundColor || 'transparent',
+      // Per-group container chrome in grouped mode. Dedicated props (not
+      // reused from outerBorderColor / wrapperBorderRadius) so the
+      // single-grid view can stay borderless while groups still show
+      // borders.
+      "--ww-data-grid_group-border-color": cfg.value.groupBorderColor || '#ECECEC',
+      "--ww-data-grid_group-border-radius": cfg.value.groupBorderRadius || '8px',
     };
   });
 
@@ -197,7 +209,7 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
     borderColor: cfg.value.borderColor,
     wrapperBorder: cfg.value.outerBorderColor
       ? { style: "solid", width: 1, color: cfg.value.outerBorderColor }
-      : undefined,
+      : false,
     cellTextColor: cfg.value.cellColor,
     cellFontFamily: cfg.value.cellFontFamily,
     dataFontSize: cfg.value.cellFontSize,
