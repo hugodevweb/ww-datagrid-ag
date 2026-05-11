@@ -476,6 +476,7 @@ import {
 } from "@ag-grid-community/locale";
 import ActionCellRenderer from "./components/ActionCellRenderer.js";
 import ImageCellRenderer from "./components/ImageCellRenderer.js";
+import NavigationCellRenderer from "./components/NavigationCellRenderer.js";
 import WewebCellRenderer from "./components/WewebCellRenderer.vue";
 import SelectCellRenderer from "./components/SelectCellRenderer.vue";
 import SelectFilterComponent from "./components/SelectFilterComponent.vue";
@@ -629,6 +630,54 @@ export default {
       waitForRowInGridLocal,
     } = useGridApi(cfg, props, resolveMappingFormula);
 
+    // Navigation column context — the workflow id, tab formula, and message
+    // count resolver are top-level grid props (one nav column per view), so we
+    // build them once here and hand the bundle to useCellEditing for the
+    // per-row colDef factory to consume. The focus-row source is the grid's
+    // existing `focusedRowId` config (Selection group), so binding one
+    // workspace variable drives both the row scroll-into-view focus and the
+    // navigation button focus styling.
+    const NAVIGATION_TAB_FORMULA = {
+      type: "f",
+      code: "formulas['ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd']()",
+    };
+    const NAVIGATION_WORKFLOW_ID = "d4ab2a61-2728-4dc3-a144-9fd3d558411e";
+    const navigationFocusRowId = computed(() => cfg.value.focusedRowId);
+    const navContext = {
+      focusRowId: navigationFocusRowId,
+      resolveTab: () =>
+        Number(resolveMappingFormula(NAVIGATION_TAB_FORMULA) ?? 0),
+      resolveMessageCount: (rowData) => {
+        const formula = cfg.value.navigationMessageCountFormula;
+        if (formula) {
+          const override = resolveMappingFormula(formula, rowData);
+          if (override != null && override !== "") return Number(override) || 0;
+        }
+        return rowData?.conversation?.messages?.length ?? 0;
+      },
+      workflowId: NAVIGATION_WORKFLOW_ID,
+    };
+
+    // When the focus-row variable changes, refresh only the navigation column
+    // cells in place (no full grid repaint, no Vue remount). The renderer's
+    // refresh() pulls fresh focusRowId / tabValue from cellRendererParams (a
+    // function), so the focus styling moves to the matching row instantly.
+    watch(navigationFocusRowId, () => {
+      if (!gridApi.value) return;
+      // Mirror the colId logic in createNavigationColumnDef so refreshCells
+      // can locate the column whether or not the user set a `field`.
+      const navColIds = (cfg.value.columns || [])
+        .filter((c) => c?.cellDataType === "navigation")
+        .map((c) => c.field || `navigation-${c.headerName || "col"}`);
+      if (navColIds.length) {
+        try {
+          gridApi.value.refreshCells({ columns: navColIds, force: true });
+        } catch (e) {
+          // ignore — grid may be tearing down
+        }
+      }
+    }, { flush: "post" });
+
     // Helper to check if a viewConfiguration value is effectively empty
     // Returns true if value is null, undefined, empty object {}, or empty array []
     const isEmptyConfigValue = (value) => {
@@ -717,6 +766,10 @@ export default {
       getGroupPagedRowData: () => groupPagedRowData,
       getAddRowToGroupState: () => addRowToGroupState,
       getRemoveRowFromGroupState: () => removeRowFromGroupState,
+      // Stamp the count-refresh race guard from drag/drop paths in
+      // useGrouping that bump groupInfiniteCounts directly (collapsed-dest
+      // optimistic +1) without going through addRowToGroupState.
+      getStampGroupMutation: () => stampGroupMutation,
       getOnFilterChanged: () => onFilterChanged,
       getOnSortChanged: () => onSortChanged,
       getOnColumnMoved: () => onColumnMoved,
@@ -827,6 +880,7 @@ export default {
       getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
       getAddRowToGroupState: () => addRowToGroupState,
       getRemoveRowFromGroupState: () => removeRowFromGroupState,
+      navContext,
     });
 
     // Composable: grid actions — programmatic actions exposed to WeWeb
@@ -915,7 +969,7 @@ export default {
       loadInitial, loadMore, refetchAll,
       groupPagedRowData, loadInitialForGroup, loadMoreForGroup, refetchAllForGroup,
       refetchAllVisibleGroups,
-      addRowToGroupState, removeRowFromGroupState,
+      addRowToGroupState, removeRowFromGroupState, stampGroupMutation,
       fetchSupabaseGroupCount, scheduleRefreshGroupCounts,
     } = useInfiniteScroll(cfg, props, resolveMappingFormula, {
       gridApi, gridReady,
@@ -1842,6 +1896,7 @@ export default {
     const gridComponents = markRaw(Object.freeze({
       ActionCellRenderer,
       ImageCellRenderer,
+      NavigationCellRenderer,
       WewebCellRenderer,
       SelectCellRenderer,
       SelectFilterComponent,
@@ -3344,18 +3399,30 @@ export default {
   display: flex !important;
   flex-direction: column !important;
   row-gap: 14px;
-  // Top padding keeps the first group from sitting flush against whatever
-  // sits above the component (toolbar, tabs, page header, etc.). !important
-  // because the host wrapper sometimes resets padding on the root element.
-  // Bottom padding is 0: the sticky .ww-group__hscroll bar provides the
-  // visual bottom inset. Horizontal padding is 0 so .ww-group__hscroll spans
-  // the full component width — matching the single-grid and kanban views.
-  // The 4px horizontal breathing room previously provided here is now applied
-  // as a margin on each .ww-group instead (see below).
-  padding: 16px 0 0 !important;
+  // Padding is 0 on every side. The visual breathing room above the first
+  // group (formerly padding-top: 16px) now lives on the first .ww-group's
+  // margin-top so that the scrollport's top edge is flush with the first
+  // sticky .ww-group__header — otherwise rows scrolling past would appear
+  // in the padding-top strip behind/above the sticky header (depends on
+  // browser handling of padding-top + position:sticky).
+  // The sticky .ww-group__hscroll bar provides the visual bottom inset, so
+  // no padding-bottom either. Horizontal padding stays 0 so .ww-group__hscroll
+  // can span the full component width — matching the single-grid and kanban
+  // views. The 4px horizontal breathing room is applied as margin on each
+  // .ww-group (see below). !important is kept because the host wrapper
+  // sometimes resets padding on the root element.
+  padding: 0 !important;
 
   > .ww-group {
     margin: 0 4px;
+
+    // Visual breathing room above the first group, replacing the former
+    // container padding-top. Lives on the group itself so that, once the
+    // user scrolls, this margin scrolls out of view and the sticky header
+    // pins flush against the top of the scrollport.
+    &:first-child {
+      margin-top: 16px;
+    }
   }
   // Fixed-layout only: each per-group ag-grid uses domLayout="autoHeight" so
   // it sizes to its own row count. Without overflow handling here, the
@@ -3493,6 +3560,12 @@ export default {
 // Grouping tab (.cc-group-actions / .cc-group-action-btn).
 
 .ww-group {
+  // Approximate rendered height of .ww-group__header (10px top/bottom
+  // padding + ~18px content row). Consumed by the sticky :deep(.ag-header)
+  // rule inside .ww-group__grid so the column header pins immediately
+  // below the group title row. Defined here on the common parent so it
+  // cascades to both children.
+  --ww-group-header-height: 38px;
   display: flex;
   flex-direction: column;
   // No border on the .ww-group container itself. The neutral 1 px border
@@ -3544,11 +3617,27 @@ export default {
   cursor: grab;
   user-select: none;
   font-family: inherit;
-  // No background tint, no border-radius. The colored 4 px left line is
-  // applied conditionally via `.ww-group--collapsed .ww-group__header`
-  // (defined on the .ww-group block above) so the line only appears when
-  // the group is collapsed; when expanded the title "floats" with no
-  // chrome around it.
+  // Pin the header to the top of the scrolling ancestor so the group name
+  // stays visible while the user scrolls deep into a long group. Stacks
+  // naturally: header A pins until group A's bottom edge passes the top,
+  // then header B replaces it.
+  position: sticky;
+  top: 0;
+  // Kept below .column-chooser-container (z-index: 5) so the column
+  // chooser panel (.cc-panel) and any other floating menus stack above
+  // this sticky header — z-index on a sticky element creates a stacking
+  // context, so a higher value here would trap floating menus visually
+  // beneath it. z: 2 still wins against AG Grid row content (which sits
+  // at z: auto inside .ag-body-viewport), so rows scrolling past are
+  // still covered.
+  z-index: 2;
+  // Opaque background so scrolled rows do not bleed through the sticky
+  // header. Uses the AG Grid theme background to match light/dark themes.
+  background: var(--ag-background-color, #ffffff);
+  // No border-radius. The colored 4 px left line is applied conditionally
+  // via `.ww-group--collapsed .ww-group__header` (defined on the .ww-group
+  // block above) so the line only appears when the group is collapsed;
+  // when expanded the title "floats" with no chrome around it.
 
   &:active {
     cursor: grabbing;
@@ -3635,7 +3724,16 @@ export default {
 .ww-group__grid {
   width: 100%;
   min-height: 0;
-  overflow: hidden;
+  // overflow MUST stay non-clipping (visible) so position:sticky on the
+  // inner .ag-header can pin against the outer scroll context
+  // (.ww-datagrid.grouped, or the WeWeb wrapper in auto-layout mode). Any
+  // overflow:hidden on this element or on the AG Grid wrapper ancestors
+  // below would trap sticky inside the per-group grid and break it. The
+  // border-radius corner clipping that overflow:hidden used to provide is
+  // visually negligible here because AG Grid in autoHeight mode sizes its
+  // content to match this container exactly — nothing extends past the
+  // rounded corners in normal use.
+  overflow: visible;
   // 4 px coloured line on the left + the neutral 1 px wrapperBorder + the
   // configured wrapperBorderRadius. The grid is what carries the bordered
   // "card" look in expanded mode — the title row above sits OUTSIDE the
@@ -3650,8 +3748,32 @@ export default {
   // Suppress AG Grid's own wrapper border so it doesn't double up against
   // the per-group container border above. The single-grid mode still
   // picks it up via the shared theme; only per-group grids drop it.
+  // Also unclip overflow on every wrapper between .ag-header and the
+  // outer scroll context so the sticky column header can pin properly
+  // (see overflow:visible note above).
   :deep(.ag-root-wrapper) {
     border: 0 !important;
+    overflow: visible !important;
+  }
+  :deep(.ag-root-wrapper-body),
+  :deep(.ag-root) {
+    overflow: visible !important;
+  }
+
+  // Pin the AG Grid column header just below the group title row so the
+  // column names stay visible while scrolling through a long group. Sticky
+  // is released when .ww-group__grid (the containing block) exits the
+  // viewport — i.e., when the user scrolls past this group's rows — so
+  // the next group's column header takes over naturally.
+  // z: 1 keeps the header above row content (rows render at z: auto inside
+  // the body viewport) but below .ww-group__header (z: 2) and below the
+  // column-chooser panel (.column-chooser-container at z: 5). A higher
+  // value here would trap floating menus opened from inside the column
+  // header beneath this sticky element's stacking context.
+  :deep(.ag-header) {
+    position: sticky;
+    top: var(--ww-group-header-height, 38px);
+    z-index: 1;
   }
 
   // Per-group grids run with domLayout="autoHeight" — they should hug their

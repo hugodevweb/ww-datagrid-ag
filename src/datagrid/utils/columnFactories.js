@@ -432,6 +432,37 @@ export function createActionColumnDef(col, commonProperties, onActionTrigger, co
   };
 }
 
+// Navigation column factory — renders a fixed pair of icon buttons (detail + chat)
+// per row via the plain-JS NavigationCellRenderer. cellRendererParams is a
+// function so AG Grid re-evaluates it on each refreshCells, picking up the
+// latest focusRowId / tabValue from navContext without rebuilding the colDef.
+export function createNavigationColumnDef(col, commonProperties, navContext) {
+  return {
+    ...commonProperties,
+    headerName: col?.headerName,
+    cellRenderer: "NavigationCellRenderer",
+    cellRendererParams: (params) => {
+      const rowData = params.data;
+      const rowId = params.node?.id ?? rowData?.id;
+      return {
+        rowId,
+        focusRowId: navContext?.focusRowId?.value ?? null,
+        tabValue: navContext?.resolveTab ? navContext.resolveTab() : 0,
+        messageCount: navContext?.resolveMessageCount
+          ? navContext.resolveMessageCount(rowData)
+          : (rowData?.conversation?.messages?.length ?? 0),
+        workflowId: navContext?.workflowId,
+      };
+    },
+    editable: false,
+    sortable: false,
+    filter: false,
+    suppressKeyboardEvent: () => true,
+    cellClass: "ww-nav-cell",
+    colId: col?.field || `navigation-${col?.headerName || "col"}`,
+  };
+}
+
 // Custom column factory
 export function createCustomColumnDef(col, commonProperties, onCustomCellEdit, resolveMappingFormula) {
   const validationFn = createValidationFunction(col, resolveMappingFormula);

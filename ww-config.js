@@ -92,6 +92,21 @@ export default {
         ],
       },
       {
+        label: "Navigation",
+        isCollapsible: true,
+        properties: [
+          "navigationButtonBackground",
+          "navigationButtonHoverBackground",
+          "navigationButtonFocusBackground",
+          "navigationIconColor",
+          "navigationBorderColor",
+          "navigationFocusBorderColor",
+          "navigationChatActiveBackground",
+          "navigationBadgeBackground",
+          "navigationBadgeTextColor",
+        ],
+      },
+      {
         label: "Record Pill",
         isCollapsible: true,
         properties: [
@@ -204,6 +219,13 @@ export default {
         properties: [
           "invalidEditValueMode",
           "cellEditMode",
+        ],
+      },
+      {
+        label: "Navigation",
+        isCollapsible: true,
+        properties: [
+          "navigationMessageCountFormula",
         ],
       },
       {
@@ -1309,6 +1331,112 @@ export default {
         cssSupports: "line-height",
       },
     },
+
+    // ---- Navigation styling ------------------------------------------------
+    // Color tokens for the new navigation column type. Cascaded as
+    // --ww-data-grid_navigation-* CSS variables in useColumnState.js and
+    // consumed by NavigationCellRenderer.js.
+    navigationButtonBackground: {
+      label: "Button Background",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    navigationButtonHoverBackground: {
+      label: "Button Hover Background",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "rgba(0,0,0,0.04)",
+    },
+    navigationButtonFocusBackground: {
+      label: "Button Focus Background",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "rgba(0,0,0,0.08)",
+    },
+    navigationIconColor: {
+      label: "Icon Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+    },
+    navigationBorderColor: {
+      label: "Border Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      propertyHelp: {
+        tooltip: "Border around each nav button. Falls back to the grid's main border color when left empty.",
+      },
+    },
+    navigationFocusBorderColor: {
+      label: "Focus Border Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      propertyHelp: {
+        tooltip: "Border color applied to the focused nav button (when its row is the focused row id). Falls back to the regular border color.",
+      },
+    },
+    navigationChatActiveBackground: {
+      label: "Chat With Messages Background",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "rgba(59,130,246,0.12)",
+      propertyHelp: {
+        tooltip: "Background applied to the chat button when the row has unread messages (count > 0).",
+      },
+    },
+    navigationBadgeBackground: {
+      label: "Badge Background",
+      type: "Color",
+      category: "background",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "#ef4444",
+    },
+    navigationBadgeTextColor: {
+      label: "Badge Text Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "#ffffff",
+    },
+
     recordPillAccentColor: {
       label: "Accent Color",
       type: "Color",
@@ -1509,6 +1637,23 @@ export default {
       },
       propertyHelp: {
         tooltip: "Column used in `.eq(column, rowId)` when the kanban writes a card move back to Supabase. Should match the primary key of the underlying table (or the field the row id formula resolves to). Defaults to 'id'.",
+      },
+      /* wwEditor:end */
+    },
+    calendarMaxRows: {
+      label: { en: "Calendar Max Rows" },
+      type: "Number",
+      section: "settings",
+      bindable: true,
+      defaultValue: 1000,
+      hidden: (content) => content?.dataSource !== "supabase",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "number",
+        tooltip: "Maximum number of rows the calendar view fetches from Supabase in one shot. The calendar shows every row whose date field falls in the current range, so this cap controls how many rows are available to filter through. Defaults to 1000.",
+      },
+      propertyHelp: {
+        tooltip: "When the data source is Supabase, the calendar fetches a single batch of rows and filters by date client-side (one batch keeps day/week/month/year switching instant). Increase this if you have large datasets where rows are missing from the calendar; decrease it to save bandwidth.",
       },
       /* wwEditor:end */
     },
@@ -1811,6 +1956,7 @@ export default {
                     { value: "select", label: "Select" },
                     { value: "user", label: "User" },
                     { value: "record", label: "Record" },
+                    { value: "navigation", label: "Navigation" },
                     { value: "custom", label: "Custom" },
                   ],
                 },
@@ -1827,7 +1973,9 @@ export default {
               field: {
                 label: "Key",
                 type: "Text",
-                hidden: array?.item?.cellDataType === "action",
+                hidden:
+                  array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "navigation",
               },
               supabaseFilterField: {
                 label: { en: "Supabase Filter Field" },
@@ -2028,6 +2176,7 @@ export default {
                 type: "OnOff",
                 hidden:
                   array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "navigation" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
                   array?.item?.cellDataType === "user" ||
@@ -2045,6 +2194,7 @@ export default {
                 },
                 hidden:
                   array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "navigation" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
                   array?.item?.cellDataType === "user" ||
@@ -2062,6 +2212,7 @@ export default {
                 type: "OnOff",
                 hidden:
                   array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "navigation" ||
                   array?.item?.cellDataType === "image" ||
                   array?.item?.cellDataType === "select" ||
                   array?.item?.cellDataType === "user" ||
@@ -2209,6 +2360,7 @@ export default {
                 type: "OnOff",
                 hidden:
                   array?.item?.cellDataType === "action" ||
+                  array?.item?.cellDataType === "navigation" ||
                   array?.item?.cellDataType === "image",
                 bindable: true,
               },
@@ -2942,6 +3094,24 @@ export default {
       },
       /* wwEditor:end */
     },
+
+    // ---- Navigation column type --------------------------------------------
+    // One nav column per view, so these settings live at the grid level.
+    // Workflow id, focus-row source, and tab formula are hardcoded — the only
+    // remaining per-grid knob is the message count override.
+    navigationMessageCountFormula: {
+      label: { en: "Navigation Message Count Override" },
+      type: "Formula",
+      section: "settings",
+      options: (content) => ({
+        template: wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0] ?? null,
+      }),
+      /* wwEditor:start */
+      propertyHelp: {
+        tooltip: "Per-row formula returning the unread message count. Defaults to row.conversation.messages.length when left empty.",
+      },
+      /* wwEditor:end */
+    },
     rowBuffer: {
       label: { en: "Row Buffer" },
       type: "Number",
@@ -3119,10 +3289,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] } }. The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields is capped at 5 fields. kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] }, calendar: { dateField: string|null, period: 'day'|'week'|'month'|'year', cardFields: [field], gridFields: [field] } }. The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields is capped at 5 fields (3 for calendar). calendar.dateField must reference a column of type dateString or dateTime. calendar.gridFields is the ordered list of columns shown in the table below the calendar (max 8). kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups } }. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). kanban.hiddenGroups holds the group values that should be hidden on the board. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
+        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban/calendar, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups }, calendar: { dateField, period, cardFields, gridFields } }. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). For calendar: dateField must be a dateString/dateTime column, period is one of day/week/month/year, cardFields (max 3) are the fields shown on each calendar item, gridFields (max 8) are the columns of the in-view records table rendered below the calendar. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
       },
       /* wwEditor:end */
     },

@@ -1,6 +1,22 @@
 <template>
+  <Kanban
+    v-if="viewType === 'kanban'"
+    ref="view"
+    :content="content"
+    :uid="uid"
+    :wwEditorState="wwEditorState"
+    @trigger-event="(e) => $emit('trigger-event', e)"
+  />
+  <Calendar
+    v-else-if="viewType === 'calendar'"
+    ref="view"
+    :content="content"
+    :uid="uid"
+    :wwEditorState="wwEditorState"
+    @trigger-event="(e) => $emit('trigger-event', e)"
+  />
   <Datagrid
-    v-if="viewType !== 'kanban'"
+    v-else
     ref="view"
     :content="content"
     :uid="uid"
@@ -9,19 +25,12 @@
     @update:content="(e) => $emit('update:content', e)"
     @update:content:effect="(e) => $emit('update:content:effect', e)"
   />
-  <Kanban
-    v-else
-    ref="view"
-    :content="content"
-    :uid="uid"
-    :wwEditorState="wwEditorState"
-    @trigger-event="(e) => $emit('trigger-event', e)"
-  />
 </template>
 
 <script>
 import Datagrid from './datagrid/Datagrid.vue';
 import Kanban from './kanban/Kanban.vue';
+import Calendar from './calendar/Calendar.vue';
 
 const VIEW_VARIABLE_ID = '23742aed-c957-4a20-b9ac-df6642c96015';
 
@@ -60,7 +69,7 @@ const FORWARDED_METHODS = [
 ];
 
 export default {
-  components: { Datagrid, Kanban },
+  components: { Datagrid, Kanban, Calendar },
   props: {
     content: { type: Object, required: true },
     uid: { type: String, required: true },

@@ -3,6 +3,7 @@ import {
   createValidationFunction,
   createActionColumnDef,
   createCustomColumnDef,
+  createNavigationColumnDef,
   createDateColumnDef,
   createCurrencyColumnDef,
   createImageColumnDef,
@@ -55,6 +56,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   getScheduleRefreshGroupCounts,
   getAddRowToGroupState,
   getRemoveRowFromGroupState,
+  // Navigation column type (createNavigationColumnDef): supplies the workflow
+  // id, focus row id, tab formula resolver, and message count resolver.
+  navContext,
 }) {
   // Tracks the currently active cell edit (set in onCellEditingStarted,
   // cleared in onCellEditingStopped). Consumed by useGridActions.refreshRow
@@ -673,6 +677,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       switch (cellDataType) {
         case "action": {
           return createActionColumnDef(col, commonProperties, onActionTrigger, props.content);
+        }
+        case "navigation": {
+          return createNavigationColumnDef(col, commonProperties, navContext);
         }
         case "custom": {
           return attachValidationTracking(

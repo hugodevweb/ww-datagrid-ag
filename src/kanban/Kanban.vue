@@ -24,29 +24,23 @@
           @dragleave="onColumnDragLeave(group.value)"
           @drop.prevent="onColumnDrop(group.value)"
         >
-          <!-- Header -->
-          <div
-            class="kanban-column__header"
-            :draggable="!cardDragRowId"
-            @dragstart="onGroupDragStart(group.value, $event)"
-            @dragover.prevent="onGroupHeaderDragOver(group.value, $event)"
-            @drop.prevent="onGroupHeaderDrop(group.value, $event)"
-            @dragend="onGroupDragEnd"
-          >
-            <button
-              type="button"
-              class="kanban-column__chevron kanban-column__chevron--open"
-              @click.stop="toggleGroupVisibility(group.value)"
-              :aria-label="t.kanbanHideGroup"
-              :title="t.kanbanHideGroup"
+          <!-- Header. The sticky positioning lives on the OUTER wrapper so it
+               can have an opaque page-bg fill behind the inner rounded
+               header. That fill covers cards scrolling underneath (which
+               z-index/pseudo-element tricks can't, because negative-z-index
+               children paint above the parent's bg, not behind it). -->
+          <div class="kanban-column__header-stick">
+            <div
+              class="kanban-column__header"
+              :draggable="!cardDragRowId"
+              @dragstart="onGroupDragStart(group.value, $event)"
+              @dragover.prevent="onGroupHeaderDragOver(group.value, $event)"
+              @drop.prevent="onGroupHeaderDrop(group.value, $event)"
+              @dragend="onGroupDragEnd"
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                <line x1="1" y1="1" x2="23" y2="23"/>
-              </svg>
-            </button>
-            <span class="kanban-column__label" @click.stop="toggleGroupVisibility(group.value)">{{ group.label }}</span>
-            <span class="kanban-column__count">{{ group.count }}</span>
+              <span class="kanban-column__label">{{ group.label }}</span>
+              <span class="kanban-column__count">{{ group.count }}</span>
+            </div>
           </div>
 
           <!-- Cards -->
@@ -61,27 +55,18 @@
               @dragstart="onCardDragStart(row, group.value, $event)"
               @dragend="onCardDragEnd"
             >
-              <!-- Top-right dropzone — editor-droppable, runs at the card's top-right.
-                   click + dragstart are stopped so users can interact with whatever
-                   they drop in (buttons, menus, etc.) without firing card-click or
-                   starting a card drag. -->
-              <div
-                class="kanban-card__dropzone"
-                @click.stop
-                @mousedown.stop
-                @dragstart.stop.prevent
-                draggable="false"
-              >
-                <wwLayoutItemContext
-                  is-repeat
-                  :index="cardIndexMap.get(getRowId(row)) ?? 0"
-                  :item="{ row, rowId: getRowId(row), groupValue: group.value }"
-                  :data="{ row, rowId: getRowId(row), groupValue: group.value }"
-                  :repeated-items="visibleCards"
-                >
-                  <wwLayout path="kanbanCardDropzone" direction="row" />
-                </wwLayoutItemContext>
-              </div>
+              <!-- Top-right navigation buttons (detail + chat with unread badge).
+                   The renderer itself stops mousedown/click/contextmenu bubbling
+                   so card-click/selection don't fire; the wrapper additionally
+                   stops dragstart so the buttons don't initiate a card drag. -->
+              <NavigationButtons
+                class="kanban-card__nav"
+                :row-id="getRowId(row)"
+                :focus-row-id="navigationFocusRowId"
+                :tab-value="navigationTabValue"
+                :message-count="getMessageCount(row)"
+                :workflow-id="navigationWorkflowId"
+              />
 
               <KanbanField
                 v-for="(field, idx) in cardFields"
@@ -289,6 +274,7 @@
 <script>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import KanbanField from './components/KanbanField.vue';
+import NavigationButtons from './components/NavigationButtons.vue';
 import { getTranslations } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
 
@@ -297,7 +283,7 @@ const MAX_CARD_FIELDS = 5;
 
 export default {
   name: 'Kanban',
-  components: { KanbanField },
+  components: { KanbanField, NavigationButtons },
   props: {
     content: { type: Object, required: true },
     uid: { type: String, required: true },
@@ -307,6 +293,7 @@ export default {
   },
   emits: ['trigger-event'],
   setup(props, ctx) {
+    console.log("[Navigation] Kanban setup() running");
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
     // Merged config (matches Datagrid.vue: baseConfig keys override per-instance content).
@@ -329,6 +316,38 @@ export default {
     // Reactive translations — recomputes whenever cfg.lang changes.
     const t = computed(() => getTranslations(cfg.value?.lang || 'en'));
 
+    // Navigation buttons context — same shape as createNavigationColumnDef in
+    // the datagrid view, but reactive Vue props replace AG Grid's refreshCells
+    // plumbing. Per-row messageCount stays as a function call from the template.
+    // The focus-row source is the grid's existing `focusedRowId` config; the
+    // tab formula and workflow id are hardcoded.
+    const NAVIGATION_TAB_FORMULA = {
+      type: "f",
+      code: "formulas['ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd']()",
+    };
+    const NAVIGATION_WORKFLOW_ID = 'd4ab2a61-2728-4dc3-a144-9fd3d558411e';
+    const navigationFocusRowId = computed(() => cfg.value?.focusedRowId);
+    const navigationTabValue = computed(() =>
+      Number(resolveMappingFormula(NAVIGATION_TAB_FORMULA) ?? 0)
+    );
+
+    watch(
+      [navigationTabValue, navigationFocusRowId],
+      ([tab, focusRowId]) => {
+        console.log("[Navigation]", { tab, focusRowId });
+      },
+      { immediate: true }
+    );
+    const navigationWorkflowId = computed(() => NAVIGATION_WORKFLOW_ID);
+    const getMessageCount = (row) => {
+      const formula = cfg.value?.navigationMessageCountFormula;
+      if (formula) {
+        const v = resolveMappingFormula(formula, row);
+        if (v != null && v !== '') return Number(v) || 0;
+      }
+      return row?.conversation?.messages?.length ?? 0;
+    };
+
     const fieldsCounterText = computed(() =>
       t.value.kanbanFieldsCounter
         .replace('{count}', cardFields.value.length)
@@ -348,6 +367,25 @@ export default {
       '--ww-data-grid_cc-accent-color': cfg.value?.columnChooserAccentColor || '#3b82f6',
       '--ww-data-grid_cc-border-radius': cfg.value?.columnChooserBorderRadius || '8px',
       '--ww-data-grid_cc-width': cfg.value?.columnChooserWidth || '300px',
+      // Navigation button color tokens — mirrors the cascade in
+      // useColumnState.js so ww-config color customizations apply in the
+      // kanban view too (the buttons are rendered by NavigationCellRenderer
+      // here just like in the datagrid).
+      '--ww-data-grid_navigation-bg': cfg.value?.navigationButtonBackground ?? 'transparent',
+      '--ww-data-grid_navigation-hoverBg': cfg.value?.navigationButtonHoverBackground ?? 'rgba(0,0,0,0.04)',
+      '--ww-data-grid_navigation-focusBg': cfg.value?.navigationButtonFocusBackground ?? 'rgba(0,0,0,0.08)',
+      '--ww-data-grid_navigation-iconColor': cfg.value?.navigationIconColor ?? 'currentColor',
+      '--ww-data-grid_navigation-borderColor':
+        cfg.value?.navigationBorderColor || cfg.value?.borderColor || '#e5e7eb',
+      '--ww-data-grid_navigation-focusBorderColor':
+        cfg.value?.navigationFocusBorderColor ||
+        cfg.value?.navigationBorderColor ||
+        cfg.value?.borderColor ||
+        '#e5e7eb',
+      '--ww-data-grid_navigation-chatActiveBg':
+        cfg.value?.navigationChatActiveBackground ?? 'rgba(59,130,246,0.12)',
+      '--ww-data-grid_navigation-badgeBg': cfg.value?.navigationBadgeBackground ?? '#ef4444',
+      '--ww-data-grid_navigation-badgeColor': cfg.value?.navigationBadgeTextColor ?? '#ffffff',
       fontFamily: cfg.value?.cellFontFamily || 'inherit',
     }));
 
@@ -692,30 +730,6 @@ export default {
 
     const openGroups = computed(() => groups.value.filter(g => !g.hidden));
 
-    // Flat list of all cards currently rendered on the board, in display order
-    // (group order × per-group row order). Drives the per-card index passed to
-    // wwLayoutItemContext so each dropzone has a stable, unique identity that
-    // WeWeb can reliably persist across page navigations.
-    const visibleCards = computed(() => {
-      const out = [];
-      for (const g of openGroups.value) {
-        const rows = groupedRows.value.get(g.value) || [];
-        for (const row of rows) {
-          out.push({ row, rowId: getRowId(row), groupValue: g.value });
-        }
-      }
-      return out;
-    });
-    const cardIndexMap = computed(() => {
-      const m = new Map();
-      const list = visibleCards.value;
-      for (let i = 0; i < list.length; i++) {
-        const id = list[i]?.rowId;
-        if (id != null) m.set(id, i);
-      }
-      return m;
-    });
-
     const getRowId = (row) => {
       const fromFormula = resolveMappingFormula(cfg.value?.idFormula, row);
       if (fromFormula !== null && fromFormula !== undefined && fromFormula !== '') {
@@ -1032,10 +1046,11 @@ export default {
       MAX_CARD_FIELDS,
       // computed
       selectColumns, availableFields, filteredFieldList, groups, groupedRows,
-      openGroups, visibleCards, cardIndexMap,
+      openGroups,
+      navigationFocusRowId, navigationTabValue, navigationWorkflowId,
       // methods
       resolveMappingFormula,
-      findColumn, getRowId,
+      findColumn, getRowId, getMessageCount,
       setGroupBy, setShowUnassigned, toggleCardField, toggleGroupVisibility, isFieldDisabled,
       onFieldDragStart, onFieldDragOver, onFieldDrop, onFieldDragEnd,
       onConfigGroupDragStart, onConfigGroupDragOver, onConfigGroupDrop, onConfigGroupDragEnd,
@@ -1091,10 +1106,11 @@ export default {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  // Padding lives on .kanban-columns instead so the horizontal scrollbar
+  // Horizontal padding lives on .kanban-columns so the horizontal scrollbar
   // (which sits at the bottom of .kanban-columns) spans the full component
-  // width, matching the single-grid and grouped datagrid views.
-  padding: 0;
+  // width. Vertical padding lives here so the sticky column headers can pin
+  // flush against the scroll viewport top with no gap above them.
+  padding: 12px 0 0 0;
   overflow: hidden;
   height: 100%;
   box-sizing: border-box;
@@ -1105,16 +1121,20 @@ export default {
   font-size: 13px;
 }
 
-/* Open columns row */
+/* Open columns row. CSS Grid (instead of flexbox) so all columns
+   automatically take the height of the tallest column — flex's
+   `align-items: stretch` only stretches up to the container's cross-size,
+   it can't make every item match the tallest sibling. */
 .kanban-columns {
   flex: 1 1 auto;
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 280px;
+  align-items: stretch;
   gap: 12px;
-  padding: 12px 0 0 12px;
+  padding: 0 0 0 12px;
   overflow-x: auto;
-  overflow-y: hidden;
+  overflow-y: auto;
   min-height: 0;
 
   // Match datagrid horizontal scrollbar so position + look are consistent
@@ -1156,36 +1176,72 @@ export default {
   }
 }
 
+// Column is a transparent flex wrapper. The visual outline + bg used to live
+// on this element, but with a sticky rounded header, any column-level border
+// extends the full column height — which means it stays visible as a 1px
+// strip alongside the sticky header. So the wrapper and body each carry
+// their own borders/bg now (continuous shape via half-rounded corners).
 .kanban-column {
   --group-color: #9ca3af;
   display: flex;
   flex-direction: column;
-  flex: 0 0 280px;
-  width: 280px;
-  max-height: 100%;
-  background: color-mix(in srgb, var(--group-color) 6%, transparent);
-  border: 1px solid color-mix(in srgb, var(--group-color) 22%, transparent);
-  border-radius: 8px;
-  overflow: hidden;
-  transition: border-color 0.15s, background 0.15s;
-}
-.kanban-column--drag-over {
-  border-color: var(--group-color);
-  background: color-mix(in srgb, var(--group-color) 14%, transparent);
+  // Width is set by .kanban-columns' `grid-auto-columns: 280px`. Height comes
+  // from the grid row, which equals the tallest column's intrinsic height —
+  // so all columns end up the same height as the one with the most cards.
 }
 .kanban-column--drag-source { opacity: 0.85; }
 
+// Sticky wrapper. Provides the opaque rectangular fill that covers cards
+// scrolling underneath. Its bg matches the page bg (--ag-background-color),
+// so where it extends past the inner header's rounded corners it blends
+// invisibly with the page — i.e. you only ever see the rounded inner header
+// and the page color in its corner cutouts, never the column's tinted body.
+// Sticky wrapper. RECTANGULAR (no border-radius, no border) so it has no
+// cutouts of its own to leak through. Its bg matches the page bg so where
+// it covers the area outside the inner header's rounded shape, it blends
+// invisibly with the page — the inner header looks like a rounded "tab"
+// floating on the page. Opaque, so cards and the body's borders scrolling
+// underneath are completely hidden.
+.kanban-column__header-stick {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--ag-background-color, #ffffff);
+}
+
 .kanban-column__header {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  background: color-mix(in srgb, var(--group-color) 14%, transparent);
-  border-left: 4px solid var(--group-color);
+  padding: 10px 12px 10px 16px;
+  background-color: var(--ag-background-color, #ffffff);
+  background-image: linear-gradient(
+    color-mix(in srgb, var(--group-color) 14%, transparent),
+    color-mix(in srgb, var(--group-color) 14%, transparent)
+  );
+  border: 1px solid color-mix(in srgb, var(--group-color) 22%, transparent);
+  border-bottom: 0;
+  // Rounded top corners only; the square bottom sits flush with the body
+  // below so the two together form one continuous rounded shape.
+  border-radius: 8px 8px 0 0;
   cursor: grab;
   user-select: none;
 
   &:active { cursor: grabbing; }
+
+  // Colored left tag — replaces the previous `border-left`. Painted as a
+  // positioned descendant so it sits on top of the header's bg.
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--group-color);
+    border-top-left-radius: 7px;
+  }
 }
 .kanban-column__chevron {
   display: inline-flex;
@@ -1226,13 +1282,26 @@ export default {
 }
 
 .kanban-column__body {
-  flex: 1 1 auto;
+  // shrink: 0 — without this the body shrinks to fit the column's stretched
+  // height and cards overflow out the rounded bottom. shrink: 0 keeps the
+  // body at its content height; the column grows to match and .kanban-columns
+  // gets the vertical scrollbar.
+  flex: 1 0 auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  overflow-y: auto;
   min-height: 60px;
+  background: color-mix(in srgb, var(--group-color) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--group-color) 22%, transparent);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.kanban-column--drag-over .kanban-column__body {
+  border-color: var(--group-color);
+  background: color-mix(in srgb, var(--group-color) 14%, transparent);
 }
 
 .kanban-column__empty {
@@ -1277,20 +1346,14 @@ export default {
   transform: scale(0.98);
 }
 
-.kanban-card__dropzone {
+.kanban-card__nav {
   position: absolute;
   top: 6px;
   right: 6px;
   z-index: 2;
-  display: flex;
-  align-items: center;
-  gap: 4px;
   cursor: default;
-  /* Keep the dropzone compact — anything dropped in flows in a row */
-  max-width: 60%;
 }
-.kanban-card__dropzone :deep(*) {
-  /* Children keep their own cursor; the card's grab cursor doesn't bleed in. */
+.kanban-card__nav :deep(*) {
   cursor: auto;
 }
 

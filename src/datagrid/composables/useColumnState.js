@@ -166,6 +166,33 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
             "--ww-data-grid_action-fontStyle": cfg.value.actionFontStyle,
             "--ww-data-grid_action-lineHeight": cfg.value.actionLineHeight,
           }),
+      // Navigation column type — see NavigationCellRenderer.js. Falls back to
+      // sensible defaults when the user hasn't picked a color so the buttons
+      // are visible out of the box. borderColor falls back to the grid's main
+      // border color so the buttons match the surrounding grid by default.
+      "--ww-data-grid_navigation-bg":
+        cfg.value.navigationButtonBackground ?? "transparent",
+      "--ww-data-grid_navigation-hoverBg":
+        cfg.value.navigationButtonHoverBackground ?? "rgba(0,0,0,0.04)",
+      "--ww-data-grid_navigation-focusBg":
+        cfg.value.navigationButtonFocusBackground ?? "rgba(0,0,0,0.08)",
+      "--ww-data-grid_navigation-iconColor":
+        cfg.value.navigationIconColor ?? "currentColor",
+      "--ww-data-grid_navigation-borderColor":
+        cfg.value.navigationBorderColor ||
+        cfg.value.borderColor ||
+        "#e5e7eb",
+      "--ww-data-grid_navigation-focusBorderColor":
+        cfg.value.navigationFocusBorderColor ||
+        cfg.value.navigationBorderColor ||
+        cfg.value.borderColor ||
+        "#e5e7eb",
+      "--ww-data-grid_navigation-chatActiveBg":
+        cfg.value.navigationChatActiveBackground ?? "rgba(59,130,246,0.12)",
+      "--ww-data-grid_navigation-badgeBg":
+        cfg.value.navigationBadgeBackground ?? "#ef4444",
+      "--ww-data-grid_navigation-badgeColor":
+        cfg.value.navigationBadgeTextColor ?? "#ffffff",
       "--ww-data-grid_record-pill-accent-color": cfg.value.recordPillAccentColor,
       "--ww-data-grid_record-pill-background": cfg.value.recordPillBackgroundColor,
       "--ww-data-grid_record-pill-border-color": cfg.value.recordPillBorderColor,

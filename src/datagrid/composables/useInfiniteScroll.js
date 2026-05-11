@@ -348,6 +348,43 @@ export function useInfiniteScroll(
     );
   };
 
+  // Stable row-id extractor for state lookups. We MUST NOT use object
+  // reference equality to find rows in groupPagedState.rowData: the user's
+  // WeWeb workflow (and Supabase realtime) frequently call rowNode.setData
+  // with a fresh object after a write, so `event.data` from a later drag
+  // event is not === to the object originally fetched and stored in state.
+  // That broke the cross-group drop's removeRowFromGroupState (removed: 0)
+  // and let the count climb monotonically on back-and-forth drags. Resolve
+  // the configured id formula so we always compare by stable identity.
+  const getRowKey = (data) => {
+    if (data == null) return null;
+    try {
+      const k = resolveMappingFormula?.(cfg.value?.idFormula, data);
+      if (k != null && k !== '') return String(k);
+    } catch (_) { /* fall through */ }
+    return null;
+  };
+
+  // Per-group last-local-mutation timestamp. Used by refreshGroupCounts to
+  // avoid clobbering optimistic counts with a stale server value: the
+  // user's WeWeb workflow may take >1.5 s to land the Supabase write, and
+  // during rapid back-and-forth drags the post-drop server refresh
+  // otherwise reports counts from BEFORE the optimistic move (e.g.
+  // displays "2 éléments" right after the user moved a row out, because
+  // the server hasn't seen the move yet).
+  const groupCountLocalMutationAt = new Map();
+  // Window during which a server-fetched count is suppressed in favour of
+  // the local optimistic count. Long enough to cover slow Supabase writes
+  // + a couple of follow-up drags without the badges jumping back.
+  const LOCAL_MUTATION_GRACE_MS = 4000;
+  const stampGroupMutation = (groupValue) => {
+    groupCountLocalMutationAt.set(groupValue, Date.now());
+  };
+  const isGroupRecentlyMutated = (groupValue) => {
+    const t = groupCountLocalMutationAt.get(groupValue);
+    return typeof t === 'number' && (Date.now() - t) < LOCAL_MUTATION_GRACE_MS;
+  };
+
   // Cross-group cell edits & drags drive these directly so the source/dest
   // grids reflect the move without waiting for the server.
   // `target` may be a row reference (matched by ===) or a predicate function.
@@ -358,43 +395,63 @@ export function useInfiniteScroll(
   const removeRowFromGroupState = (groupValue, target) => {
     const entry = groupPagedState.value.get(groupValue);
     if (!entry) return false;
-    const predicate = typeof target === 'function'
-      ? target
-      : (row) => row === target;
+    let predicate;
+    if (typeof target === 'function') {
+      predicate = target;
+    } else {
+      // Match by stable row-id. Reference equality was the original
+      // implementation but it silently no-ops after a setData() refresh
+      // replaces the row's data object — see getRowKey() comment.
+      const targetKey = getRowKey(target);
+      predicate = targetKey != null
+        ? (row) => getRowKey(row) === targetKey
+        : (row) => row === target;
+    }
     const filtered = entry.rowData.filter(row => !predicate(row));
     const removed = entry.rowData.length - filtered.length;
     if (removed === 0) return false;
+    const newTotal = Math.max(0, entry.total - removed);
     writeGroupEntry(groupValue, {
       rowData: filtered,
       offset: Math.max(0, entry.offset - removed),
-      total: Math.max(0, entry.total - removed),
+      total: newTotal,
     });
     if (typeof entry.total === 'number') {
       const counts = new Map(groupInfiniteCounts.value);
-      counts.set(groupValue, Math.max(0, entry.total - removed));
+      counts.set(groupValue, newTotal);
       groupInfiniteCounts.value = counts;
     }
+    stampGroupMutation(groupValue);
     return true;
   };
 
   const addRowToGroupState = (groupValue, row) => {
     const entry = getGroupEntry(groupValue);
-    // Dedup by reference — if some path has already optimistically inserted
-    // this row (e.g., a drag-drop preview that wrote to state, or two adds
-    // racing), don't prepend a duplicate. Without this, the prop binding
-    // can briefly emit [R, R, ...rest] and AG Grid's id-based diff treats
-    // both R nodes as the same row, causing visual duplicates until the
-    // next clean refresh.
-    if (Array.isArray(entry.rowData) && entry.rowData.includes(row)) return;
+    // Dedup by stable row-id (NOT reference equality — see getRowKey()
+    // comment: rowNode.setData refreshes break === between drags). Without
+    // id-based dedup, dragging a row out and back into the same group
+    // after the workflow's setData would prepend a "different" object
+    // with the same id, double-counting and showing 2 instead of 1.
+    const rowKey = getRowKey(row);
+    if (Array.isArray(entry.rowData)) {
+      if (rowKey != null) {
+        if (entry.rowData.some((r) => getRowKey(r) === rowKey)) return;
+      } else if (entry.rowData.includes(row)) {
+        // Fallback: no idFormula configured → reference dedup as before.
+        return;
+      }
+    }
+    const newTotal = entry.total + 1;
     writeGroupEntry(groupValue, {
       rowData: [row, ...entry.rowData],
       offset: entry.offset + 1,
-      total: entry.total + 1,
+      total: newTotal,
       loaded: true,
     });
     const counts = new Map(groupInfiniteCounts.value);
-    counts.set(groupValue, entry.total + 1);
+    counts.set(groupValue, newTotal);
     groupInfiniteCounts.value = counts;
+    stampGroupMutation(groupValue);
   };
 
   // Reset all per-group state when grouping toggles or column changes — the
@@ -476,6 +533,13 @@ export function useInfiniteScroll(
 
     const next = new Map(groupInfiniteCounts.value);
     for (const [gv, count] of results) {
+      // Skip groups that were locally mutated within the grace window —
+      // the optimistic count is more accurate than the server response,
+      // which lags behind the user's WeWeb persistence workflow. Without
+      // this, a rapid A→B→A drag sequence flickers wrong totals (e.g.
+      // "2 éléments" right after the row was moved out, because Supabase
+      // still has the row in its old group when we asked).
+      if (isGroupRecentlyMutated(gv)) continue;
       if (typeof count === 'number') next.set(gv, count);
     }
     groupInfiniteCounts.value = next;
@@ -531,6 +595,12 @@ export function useInfiniteScroll(
     refetchAllVisibleGroups,
     addRowToGroupState,
     removeRowFromGroupState,
+    // Mutation stamping for the count-refresh race guard. Drag/drop paths
+    // outside this composable that bump groupInfiniteCounts directly
+    // (e.g. the collapsed-dest fast path in useGrouping.handleCrossGroupDrop)
+    // call this so refreshGroupCounts won't clobber their optimistic write
+    // with a stale server value.
+    stampGroupMutation,
     // Group counts
     fetchSupabaseGroupCount,
     refreshGroupCounts,

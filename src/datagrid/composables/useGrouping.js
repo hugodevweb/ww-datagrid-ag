@@ -59,6 +59,7 @@ export function useGrouping(
     getGroupPagedRowData,
     getAddRowToGroupState,
     getRemoveRowFromGroupState,
+    getStampGroupMutation,
     getOnFilterChanged,
     getOnSortChanged,
     getOnColumnMoved,
@@ -840,6 +841,12 @@ export function useGrouping(
         const cur = counts.get(destGroupValue);
         counts.set(destGroupValue, (typeof cur === 'number' ? cur : 0) + 1);
         groupInfiniteCounts.value = counts;
+        // Mark this group as locally mutated so the deferred
+        // refreshGroupCounts safety-net below doesn't overwrite our +1
+        // with a stale server count (the user's persistence workflow may
+        // not have landed yet, so the server still reports the pre-drop
+        // total).
+        try { getStampGroupMutation?.()?.(destGroupValue); } catch (_) { /* noop */ }
       }
     } else {
       try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
@@ -1030,6 +1037,20 @@ export function useGrouping(
   // applies current shared state (filter / sort / widths) so a newly-expanded
   // group picks up the live view.
   const onGroupGridReady = (groupValue, params) => {
+    // Detect remount: same groupValue, different api object. AG Grid may
+    // recreate a grid (data refetch, view-config remount, paged-append
+    // refresh) without firing a Vue unmount, so onGroupGridUnmounted never
+    // ran for the old api. The dropZoneRegistry then still holds entries
+    // referring to the destroyed api, and setupCrossGroupDropZones below
+    // would short-circuit on `bucket.has(destValue)` and skip re-registering
+    // — leaving the new api with NO drop zones (drag-into shows the
+    // not-allowed cursor) and peers still pointing at the dead api. Tear
+    // down the stale entries so registration starts clean.
+    const prevApi = groupGridApis.value.get(groupValue);
+    if (prevApi && prevApi !== params.api) {
+      try { tearDownDropZonesForGroup(groupValue); }
+      catch (_) { /* noop */ }
+    }
     groupGridApis.value.set(groupValue, params.api);
     // Trigger reactivity
     groupGridApis.value = new Map(groupGridApis.value);
