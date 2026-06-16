@@ -1050,6 +1050,10 @@ export default {
 <style scoped lang="scss">
 .ww-kanban {
   position: relative;
+  /* Confine all internal z-indexes (config panel, card dropzone, column
+     header buttons) to this element's own stacking context so they can never
+     paint above external WeWeb popups/modals. */
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   width: 100%;

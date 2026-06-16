@@ -39,7 +39,10 @@
       "PowerShell(\"killed\")",
       "Bash(tee /tmp/serve4.log)",
       "Bash(node --check src/datagrid/composables/useGrouping.js)",
-      "Bash(tee /tmp/serve_s3.log)"
+      "Bash(tee /tmp/serve_s3.log)",
+      "Bash(Get-ChildItem -Path \"C:\\\\VS_code\\\\vueJs\\\\ww-datagrid-ag\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "Bash(xargs grep -l \"wwLayout\")"
     ]
   }
 }
