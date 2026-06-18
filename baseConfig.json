@@ -17,8 +17,8 @@
   "lang": "fr",
   "viewEditedVariableId":"6fe05736-6920-46d3-8240-8227dcc814a2",
   "columnChooserVariableId": "26e77735-5006-4bf6-b2aa-8d9c511815a8",
-  "enableDebugLogs": false
-
+  "enableDebugLogs": false,
+"enableFilterBuilder":true
 
 
 

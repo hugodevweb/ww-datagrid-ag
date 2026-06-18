@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue';
+import { ref, watch, onBeforeUnmount } from 'vue';
 
 // View configuration: owns the `currentConfig` and `columnDefs` WeWeb variables,
 // `applyViewConfiguration` (the function that pushes a saved viewConfiguration
@@ -31,6 +31,11 @@ export function useViewConfig(cfg, props, ctx, {
   // was trying to clear/replace.
   getSetFilters,
   getSetSort,
+  // Advanced filters (Filter Builder) — thunks for parity with filter/sort.
+  // getAdvancedFilters() returns the normalized { combinator, conditions } value;
+  // getSetAdvancedFilters() returns the setter used by the apply path.
+  getAdvancedFilters,
+  getSetAdvancedFilters,
   // From useGrouping (created BEFORE useViewConfig — direct refs are OK):
   groupingState, groupGridApis, groupSelections,
   getStoredCollapsedForView, isValidGroupColumn,
@@ -53,6 +58,7 @@ export function useViewConfig(cfg, props, ctx, {
       defaultValue: {
         sizes: {},
         filters: {},
+        advancedFilters: { combinator: 'and', conditions: [] },
         sorting: [],
         columnsOrder: [],
         hiddenColumns: [],
@@ -113,9 +119,14 @@ export function useViewConfig(cfg, props, ctx, {
       : { columnId: null, order: [], showUnassigned: true };
     const filterValue = getFilterValue();
     const sortValue = getSortValue();
+    const advanced = getAdvancedFilters?.();
     const config = {
       sizes: getCurrentColumnWidths(),
       filters: filterValue?.value || {},
+      advancedFilters: {
+        combinator: advanced?.combinator === 'or' ? 'or' : 'and',
+        conditions: Array.isArray(advanced?.conditions) ? advanced.conditions : [],
+      },
       sorting: sortValue?.value || [],
       columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
       hiddenColumns: hiddenColumns.value || [],
@@ -130,11 +141,29 @@ export function useViewConfig(cfg, props, ctx, {
   const isViewConfigEdited = (current, baseline) => {
     if (!baseline || typeof baseline !== 'object') return false;
 
-    const keysToCheck = ['sizes', 'filters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping'];
+    const keysToCheck = ['sizes', 'filters', 'advancedFilters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping'];
 
     for (const key of keysToCheck) {
       const baseVal = baseline[key];
       const curVal = current?.[key];
+
+      // Advanced filters (Filter Builder): structured { combinator, conditions }.
+      // Combinator is irrelevant when there are no conditions, so normalize it
+      // away in that case to avoid false positives.
+      if (key === 'advancedFilters') {
+        const norm = (v) => {
+          const conditions = Array.isArray(v?.conditions) ? v.conditions : [];
+          return {
+            combinator: conditions.length ? (v?.combinator === 'or' ? 'or' : 'and') : 'and',
+            conditions,
+          };
+        };
+        const b = norm(baseVal);
+        const c = norm(curVal);
+        if (b.combinator !== c.combinator) return true;
+        if (JSON.stringify(b.conditions) !== JSON.stringify(c.conditions)) return true;
+        continue;
+      }
 
       // If baseline is absent/empty, any non-empty current value means edited
       if (isEmptyConfigValue(baseVal)) {
@@ -203,8 +232,24 @@ export function useViewConfig(cfg, props, ctx, {
   // viewConfiguration change.
   const suppressEditedUntil = ref(0);
 
+  // The edited variable is "armed" only after the view has fully loaded and
+  // settled (see the gridReady watcher). Until then we NEVER report edited=true.
+  // This is the root guard against a false positive on load: when the component
+  // opens on the kanban/calendar view, this datagrid mounts only transiently
+  // (viewType resolves a tick later) and unmounts before arming — so it can
+  // never flash the edited icon. A genuinely-active grid arms shortly after load
+  // and reports real user edits from then on.
+  const editedArmed = ref(false);
+
+  // Once this datagrid instance unmounts (e.g. the view switches to kanban/
+  // calendar), it must stop touching the shared viewEdited variable so its
+  // orphaned timers / late grid events can't write after the next view mounts.
+  const disposed = ref(false);
+  onBeforeUnmount(() => { disposed.value = true; });
+
   // Update external WeWeb variable when view-edited state changes
   const updateViewEditedVariable = (config) => {
+    if (disposed.value) return;
     const variableId = cfg.value?.viewEditedVariableId;
     if (!variableId) return;
 
@@ -218,6 +263,15 @@ export function useViewConfig(cfg, props, ctx, {
 
     const baseline = cfg.value?.viewConfiguration;
     const edited = isViewConfigEdited(config, baseline);
+
+    // Root guard: never report `true` before the view has loaded/settled. This
+    // stops the transient-mount flash on kanban/calendar load (and any edited
+    // flash during the grid's own initial settle). `false` still passes through
+    // so the variable converges correctly.
+    if (edited && !editedArmed.value) {
+      console.log('[viewEdited][datagrid] updateViewEditedVariable SUPPRESSED — not armed (initial load)');
+      return;
+    }
 
     // During the suppression window after a viewConfiguration change, do not
     // let late grid events mark the view as edited. Allow `false` through so
@@ -323,6 +377,28 @@ export function useViewConfig(cfg, props, ctx, {
             console.warn(`[Datagrid] viewConfiguration.grouping.columnId="${g.columnId}" is invalid or not a select column — grouping ignored.`);
             groupingState.value = { columnId: null, order: [], collapsed: [], showUnassigned: true };
           }
+        }
+
+        // 0.5 Apply advanced filters (Filter Builder) if key present. Done before
+        // the header filters below so the refetch they trigger already sees the
+        // restored advanced (OR-mode) conditions. The builder's forward watcher is
+        // suppressed while isApplyingViewConfig is true, so this won't double-apply.
+        if (viewConfig && 'advancedFilters' in viewConfig) {
+          const adv = viewConfig.advancedFilters;
+          const setAdv = getSetAdvancedFilters?.();
+          if (typeof setAdv === 'function') {
+            if (isEmptyConfigValue(adv) || !adv) {
+              setAdv({ combinator: 'and', conditions: [] });
+            } else {
+              setAdv({
+                combinator: adv.combinator === 'or' ? 'or' : 'and',
+                conditions: Array.isArray(adv.conditions) ? adv.conditions : [],
+              });
+            }
+          }
+          debugLog('[ViewConfiguration] Applied advanced filters:', adv);
+        } else {
+          debugLog('[ViewConfiguration] Skipped advanced filters (key not present, keeping current state)');
         }
 
         // 1. Apply filters if key is present (even if empty {} - which clears all filters)
@@ -574,6 +650,7 @@ export function useViewConfig(cfg, props, ctx, {
         const variableId = cfg.value?.viewEditedVariableId;
         if (variableId) {
           const safeReset = (reason) => {
+            if (disposed.value) return;
             try {
               console.log('[viewEdited][datagrid] gridReady→FALSE (' + reason + ')', { variableId });
               wwLib.wwVariable.updateValue(variableId, false);
@@ -590,6 +667,17 @@ export function useViewConfig(cfg, props, ctx, {
           setTimeout(() => safeReset('initial — final settle'), 1100);
         }
       }
+
+      // Arm the edited variable once the initial load + suppression window has
+      // fully settled. From here on, genuine user edits report true. The final
+      // updateCurrentConfig() captures any edit made during the load window so
+      // the variable reflects reality at the moment of arming. Guarded by
+      // gridApi (a transient mount that already unmounted is a no-op).
+      setTimeout(() => {
+        if (disposed.value || !gridApi.value) return;
+        editedArmed.value = true;
+        updateCurrentConfig();
+      }, 2100);
     },
     { immediate: true }
   );
@@ -607,10 +695,19 @@ export function useViewConfig(cfg, props, ctx, {
 
       if (isConfigChanged && newConfig && oldConfig) {
         // Quick check of key properties instead of deep stringify
-        const keys = ['filters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping'];
+        const keys = ['filters', 'advancedFilters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping'];
         hasContentChanged = keys.some(key => {
           const newVal = newConfig[key];
           const oldVal = oldConfig[key];
+          // advancedFilters: structural compare on { combinator, conditions }
+          if (key === 'advancedFilters') {
+            const a = newVal || {}; const b = oldVal || {};
+            const aConds = Array.isArray(a.conditions) ? a.conditions : [];
+            const bConds = Array.isArray(b.conditions) ? b.conditions : [];
+            const aComb = aConds.length ? (a.combinator === 'or' ? 'or' : 'and') : 'and';
+            const bComb = bConds.length ? (b.combinator === 'or' ? 'or' : 'and') : 'and';
+            return aComb !== bComb || JSON.stringify(aConds) !== JSON.stringify(bConds);
+          }
           // Simple reference and length comparison
           if (newVal !== oldVal) {
             // grouping needs a structural compare on { columnId, order, collapsed, showUnassigned }
@@ -650,6 +747,7 @@ export function useViewConfig(cfg, props, ctx, {
       // AG Grid events fired during/after the apply (which can arrive asynchronously,
       // e.g. due to pixel-rounding on sizes) cannot flip the variable back to true.
       const resetEditedVariable = (reason) => {
+        if (disposed.value) return;
         const variableId = cfg.value?.viewEditedVariableId;
         if (!variableId) return;
         try {

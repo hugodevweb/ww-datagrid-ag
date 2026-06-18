@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-kanban" :style="cssVars" ref="rootRef">
+  <div class="ww-kanban" :class="{ 'is-compact': isCompactWidth, 'is-mobile': isMobileWidth }" :style="cssVars" ref="rootRef">
     <!-- Empty state -->
     <div v-if="!groupBy" class="kanban-empty">
       <div class="kanban-empty__title">{{ t.kanbanEmptyTitle }}</div>
@@ -8,9 +8,27 @@
 
     <!-- Kanban board -->
     <div v-else class="kanban-board" ref="boardRef">
+      <!-- Mobile: lane switcher. On narrow widths the board shows one full-width
+           lane at a time (scroll-snap); these pills jump between groups and stay
+           in sync as the user swipes. -->
+      <div v-if="isMobileWidth && openGroups.length > 1" class="kanban-lane-tabs">
+        <button
+          v-for="(group, i) in openGroups"
+          :key="group.value"
+          type="button"
+          class="kanban-lane-tab"
+          :class="{ 'kanban-lane-tab--active': i === activeLaneIndex }"
+          :style="{ '--group-color': group.color }"
+          @click="goToLane(i)"
+        >
+          <span class="kanban-lane-tab__label">{{ group.label }}</span>
+          <span class="kanban-lane-tab__count">{{ group.count }}</span>
+        </button>
+      </div>
+
       <!-- Open groups: horizontal kanban columns. Collapsed groups don't render
            here — they can be re-shown from the config panel's groups list. -->
-      <div class="kanban-columns">
+      <div class="kanban-columns" ref="columnsRef" @scroll.passive="onLanesScroll">
         <div
           v-for="group in openGroups"
           :key="group.value"
@@ -121,6 +139,15 @@
               :aria-selected="activeTab === 'fields'"
               @click="activeTab = 'fields'"
             >{{ t.kanbanFieldsTab }}</button>
+            <button
+              v-if="cfg.enableFilterBuilder"
+              type="button"
+              class="cc-tab"
+              :class="{ 'cc-tab--active': activeTab === 'filters' }"
+              role="tab"
+              :aria-selected="activeTab === 'filters'"
+              @click="activeTab = 'filters'"
+            >{{ t.filtersTab || 'Filters' }}</button>
           </div>
 
           <!-- Group tab -->
@@ -265,6 +292,16 @@
               <div v-if="filteredFieldList.length === 0" class="cc-empty">{{ t.kanbanNoFieldsMatch }}</div>
             </div>
           </template>
+
+          <!-- Filters tab (Filter Builder) -->
+          <template v-else-if="activeTab === 'filters'">
+            <FilterBuilder
+              :columns="filterBuilderColumns"
+              :model-value="normalizedAdvancedFilters"
+              :data-source="cfg.dataSource"
+              @update:model-value="setAdvancedFilters"
+            />
+          </template>
         </div>
       </Transition>
     </div>
@@ -275,15 +312,19 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import KanbanField from './components/KanbanField.vue';
 import NavigationButtons from './components/NavigationButtons.vue';
+import FilterBuilder from '../shared/components/FilterBuilder.vue';
 import { getTranslations } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
+import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
+import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
+import { useResponsive } from '../shared/composables/useResponsive.js';
 
 const UNASSIGNED_GROUP = '__unassigned__';
 const MAX_CARD_FIELDS = 5;
 
 export default {
   name: 'Kanban',
-  components: { KanbanField, NavigationButtons },
+  components: { KanbanField, NavigationButtons, FilterBuilder },
   props: {
     content: { type: Object, required: true },
     uid: { type: String, required: true },
@@ -348,6 +389,13 @@ export default {
       return row?.conversation?.messages?.length ?? 0;
     };
 
+    // Filter Builder state (shared `advancedFilters` component variable).
+    const {
+      normalizedAdvancedFilters,
+      setAdvancedFilters,
+    } = useAdvancedFilters(props, { getDefault: () => cfg.value?.defaultAdvancedFilters });
+    const filterBuilderColumns = computed(() => cfg.value?.columns || []);
+
     const fieldsCounterText = computed(() =>
       t.value.kanbanFieldsCounter
         .replace('{count}', cardFields.value.length)
@@ -365,8 +413,9 @@ export default {
       '--ww-data-grid_cc-border-color': cfg.value?.columnChooserBorderColor || cfg.value?.borderColor || 'rgba(0,0,0,0.08)',
       '--ww-data-grid_cc-text-color': cfg.value?.columnChooserTextColor || cfg.value?.textColor || '#1f2937',
       '--ww-data-grid_cc-accent-color': cfg.value?.columnChooserAccentColor || '#3b82f6',
+      // Filter Builder accent — driven by the cell Selection Border Color.
+      '--ww-data-grid_filter-accent-color': cfg.value?.cellSelectionBorderColor || cfg.value?.columnChooserAccentColor || '#2563eb',
       '--ww-data-grid_cc-border-radius': cfg.value?.columnChooserBorderRadius || '8px',
-      '--ww-data-grid_cc-width': cfg.value?.columnChooserWidth || '300px',
       // Navigation button color tokens — mirrors the cascade in
       // useColumnState.js so ww-config color customizations apply in the
       // kanban view too (the buttons are rendered by NavigationCellRenderer
@@ -418,6 +467,39 @@ export default {
     const boardRef = ref(null);
     const configPanelRef = ref(null);
 
+    // Component-width based responsive state. On mobile the board switches from
+    // side-by-side lanes to one full-width lane at a time (scroll-snap) with a
+    // pill switcher to jump between groups — see goToLane / onLanesScroll below.
+    const { isCompact: isCompactWidth, isMobile: isMobileWidth } = useResponsive(rootRef);
+    const columnsRef = ref(null);
+    const activeLaneIndex = ref(0);
+
+    // Scroll the lane at `index` so its left edge aligns with the board's left
+    // (works regardless of offsetParent by diffing bounding rects).
+    const goToLane = (index) => {
+      const el = columnsRef.value;
+      if (!el) return;
+      const cols = el.querySelectorAll('.kanban-column');
+      const col = cols[index];
+      if (!col) return;
+      const delta = col.getBoundingClientRect().left - el.getBoundingClientRect().left;
+      el.scrollTo({ left: el.scrollLeft + delta, behavior: 'smooth' });
+    };
+
+    // Keep the active pill in sync as the user swipes: pick the lane whose left
+    // edge is nearest the board's left edge.
+    const onLanesScroll = () => {
+      const el = columnsRef.value;
+      if (!el) return;
+      const contLeft = el.getBoundingClientRect().left;
+      let best = 0, bestDist = Infinity;
+      el.querySelectorAll('.kanban-column').forEach((c, i) => {
+        const d = Math.abs(c.getBoundingClientRect().left - contLeft);
+        if (d < bestDist) { bestDist = d; best = i; }
+      });
+      activeLaneIndex.value = best;
+    };
+
     // viewEdited write gating.
     // - `isApplyingConfig` blocks writes during applyViewConfig's mutation phase.
     //   Cleared via setTimeout (NOT nextTick) so it stays true through Vue's
@@ -461,6 +543,16 @@ export default {
         showUnassigned.value = true;
         hiddenGroups.value = new Set();
       }
+      // Restore advanced (Filter Builder) filters when present in the view config.
+      // Only when the key exists, so an absent key keeps the seeded defaults.
+      const vc = cfg.value?.viewConfiguration;
+      if (vc && typeof vc === 'object' && 'advancedFilters' in vc) {
+        const adv = vc.advancedFilters;
+        setAdvancedFilters({
+          combinator: adv?.combinator === 'or' ? 'or' : 'and',
+          conditions: Array.isArray(adv?.conditions) ? adv.conditions : [],
+        });
+      }
       // Clear via macrotask so any synchronous + microtask-queued watchers fire
       // first (with isApplyingConfig still true). Only the latest apply clears.
       setTimeout(() => {
@@ -490,8 +582,15 @@ export default {
         readonly: true,
       });
 
+    // Normalize an advanced-filters object for comparison/persistence.
+    const normAdvanced = (v) => {
+      const conditions = Array.isArray(v?.conditions) ? v.conditions : [];
+      return { combinator: conditions.length ? (v?.combinator === 'or' ? 'or' : 'and') : 'and', conditions };
+    };
+
     const writeCurrentConfig = () => {
       const hiddenGroupsArr = [...hiddenGroups.value];
+      const advanced = normAdvanced(normalizedAdvancedFilters.value);
       const config = {
         kanban: {
           groupBy: groupBy.value,
@@ -500,6 +599,7 @@ export default {
           showUnassigned: showUnassigned.value !== false,
           hiddenGroups: hiddenGroupsArr,
         },
+        advancedFilters: advanced,
       };
       setCurrentConfig(config);
       // viewEdited only fires for in-component user actions (drag/drop,
@@ -517,12 +617,17 @@ export default {
       const baseline = readKanbanFromViewConfig() || {};
       const baselineHidden = Array.isArray(baseline.hiddenGroups) ? [...baseline.hiddenGroups].sort() : [];
       const currentHidden = [...hiddenGroupsArr].sort();
+      const baseAdvanced = normAdvanced(cfg.value?.viewConfiguration?.advancedFilters);
+      const advancedEdited =
+        baseAdvanced.combinator !== advanced.combinator ||
+        JSON.stringify(baseAdvanced.conditions) !== JSON.stringify(advanced.conditions);
       const edited =
         (baseline.groupBy ?? null) !== (groupBy.value ?? null) ||
         !arraysEqual(baseline.cardFields || [], cardFields.value) ||
         !arraysEqual(baseline.order || [], groupOrder.value) ||
         ((baseline.showUnassigned !== false) !== (showUnassigned.value !== false)) ||
-        !arraysEqual(baselineHidden, currentHidden);
+        !arraysEqual(baselineHidden, currentHidden) ||
+        advancedEdited;
       console.log('[viewEdited][kanban] writeCurrentConfig→' + edited, {
         variableId,
         baseline: { groupBy: baseline.groupBy, cardFields: baseline.cardFields, order: baseline.order, showUnassigned: baseline.showUnassigned, hiddenGroups: baseline.hiddenGroups },
@@ -539,7 +644,7 @@ export default {
     };
 
     // Keep the exposed variable in sync.
-    watch([groupBy, cardFields, groupOrder, showUnassigned, hiddenGroups], () => writeCurrentConfig(), { deep: true });
+    watch([groupBy, cardFields, groupOrder, showUnassigned, hiddenGroups, normalizedAdvancedFilters], () => writeCurrentConfig(), { deep: true });
 
     // Reapply when viewConfiguration prop changes externally.
     watch(() => cfg.value?.viewConfiguration, () => applyViewConfig(), { deep: true });
@@ -627,6 +732,7 @@ export default {
           searchValue: null,
           searchableColumns: null,
           filterModel: null,
+          advancedFilters: normalizedAdvancedFilters.value,
           sortModel: null,
           startRow: 0,
           endRow: max,
@@ -640,6 +746,8 @@ export default {
           },
           applySearchToSupabase: (q) => q,
           convertFilterToSupabase: (_, q) => q,
+          convertConditionsToSupabase,
+          content: props.content,
           getSupabaseSortField: (id) => id,
           formatFiltersForLog: () => '(kanban)',
         });
@@ -655,7 +763,7 @@ export default {
     // Refetch when the data source / table / filters change, or on mount when
     // already in supabase mode.
     watch(
-      () => [cfg.value?.dataSource, cfg.value?.supabaseTable, cfg.value?.supabaseQuery, cfg.value?.supabaseFilters, cfg.value?.kanbanMaxRows],
+      () => [cfg.value?.dataSource, cfg.value?.supabaseTable, cfg.value?.supabaseQuery, cfg.value?.supabaseFilters, cfg.value?.kanbanMaxRows, normalizedAdvancedFilters.value],
       () => fetchSupabase(),
       { deep: true }
     );
@@ -1035,7 +1143,11 @@ export default {
 
     return {
       // refs
-      rootRef, boardRef, configPanelRef,
+      rootRef, boardRef, configPanelRef, columnsRef,
+      // responsive / mobile lane switcher
+      isCompactWidth, isMobileWidth, activeLaneIndex, goToLane, onLanesScroll,
+      // Filter Builder
+      normalizedAdvancedFilters, setAdvancedFilters, filterBuilderColumns,
       // state
       cfg, cssVars, t, fieldsCounterText, maxFieldsTooltip,
       groupBy, cardFields, showUnassigned,
@@ -1065,6 +1177,15 @@ export default {
 <style scoped lang="scss">
 .ww-kanban {
   position: relative;
+  // Establish a single, self-contained stacking context for the whole board.
+  // Without this, the sticky column headers (z-index: 5), the card nav button
+  // (z-index: 2) and the config anchor (z-index: 10) resolve their z-index
+  // against the PAGE root, so they paint on top of external WeWeb popups/
+  // modals. `isolation: isolate` traps every internal z-index inside the
+  // kanban — they still layer correctly relative to each other, but the board
+  // as a whole now sits at a single `z-index: auto` slot that any real popup
+  // (which renders later / higher in the page) cleanly covers.
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -1173,6 +1294,75 @@ export default {
     &:hover {
       background: #555;
     }
+  }
+}
+
+/* ===================== Mobile: swipe between lanes ===================== */
+// On narrow widths the side-by-side lanes become one full-width lane at a time
+// with horizontal scroll-snap; the pill switcher (.kanban-lane-tabs) jumps
+// between groups and stays in sync as the user swipes (see onLanesScroll).
+.kanban-lane-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+  padding: 0 12px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar { display: none; }
+}
+.kanban-lane-tab {
+  --group-color: #9ca3af;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.12));
+  background: var(--ag-background-color, #ffffff);
+  color: var(--ag-foreground-color, #1f2937);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+
+  &::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--group-color);
+    flex: 0 0 auto;
+  }
+}
+.kanban-lane-tab__count {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.65;
+}
+.kanban-lane-tab--active {
+  border-color: var(--group-color);
+  background: color-mix(in srgb, var(--group-color) 14%, var(--ag-background-color, #ffffff));
+}
+
+.ww-kanban.is-mobile {
+  // One full-width lane per view; swipe (scroll-snap) moves between lanes.
+  .kanban-columns {
+    grid-auto-columns: 100%;
+    gap: 0;
+    padding: 0;
+    scroll-snap-type: x mandatory;
+    // The pill switcher is the primary lane navigation, so reclaim the
+    // scrollbar's vertical space; swipe still scrolls.
+    &::-webkit-scrollbar { height: 0; }
+  }
+  .kanban-column {
+    scroll-snap-align: start;
+    // Inner breathing room now that the lane spans the full component width.
+    padding: 0 12px;
+    box-sizing: border-box;
   }
 }
 
@@ -1360,15 +1550,28 @@ export default {
 /* ===================== Config panel (mirrors .cc-panel) ===================== */
 .kanban-config-anchor {
   position: absolute;
-  top: 0;
-  right: 0;
+  inset: 0;
   z-index: 10;
+  // Span the whole wrapper for sizing; clicks fall through except on the panel.
+  pointer-events: none;
+}
+// Mobile: config panel fills the component as a sheet.
+.ww-kanban.is-mobile .kanban-cc-panel {
+  top: 8px;
+  right: 8px;
+  left: 8px;
+  width: auto;
+  max-width: none;
+  max-height: calc(100% - 16px);
 }
 .kanban-cc-panel {
   position: absolute;
   top: 12px;
   right: 12px;
-  width: var(--ww-data-grid_cc-width, 300px);
+  pointer-events: auto;
+  width: 760px;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
   background: var(--ww-data-grid_cc-background, #ffffff);
   border: 1px solid var(--ww-data-grid_cc-border-color, rgba(0,0,0,0.08));
   border-radius: var(--ww-data-grid_cc-border-radius, 8px);
@@ -1376,7 +1579,17 @@ export default {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.14);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  // Stay inside the wrapper with a 12px gap at the bottom (12px top + 12px).
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-family: 'Work Sans', sans-serif;
+
+  // Apply Work Sans to all descendants, including form controls (inputs /
+  // selects / textareas) which don't inherit font-family by default.
+  *, *::before, *::after {
+    font-family: 'Work Sans', sans-serif;
+  }
 }
 
 .cc-header {
@@ -1612,14 +1825,62 @@ export default {
 .cc-checkbox-wrap {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   cursor: pointer;
 }
 .cc-checkbox-wrap--locked { cursor: not-allowed; opacity: 0.5; }
+/* Custom checkbox — matches the grid's column chooser. */
 .cc-checkbox {
-  width: 14px;
-  height: 14px;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
   cursor: pointer;
-  accent-color: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 2px solid var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+  background: transparent;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:checked {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0px;
+      width: 5px;
+      height: 9px;
+      border: 2px solid var(--ww-data-grid_cc-background, #fff);
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+  }
+
+  &:indeterminate {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 50%;
+      width: 8px;
+      height: 2px;
+      background: var(--ww-data-grid_cc-background, #fff);
+      transform: translateY(-50%);
+    }
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
 }
 
 .cc-drag-handle {

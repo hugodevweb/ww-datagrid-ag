@@ -150,7 +150,9 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
       "--ww-data-grid_cc-border-radius": cfg.value.columnChooserBorderRadius || "8px",
       "--ww-data-grid_cc-text-color": columnChooserTextColor,
       "--ww-data-grid_cc-accent-color": columnChooserAccentColor,
-      "--ww-data-grid_cc-width": cfg.value.columnChooserWidth || "260px",
+      // Filter Builder accent — driven by the cell Selection Border Color.
+      "--ww-data-grid_filter-accent-color":
+        cfg.value.cellSelectionBorderColor || columnChooserAccentColor || "#2563eb",
       "--ww-data-grid_action-backgroundColor":
         cfg.value.actionBackgroundColor,
       "--ww-data-grid_action-color": cfg.value.actionColor,

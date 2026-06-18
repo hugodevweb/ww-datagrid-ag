@@ -199,6 +199,10 @@ export const convertFilterToSupabase = (filterModel, query, content, debugLog = 
           currentQuery = currentQuery.ilike(supabaseField, `${filter.filter}%`);
         } else if (filter.type === 'endsWith') {
           currentQuery = currentQuery.ilike(supabaseField, `%${filter.filter}`);
+        } else if (filter.type === 'blank') {
+          currentQuery = currentQuery.is(supabaseField, null);
+        } else if (filter.type === 'notBlank') {
+          currentQuery = currentQuery.not(supabaseField, 'is', null);
         }
       }
     } else if (filter.filterType === 'number') {
@@ -259,7 +263,14 @@ export const convertFilterToSupabase = (filterModel, query, content, debugLog = 
       const wantsEmpty = filter.values.includes('__empty__');
       const optionValues = filter.values.filter(val => val != null && val !== '__empty__');
 
-      if (wantsEmpty && optionValues.length === 0) {
+      // "is none of" — exclude the selected values (used by the filter builder)
+      if (filter.exclude === true) {
+        if (optionValues.length === 1) {
+          currentQuery = currentQuery.neq(supabaseField, optionValues[0]);
+        } else if (optionValues.length > 1) {
+          currentQuery = currentQuery.not(supabaseField, 'in', `(${optionValues.join(',')})`);
+        }
+      } else if (wantsEmpty && optionValues.length === 0) {
         currentQuery = currentQuery.is(supabaseField, null);
       } else if (wantsEmpty && optionValues.length > 0) {
         const orConditions = [`${supabaseField}.is.null`];

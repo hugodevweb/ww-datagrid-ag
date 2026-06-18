@@ -128,7 +128,6 @@ export default {
           "columnChooserBorderRadius",
           "columnChooserTextColor",
           "columnChooserAccentColor",
-          "columnChooserWidth",
         ],
       },
       {
@@ -235,6 +234,8 @@ export default {
           "movableColumns",
           "resizableColumns",
           "allowColumnHiding",
+          "enableFilterBuilder",
+          "defaultAdvancedFilters",
           "rowReorder",
           "reorderInfoBox",
         ],
@@ -254,6 +255,7 @@ export default {
           "viewConfiguration",
           "viewEditedVariableId",
           "columnChooserVariableId",
+          "calendarStateVariableId",
         ],
       },
       {
@@ -3179,6 +3181,39 @@ export default {
       },
       /* wwEditor:end */
     },
+    enableFilterBuilder: {
+      label: { en: "Enable Filter Builder" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Enable or disable the runtime Filter Builder",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, a 'Filters' section appears in the configuration menu (grid, kanban and calendar) where users build flat AND/OR conditions. The AND case syncs two-way with the per-column header filters; results drive the grid and the Kanban/Calendar Supabase queries.",
+      },
+      /* wwEditor:end */
+    },
+    defaultAdvancedFilters: {
+      label: { en: "Default Filters" },
+      type: "RawObject",
+      section: "settings",
+      bindable: true,
+      defaultValue: null,
+      hidden: (content) => !content.enableFilterBuilder,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "object",
+        tooltip: "Default Filter Builder state: { combinator: 'and' | 'or', conditions: [ { field, type, operator, value, valueTo? } ] }.",
+      },
+      propertyHelp: {
+        tooltip: "Seeds the Filter Builder with a default set of conditions. Bind a shared object (or place it in Base Config) so every grid/kanban/calendar instance starts with the same filters. Users can still adjust them at runtime; if you change this (e.g. via Base Config), it re-seeds unless the user has modified the filters.",
+      },
+      /* wwEditor:end */
+    },
     columnChooserBackground: {
       label: "Background Color",
       type: "Color",
@@ -3226,13 +3261,6 @@ export default {
         tooltip: "Color used for checkboxes, drag-over indicators, and other interactive highlights in the column chooser panel.",
       },
       /* wwEditor:end */
-    },
-    columnChooserWidth: {
-      label: "Width",
-      type: "Length",
-      options: { noRange: true },
-      responsive: true,
-      bindable: true,
     },
     invalidEditValueMode: {
       label: { en: "Validation Mode" },
@@ -3289,10 +3317,10 @@ export default {
       /* wwEditor:start */
       bindingValidation: {
         type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] }, calendar: { dateField: string|null, period: 'day'|'week'|'month'|'year', cardFields: [field], gridFields: [field] } }. The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields is capped at 5 fields (3 for calendar). calendar.dateField must reference a column of type dateString or dateTime. calendar.gridFields is the ordered list of columns shown in the table below the calendar (max 8). kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
+        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, advancedFilters: { combinator: 'and'|'or', conditions: [{ field, type, operator, value, valueTo? }] }, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] }, calendar: { dateField: string|null, eventFields: [field], colorByField: string|null, defaultView: 'day'|'week'|'month'|'year'|'custom', timeframe: 'day'|'week'|'month'|'year'|'custom', anchorDate: 'YYYY-MM-DD', customStart: 'YYYY-MM-DD'|null, customEnd: 'YYYY-MM-DD'|null, weekStartsOn: 0|1 } }. `defaultView` is the timeframe the calendar opens on (configurable from the in-component settings panel); `timeframe` is the live/navigated timeframe (output only, not a saved edit). The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields / eventFields are capped at 5 fields. calendar.dateField must reference a dateString or dateTime column; calendar.colorByField must reference a select column. kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
       },
       propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban/calendar, overriding user modifications. Structure: { sizes: {}, filters: {}, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups }, calendar: { dateField, period, cardFields, gridFields } }. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). For calendar: dateField must be a dateString/dateTime column, period is one of day/week/month/year, cardFields (max 3) are the fields shown on each calendar item, gridFields (max 8) are the columns of the in-view records table rendered below the calendar. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
+        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban/calendar, overriding user modifications. Structure: { sizes: {}, filters: {}, advancedFilters: { combinator, conditions }, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups }, calendar: { dateField, period, cardFields, gridFields } }. advancedFilters holds the Filter Builder state (a flat AND/OR list of conditions) and is restored into the builder + applied to the grid/query on load. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). For calendar: dateField must be a dateString/dateTime column, period is one of day/week/month/year, cardFields (max 3) are the fields shown on each calendar item, gridFields (max 8) are the columns of the in-view records table rendered below the calendar. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
       },
       /* wwEditor:end */
     },
@@ -3325,6 +3353,22 @@ export default {
       },
       propertyHelp: {
         tooltip: "ID of a WeWeb boolean variable that controls the column chooser panel. Set the variable to true to open the panel, false to close it. The variable is also updated when the panel is closed from within the component.",
+      },
+      /* wwEditor:end */
+    },
+    calendarStateVariableId: {
+      label: { en: "Calendar State — Variable ID" },
+      type: "Text",
+      section: "settings",
+      bindable: true,
+      defaultValue: "39535f5a-df56-47e4-b54a-8e963e02302f",
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "string",
+        tooltip: "The UUID of a WeWeb Object variable used to persist the calendar's navigation state (current view + date). Example: '6fe05736-6920-46d3-8240-8227dcc814a2'.",
+      },
+      propertyHelp: {
+        tooltip: "ID of a WeWeb Object variable that stores the calendar's current navigation state (timeframe + anchor date + custom range) so it is restored after a page reload or navigation. The state is stored keyed by each calendar's component id, so you can bind the SAME Object variable to multiple calendar views without them overwriting each other. Create a variable of type Object with default value {}.",
       },
       /* wwEditor:end */
     },

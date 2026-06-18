@@ -5,6 +5,7 @@ import {
   createFetchKey,
 } from '../../shared/utils/supabaseUtils.js';
 import { convertFilterToSupabase as _convertFilterToSupabase } from '../utils/convertFilterToSupabase.js';
+import { convertConditionsToSupabase as _convertConditionsToSupabase } from '../../shared/utils/convertConditionsToSupabase.js';
 import { getSupabaseSortField as _getSupabaseSortField } from '../utils/supabaseFieldMappings.js';
 
 // Owns Supabase data fetching: paginated + infinite, fetch guards, the
@@ -19,7 +20,7 @@ import { getSupabaseSortField as _getSupabaseSortField } from '../utils/supabase
 //   gridApi          — shallowRef from useGridApi
 //   debugLog         — from useGridApi
 //   isGridRendering  — ref from useGridApi
-export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering }) {
+export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering, getAdvancedFilters }) {
   // WeWeb component variables
   const { value: records, setValue: setRecords } =
     wwLib.wwVariable.useComponentVariable({
@@ -92,7 +93,20 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
   // Bound wrappers around pure utils
   const convertFilterToSupabase = (filterModel, query) =>
     _convertFilterToSupabase(filterModel, query, props.content, debugLog);
+  const convertConditionsToSupabase = (advanced, query, content) =>
+    _convertConditionsToSupabase(advanced, query, content ?? props.content, debugLog);
   const getSupabaseSortField = (columnId) => _getSupabaseSortField(props.content, columnId);
+
+  // The builder's AND case is mirrored into AG Grid's filterModel (handled by the
+  // normal filterModel path), so here we only forward advanced filters when the
+  // combinator is OR — which AG Grid's flat filter model cannot represent.
+  const getOrModeAdvancedFilters = () => {
+    const advanced = typeof getAdvancedFilters === 'function' ? getAdvancedFilters() : null;
+    if (advanced && advanced.combinator === 'or' && Array.isArray(advanced.conditions) && advanced.conditions.length > 0) {
+      return advanced;
+    }
+    return null;
+  };
 
   // Format filters for logging
   const formatFiltersForLog = (filterModel) => {
@@ -297,6 +311,7 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
         searchValue: props.content?.enableSearch ? searchValue : null,
         searchableColumns: props.content?.searchableColumns || [],
         filterModel,
+        advancedFilters: getOrModeAdvancedFilters(),
         sortModel,
         defaultSortField: 'created_at',
         startRow,
@@ -304,6 +319,8 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
         applyManualFilters,
         applySearchToSupabase,
         convertFilterToSupabase,
+        convertConditionsToSupabase,
+        content: props.content,
         getSupabaseSortField,
         formatFiltersForLog,
       });
@@ -334,7 +351,7 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
       return;
     }
 
-    const fetchKey = createFetchKey({ page, pageSize, filterModel, sortModel, searchValue, tableName, queryString });
+    const fetchKey = createFetchKey({ page, pageSize, filterModel, advancedFilters: getOrModeAdvancedFilters(), sortModel, searchValue, tableName, queryString });
 
     if (isFetchingData.value) {
       return;
@@ -364,6 +381,7 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
         searchValue: props.content?.enableSearch ? searchValue : null,
         searchableColumns: props.content?.searchableColumns || [],
         filterModel,
+        advancedFilters: getOrModeAdvancedFilters(),
         sortModel,
         defaultSortField: 'created_at',
         page,
@@ -371,6 +389,8 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
         applyManualFilters,
         applySearchToSupabase,
         convertFilterToSupabase,
+        convertConditionsToSupabase,
+        content: props.content,
         getSupabaseSortField,
         formatFiltersForLog,
       });
@@ -455,6 +475,8 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering })
     applySearchToSupabase,
     applyManualFilters,
     convertFilterToSupabase,
+    convertConditionsToSupabase,
+    getOrModeAdvancedFilters,
     getSupabaseSortField,
     // Async fetch operations
     waitForSupabaseInstance,

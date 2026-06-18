@@ -59,6 +59,10 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // Navigation column type (createNavigationColumnDef): supplies the workflow
   // id, focus row id, tab formula resolver, and message count resolver.
   navContext,
+  // Component-width responsive flag (ref). When the grid is narrow we drop all
+  // column pinning so pinned columns don't eat the whole viewport and the row
+  // can be scrolled horizontally. Optional — defaults to "never mobile".
+  isMobile,
 }) {
   // Tracks the currently active cell edit (set in onCellEditingStarted,
   // cleared in onCellEditingStopped). Consumed by useGridActions.refreshRow
@@ -650,7 +654,10 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       const commonProperties = {
         minWidth,
         maxWidth,
-        pinned: col?.pinned === "none" ? false : col?.pinned,
+        // Narrow widths: unpin everything so pinned columns don't eat the
+        // viewport and the grid can scroll horizontally (reactive — recomputes
+        // when the breakpoint is crossed).
+        pinned: isMobile?.value ? false : (col?.pinned === "none" ? false : col?.pinned),
         width,
         flex,
         hide: !!col?.hide

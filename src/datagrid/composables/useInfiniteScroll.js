@@ -121,6 +121,12 @@ export function useInfiniteScroll(
   const loadMore = async (api, filterModel = null, sortModel = null, searchValue = readSearchValue()) => {
     if (!isInfiniteScrollEnabled.value) return;
     if (isGroupingActive.value) return; // Per-group grids use loadMoreForGroup instead.
+    // Never paginate before the first block has loaded. The grid renders empty
+    // on mount, which puts the viewport "near bottom" and fires onBodyScroll →
+    // loadMore while loadInitial's fetch is still in flight. Without this guard
+    // that call reads the still-zero loadedOffset and re-fetches block 0, then
+    // appends it on top of the block loadInitial sets — every row shows twice.
+    if (!hasInitialLoaded.value) return;
     if (isLoadingMore.value) return;
     if (allLoaded.value) return;
     isLoadingMore.value = true;
@@ -274,7 +280,12 @@ export function useInfiniteScroll(
     if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
     const entry = getGroupEntry(groupValue);
     if (entry.loadingMore) return;
-    if (entry.loaded && entry.offset >= entry.total) return;
+    // Same first-load race as the single-grid loadMore: a freshly-mounted group
+    // grid is "near bottom" and fires loadMore before loadInitialForGroup has
+    // populated the entry. Paginating now would re-fetch the group's block 0 at
+    // offset 0 and append a duplicate. Wait until the initial block has loaded.
+    if (!entry.loaded) return;
+    if (entry.offset >= entry.total) return;
     writeGroupEntry(groupValue, { loadingMore: true });
     try {
       const merged = buildGroupFilterModel(filterModel, groupValue);

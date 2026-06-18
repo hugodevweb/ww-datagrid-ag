@@ -21,10 +21,13 @@ const STYLE_CONTENT = `
        the button (31x28 in a 40px row) so there are ~6px of natural padding
        above and below it inside the cell — the badge overhangs into that
        padding while staying entirely within the row, so AG Grid never clips
-       it. We still need overflow:visible on .ag-cell and its direct wrappers
-       so the overhang isn't clipped at the cell boundary. */
+       it. We still need overflow:visible on .ag-cell AND every descendant
+       (including the buttons) so the badge overhang isn't clipped — a button's
+       own box clips absolutely-positioned children when a UA/theme reset sets
+       overflow:hidden on <button>, which crops the badge at the button's
+       top-right corner. */
     .ag-cell.ww-nav-cell,
-    .ag-cell.ww-nav-cell > * {
+    .ag-cell.ww-nav-cell * {
       overflow: visible !important;
     }
 
@@ -41,7 +44,7 @@ const STYLE_CONTENT = `
       align-items: center;
       justify-content: center;
       width: 31px;
-      height: 33px;
+      height: 31px;
       padding: 0;
       border-radius: 8px;
       border: 1px solid var(--ww-data-grid_navigation-borderColor, #e5e7eb);

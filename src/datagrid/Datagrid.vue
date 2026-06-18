@@ -1,5 +1,5 @@
 <template>
-  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive, 'ww-datagrid--auto-layout': cfg.layout === 'auto' }" :style="[cssVars, style]" ref="gridContainerRef">
+  <div class="ww-datagrid" :class="{ editing: isEditing, grouped: isGroupingActive, 'ww-datagrid--auto-layout': cfg.layout === 'auto', 'is-compact': isCompactWidth, 'is-mobile': isMobileWidth }" :style="[cssVars, style]" ref="gridContainerRef">
     <!-- Single-grid mode: unchanged behavior -->
     <ag-grid-vue
       v-if="!isGroupingActive"
@@ -12,7 +12,7 @@
       :domLayout="cfg.layout === 'auto' ? 'autoHeight' : 'normal'"
       :style="cfg.layout !== 'auto' ? { height: '100%' } : {}"
       :rowSelection="rowSelection"
-      :selection-column-def="{ pinned: true }"
+      :selection-column-def="{ pinned: !isMobileWidth }"
       :theme="theme"
       :getRowId="getRowId"
       :popup-parent="popupParent"
@@ -120,7 +120,7 @@
           domLayout="autoHeight"
           class="ww-group__grid"
           :rowSelection="rowSelection"
-          :selection-column-def="{ pinned: true }"
+          :selection-column-def="{ pinned: !isMobileWidth }"
           :theme="theme"
           :getRowId="getRowId"
           :popup-parent="popupParent"
@@ -215,7 +215,7 @@
       </div>
     </Transition>
 
-    <div v-if="cfg.allowColumnHiding && !isEditing" ref="columnChooserRef" class="column-chooser-container">
+    <div v-if="(cfg.allowColumnHiding || cfg.enableFilterBuilder) && !isEditing" ref="columnChooserRef" class="column-chooser-container">
       <Transition name="cc-fade">
         <div v-if="showColumnChooser" class="cc-panel" @click.stop>
           <!-- Header -->
@@ -231,6 +231,7 @@
           <!-- Tabs -->
           <div class="cc-tabs" role="tablist">
             <button
+              v-if="cfg.allowColumnHiding"
               type="button"
               class="cc-tab"
               :class="{ 'cc-tab--active': activeChooserTab === 'columns' }"
@@ -241,6 +242,7 @@
               {{ getTranslations(cfg?.lang || 'en').columnsTab }}
             </button>
             <button
+              v-if="cfg.allowColumnHiding"
               type="button"
               class="cc-tab"
               :class="{ 'cc-tab--active': activeChooserTab === 'grouping' }"
@@ -249,6 +251,17 @@
               @click="activeChooserTab = 'grouping'"
             >
               {{ getTranslations(cfg?.lang || 'en').groupingTab }}
+            </button>
+            <button
+              v-if="cfg.enableFilterBuilder"
+              type="button"
+              class="cc-tab"
+              :class="{ 'cc-tab--active': activeChooserTab === 'filters' }"
+              role="tab"
+              :aria-selected="activeChooserTab === 'filters'"
+              @click="activeChooserTab = 'filters'"
+            >
+              {{ getTranslations(cfg?.lang || 'en').filtersTab || 'Filters' }}
             </button>
           </div>
 
@@ -412,6 +425,16 @@
               {{ getTranslations(cfg?.lang || 'en').noSelectColumns }}
             </div>
           </template>
+
+          <!-- Tab: Filters (Filter Builder) -->
+          <template v-else-if="activeChooserTab === 'filters'">
+            <FilterBuilder
+              :columns="filterBuilderColumns"
+              :model-value="normalizedAdvancedFilters"
+              :data-source="cfg.dataSource"
+              @update:model-value="setAdvancedFilters"
+            />
+          </template>
         </div>
       </Transition>
     </div>
@@ -548,6 +571,12 @@ import {
   findUserColumn as _findUserColumn,
 } from "./utils/supabaseFieldMappings.js";
 import { convertFilterToSupabase as _convertFilterToSupabase } from "./utils/convertFilterToSupabase.js";
+import {
+  conditionsToAgGridFilterModel,
+  agGridFilterModelToConditions,
+} from "../shared/utils/convertConditionsToSupabase.js";
+import { useAdvancedFilters } from "../shared/composables/useAdvancedFilters.js";
+import FilterBuilder from "../shared/components/FilterBuilder.vue";
 import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
 import { useDataFetch } from "./composables/useDataFetch.js";
@@ -559,6 +588,7 @@ import { useColumnState } from "./composables/useColumnState.js";
 import { useColumnChooser } from "./composables/useColumnChooser.js";
 import { useCellEditing } from "./composables/useCellEditing.js";
 import { useGridActions } from "./composables/useGridActions.js";
+import { useResponsive } from "../shared/composables/useResponsive.js";
 
 // TODO: maybe register less modules
 // TODO: maybe register modules per grid instead of globally
@@ -577,6 +607,7 @@ export default {
     UserCellRenderer,
     RecordCellRenderer,
     UserFilterComponent,
+    FilterBuilder,
   },
   props: {
     content: {
@@ -699,6 +730,14 @@ export default {
       onSelectionChanged,
     } = useSelection(props, ctx, { gridApi });
 
+    // Composable: advanced (Filter Builder) state — the `advancedFilters`
+    // component variable shared across grid/kanban/calendar. Created before
+    // useDataFetch so the OR-mode getter can be injected into the fetch path.
+    const {
+      setAdvancedFilters,
+      normalizedAdvancedFilters,
+    } = useAdvancedFilters(props, { getDefault: () => cfg.value?.defaultAdvancedFilters });
+
     // Composable: Supabase data fetching, filter helpers, records/isFetching variables,
     // removed-row tracking, isInfiniteScrollEnabled.
     const {
@@ -714,12 +753,19 @@ export default {
       waitForSupabaseInstance,
       fetchSupabaseDataForInfinite, fetchSupabaseData,
       updateRecordsFromGrid,
-    } = useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering });
+    } = useDataFetch(cfg, props, {
+      gridApi, debugLog, isGridRendering,
+      getAdvancedFilters: () => normalizedAdvancedFilters.value,
+    });
 
     // DOM container ref for the grid wrapper (used for scroll detection and
     // group-mode horizontal scrollbar metrics). Hoisted above useGrouping
     // since useGrouping reads it for the multi-grid scrollbar sync.
     const gridContainerRef = ref(null);
+
+    // Component-width based responsive state (toggles .is-compact / .is-mobile on
+    // the root). Detection is the component's own width, not the viewport.
+    const { isCompact: isCompactWidth, isMobile: isMobileWidth } = useResponsive(gridContainerRef);
 
     // Composable: grouping feature — multi-grid layout, persisted collapsed state,
     // group event handlers, drag-reorder, horizontal scrollbar sync. Cycle-deps
@@ -881,6 +927,7 @@ export default {
       getAddRowToGroupState: () => addRowToGroupState,
       getRemoveRowFromGroupState: () => removeRowFromGroupState,
       navContext,
+      isMobile: isMobileWidth,
     });
 
     // Composable: grid actions — programmatic actions exposed to WeWeb
@@ -1009,6 +1056,9 @@ export default {
       // direct destructure here would TDZ-throw.
       getSetFilters: () => setFilters,
       getSetSort: () => setSort,
+      // Advanced filters (Filter Builder) — savable in viewConfiguration.
+      getAdvancedFilters: () => normalizedAdvancedFilters.value,
+      getSetAdvancedFilters: () => setAdvancedFilters,
       groupingState, groupGridApis, groupSelections,
       getStoredCollapsedForView, isValidGroupColumn,
       setSelectedRows,
@@ -1148,8 +1198,91 @@ export default {
       getRefetchAll: () => refetchAll,
     });
 
+    // ===== Filter Builder ⇄ AG Grid two-way sync (AND case) =====
+    // The builder's flat AND conditions ARE the per-column header filters: in
+    // AND mode we mirror the builder into AG Grid's filter model (and back).
+    // The OR case has no AG Grid representation, so it clears the header filters
+    // and drives the Supabase query via the advanced-filters fetch path instead.
 
+    // Re-run the Supabase fetch (used for OR mode, where the AG Grid filter
+    // model is empty and so AG Grid's own change-detection won't refetch).
+    const triggerSupabaseRefetch = () => {
+      if (props.content?.dataSource !== 'supabase' || !gridApi.value) return;
+      if (isInfiniteScrollEnabled.value) {
+        try { gridApi.value.refreshInfiniteCache?.(); } catch (e) { /* noop */ }
+        nextTick(() => setTimeout(() => updateRecordsFromGrid(), 200));
+      } else {
+        const currentPage = (gridApi.value.paginationGetCurrentPage() || 0) + 1;
+        const pageSize = gridApi.value.paginationGetPageSize() || props.content?.paginationPageSize || 10;
+        const state = gridApi.value.getState();
+        const sortModel = state?.sort?.sortModel || [];
+        const filterModel = gridApi.value.getFilterModel();
+        const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+        fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
+      }
+    };
 
+    // Canonicalise an AG Grid filter model into the builder's shape so the two
+    // directions can be compared without false diffs (e.g. dateTo:null vs omitted).
+    const canonicalModel = (model) =>
+      conditionsToAgGridFilterModel(agGridFilterModelToConditions(model || {}, props.content));
+
+    // Forward: builder state → grid.
+    watch(
+      normalizedAdvancedFilters,
+      (adv) => {
+        if (!gridApi.value || isApplyingViewConfig.value) return;
+        if (adv.combinator === 'and') {
+          const desired = conditionsToAgGridFilterModel(adv.conditions);
+          const current = canonicalModel(gridApi.value.getFilterModel());
+          if (JSON.stringify(desired) !== JSON.stringify(current)) {
+            gridApi.value.setFilterModel(Object.keys(desired).length ? desired : null);
+          }
+        } else {
+          // OR mode: clear header filters once (which itself triggers a refetch),
+          // otherwise refetch directly when editing further OR conditions.
+          const current = gridApi.value.getFilterModel() || {};
+          if (Object.keys(current).length) {
+            gridApi.value.setFilterModel(null);
+          } else {
+            triggerSupabaseRefetch();
+          }
+        }
+        // Persist into currentConfig and (re)evaluate the view-edited flag. In
+        // AND mode onFilterChanged also calls this, but combinator-only changes
+        // and OR edits don't go through it — so call it here for every change.
+        updateCurrentConfig();
+      },
+      { deep: true }
+    );
+
+    // Reverse: header filters → builder (AND mode only; OR conditions aren't in the
+    // model). Not gated on isApplyingViewConfig so the builder also reflects filters
+    // restored from a saved view; the forward watcher is gated, so no write-back loop.
+    watch(
+      filterValue,
+      (model) => {
+        if (normalizedAdvancedFilters.value.combinator !== 'and') return;
+        const parsed = agGridFilterModelToConditions(model || {}, props.content);
+        const desiredFromModel = conditionsToAgGridFilterModel(parsed);
+        const currentFromConditions = conditionsToAgGridFilterModel(normalizedAdvancedFilters.value.conditions);
+        if (JSON.stringify(desiredFromModel) !== JSON.stringify(currentFromConditions)) {
+          setAdvancedFilters({ combinator: 'and', conditions: parsed });
+        }
+      },
+      { deep: true }
+    );
+
+    // Columns metadata for the builder UI (kept reactive to config changes).
+    const filterBuilderColumns = computed(() => cfg.value?.columns || []);
+
+    // When the panel opens and column hiding is disabled, the Filters tab is the
+    // only available tab — make it the default selection.
+    watch(showColumnChooser, (open) => {
+      if (open && !cfg.value?.allowColumnHiding && cfg.value?.enableFilterBuilder) {
+        activeChooserTab.value = 'filters';
+      }
+    });
 
 
 
@@ -2307,6 +2440,8 @@ export default {
       onBodyScroll,
       onGroupBodyScrollWrapper,
       gridContainerRef,
+      isCompactWidth,
+      isMobileWidth,
       initialState,
       refreshData,
       rowData,
@@ -2336,6 +2471,10 @@ export default {
       showColumnChooser,
       columnChooserRef,
       activeChooserTab,
+      // Filter Builder
+      normalizedAdvancedFilters,
+      setAdvancedFilters,
+      filterBuilderColumns,
       selectableGroupingColumns,
       setGroupingColumn,
       setShowUnassigned,
@@ -2850,9 +2989,11 @@ export default {
 
 .column-chooser-container {
   position: absolute;
-  top: 0;
-  right: 0;
+  inset: 0;
   z-index: 5;
+  // Span the whole wrapper so the panel can be sized against it, but let
+  // clicks fall through to the grid everywhere except the panel itself.
+  pointer-events: none;
 }
 
 // Trigger button
@@ -2900,16 +3041,22 @@ export default {
 // Panel
 .cc-panel {
   position: absolute;
-  top: calc(100% + 4px);
+  top: 4px;
   right: 0;
-  width: var(--ww-data-grid_cc-width, 260px);
+  pointer-events: auto;
+  width: 760px;
+  max-width: calc(100% - 16px);
+  box-sizing: border-box;
   background: var(--ww-data-grid_cc-background, var(--ag-background-color, #1e2228));
   border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
   border-radius: var(--ww-data-grid_cc-border-radius, 8px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
   color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
   z-index: 1000;
-  overflow: hidden;
+  // Stay inside the wrapper with a 12px gap at the bottom (4px top offset + 12px).
+  max-height: calc(100% - 16px);
+  overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   font-family: 'Work Sans', sans-serif;
@@ -2917,6 +3064,31 @@ export default {
   // Apply Work Sans to all text descendants
   *, *::before, *::after {
     font-family: 'Work Sans', sans-serif;
+  }
+}
+
+// Mobile: the column-chooser panel becomes a near-full-screen sheet so the
+// columns / grouping / filters lists have room and stay touch-usable.
+.ww-datagrid.is-mobile {
+  .cc-panel {
+    top: 8px;
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-width: none;
+    max-height: calc(100% - 16px);
+  }
+
+  // Bigger touch targets in the header (sort/menu icons) and a thicker grouped
+  // horizontal scrollbar so it can be grabbed with a finger.
+  :deep(.ag-header-cell),
+  :deep(.ag-header-group-cell) {
+    touch-action: manipulation;
+  }
+
+  &.grouped .ww-group__hscroll {
+    height: 18px;
+    flex-basis: 18px;
   }
 }
 

@@ -200,6 +200,15 @@ export default {
   height: auto;
   min-height: 0;
 }
+/* On cards (kanban / calendar) the user avatars align to the left edge instead
+   of the grid's centered layout. */
+.kanban-field :deep(.user-cell) {
+  justify-content: flex-start;
+}
+.kanban-field :deep(.user-display) {
+  justify-content: flex-start;
+  width: auto;
+}
 .kanban-field :deep(.record-pill) {
   padding: 2px 6px;
 }

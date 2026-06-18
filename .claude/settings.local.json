@@ -39,7 +39,9 @@
       "PowerShell(\"killed\")",
       "Bash(tee /tmp/serve4.log)",
       "Bash(node --check src/datagrid/composables/useGrouping.js)",
-      "Bash(tee /tmp/serve_s3.log)"
+      "Bash(tee /tmp/serve_s3.log)",
+      "Bash(xargs cat)",
+      "Bash(dir package.json)"
     ]
   }
 }

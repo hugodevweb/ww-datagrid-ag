@@ -1,242 +1,309 @@
 <template>
-  <div class="ww-calendar" :style="cssVars" ref="rootRef">
-    <!-- Empty state when no date field is configured -->
+  <div class="ww-calendar" :class="{ 'is-compact': isCompactWidth, 'is-mobile': isMobileWidth }" :style="[cssVars, rootStyle]" ref="rootRef">
+    <!-- Empty state: not configured (no date column selected yet) -->
     <div v-if="!dateField" class="cal-empty">
-      <div class="cal-empty__title">{{ t.calEmptyTitle }}</div>
-      <div class="cal-empty__subtitle">{{ t.calEmptySubtitle }}</div>
+      <div class="cal-empty__title">{{ t.calendarEmptyTitle }}</div>
+      <div class="cal-empty__subtitle">
+        {{ dateColumns.length === 0 ? t.calendarNoDateColumns : t.calendarEmptySubtitle }}
+      </div>
     </div>
 
     <template v-else>
       <!-- Toolbar -->
       <div class="cal-toolbar">
         <div class="cal-toolbar__nav">
-          <button class="cal-btn cal-btn--icon" @click="goPrev" :aria-label="t.calPrev" :title="t.calPrev">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
-          </button>
-          <button class="cal-btn cal-btn--today" @click="goToday">{{ t.calToday }}</button>
-          <button class="cal-btn cal-btn--icon" @click="goNext" :aria-label="t.calNext" :title="t.calNext">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-          <span class="cal-toolbar__label">{{ rangeLabel }}</span>
-        </div>
-        <div class="cal-toolbar__periods" role="tablist">
           <button
-            v-for="p in periodOptions"
-            :key="p.value"
             type="button"
-            class="cal-btn cal-btn--period"
-            :class="{ 'cal-btn--period-active': period === p.value }"
-            @click="setPeriod(p.value)"
-          >{{ p.label }}</button>
-        </div>
-      </div>
-
-      <!-- Body -->
-      <div class="cal-body">
-        <!-- DAY -->
-        <div v-if="period === 'day'" class="cal-day">
-          <div class="cal-day__header">{{ dayHeaderLabel(cursor) }}</div>
-          <div class="cal-day__list">
-            <div v-if="visibleRows.length === 0" class="cal-empty-cell">{{ t.calNoItems }}</div>
-            <div v-for="row in visibleRows" :key="getRowId(row)" class="cal-event cal-event--row" @click="onItemClick(row)">
-              <NavigationButtons
-                class="cal-event__nav"
-                :row-id="getRowId(row)"
-                :focus-row-id="navigationFocusRowId"
-                :tab-value="navigationTabValue"
-                :message-count="getMessageCount(row)"
-                :workflow-id="navigationWorkflowId"
-              />
-              <span class="cal-event__time">{{ formatItemTime(row) }}</span>
-              <div class="cal-event__fields">
-                <KanbanField
-                  v-for="(field, idx) in cardFields"
-                  :key="field"
-                  :column="findColumn(field)"
-                  :row="row"
-                  :resolve-mapping-formula="resolveMappingFormula"
-                  :is-title="idx === 0"
-                  :cell-font-family="cfg.cellFontFamily || ''"
-                  :user-focus-color="cfg.userFocusColor || ''"
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- WEEK -->
-        <div v-else-if="period === 'week'" class="cal-week">
-          <div class="cal-week__grid">
-            <div
-              v-for="day in weekDays"
-              :key="day.iso"
-              class="cal-week__day"
-              :class="{ 'cal-week__day--today': day.isToday }"
-            >
-              <div class="cal-week__day-header" @click="drillToDay(day.date)">
-                <span class="cal-week__dow">{{ day.dow }}</span>
-                <span class="cal-week__dom">{{ day.dom }}</span>
-              </div>
-              <div class="cal-week__day-body">
-                <div
-                  v-for="row in day.rows"
-                  :key="getRowId(row)"
-                  class="cal-event cal-event--chip"
-                  @click="onItemClick(row)"
-                >
-                  <NavigationButtons
-                    class="cal-event__nav cal-event__nav--small"
-                    :row-id="getRowId(row)"
-                    :focus-row-id="navigationFocusRowId"
-                    :tab-value="navigationTabValue"
-                    :message-count="getMessageCount(row)"
-                    :workflow-id="navigationWorkflowId"
-                  />
-                  <KanbanField
-                    v-for="(field, idx) in cardFields"
-                    :key="field"
-                    :column="findColumn(field)"
-                    :row="row"
-                    :resolve-mapping-formula="resolveMappingFormula"
-                    :is-title="idx === 0"
-                    :cell-font-family="cfg.cellFontFamily || ''"
-                    :user-focus-color="cfg.userFocusColor || ''"
-                  />
-                </div>
-                <div v-if="day.rows.length === 0" class="cal-empty-cell cal-empty-cell--soft"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- MONTH -->
-        <div v-else-if="period === 'month'" class="cal-month">
-          <div class="cal-month__dow-row">
-            <div v-for="d in dayHeaders" :key="d" class="cal-month__dow">{{ d }}</div>
-          </div>
-          <div class="cal-month__grid">
-            <div
-              v-for="cell in monthCells"
-              :key="cell.iso"
-              class="cal-month__cell"
-              :class="{
-                'cal-month__cell--other': !cell.inMonth,
-                'cal-month__cell--today': cell.isToday,
-              }"
-            >
-              <div class="cal-month__cell-header" @click="drillToDay(cell.date)">
-                <span class="cal-month__cell-dom">{{ cell.dom }}</span>
-                <span v-if="cell.rows.length" class="cal-month__cell-count">{{ cell.rows.length }}</span>
-              </div>
-              <div class="cal-month__cell-body">
-                <div
-                  v-for="row in cell.rows.slice(0, 3)"
-                  :key="getRowId(row)"
-                  class="cal-event cal-event--chip cal-event--mini"
-                  @click="onItemClick(row)"
-                >
-                  <NavigationButtons
-                    class="cal-event__nav cal-event__nav--small"
-                    :row-id="getRowId(row)"
-                    :focus-row-id="navigationFocusRowId"
-                    :tab-value="navigationTabValue"
-                    :message-count="getMessageCount(row)"
-                    :workflow-id="navigationWorkflowId"
-                  />
-                  <KanbanField
-                    :column="findColumn(cardFields[0])"
-                    :row="row"
-                    :resolve-mapping-formula="resolveMappingFormula"
-                    :is-title="true"
-                    :cell-font-family="cfg.cellFontFamily || ''"
-                    :user-focus-color="cfg.userFocusColor || ''"
-                    v-if="cardFields[0]"
-                  />
-                </div>
-                <div v-if="cell.rows.length > 3" class="cal-month__cell-more">
-                  +{{ cell.rows.length - 3 }}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- YEAR -->
-        <div v-else-if="period === 'year'" class="cal-year">
-          <div
-            v-for="month in yearMonths"
-            :key="month.idx"
-            class="cal-year__month"
-            @click="drillToMonth(month.idx)"
+            class="cal-btn cal-btn--icon"
+            :class="{ 'cal-btn--dragnav': dragData }"
+            @click="goPrev"
+            @dragenter.prevent="startDragNav(-1)"
+            @dragover.prevent
+            @dragleave="stopDragNav"
+            :aria-label="t.calendarPrev"
           >
-            <div class="cal-year__title">{{ month.label }}<span class="cal-year__count">{{ month.count }}</span></div>
-            <div class="cal-year__mini">
-              <div v-for="d in dayHeaders" :key="d" class="cal-year__dow">{{ d }}</div>
-              <div
-                v-for="(cell, i) in month.cells"
-                :key="i"
-                class="cal-year__cell"
-                :class="{
-                  'cal-year__cell--other': !cell.inMonth,
-                  'cal-year__cell--today': cell.isToday,
-                  'cal-year__cell--has-events': cell.count > 0,
-                }"
-                :title="cell.count > 0 ? `${cell.count}` : ''"
-              >{{ cell.dom }}</div>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+          </button>
+          <button type="button" class="cal-btn cal-btn--today" @click="goToday">{{ t.calendarToday }}</button>
+          <button
+            type="button"
+            class="cal-btn cal-btn--icon"
+            :class="{ 'cal-btn--dragnav': dragData }"
+            @click="goNext"
+            @dragenter.prevent="startDragNav(1)"
+            @dragover.prevent
+            @dragleave="stopDragNav"
+            :aria-label="t.calendarNext"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+        </div>
+
+        <div class="cal-toolbar__title">{{ periodTitle }}</div>
+
+        <div class="cal-toolbar__frames">
+          <button
+            v-for="f in timeframes"
+            :key="f"
+            type="button"
+            class="cal-frame-btn"
+            :class="{ 'cal-frame-btn--active': timeframe === f }"
+            @click="setTimeframe(f)"
+          >{{ t['calendarFrame_' + f] }}</button>
+        </div>
+      </div>
+
+      <!-- Custom range inputs -->
+      <div v-if="timeframe === 'custom'" class="cal-custom-range">
+        <label class="cal-custom-range__field">
+          <span>{{ t.calendarFrom }}</span>
+          <input type="date" :value="customStart" @change="setCustomStart($event.target.value)" />
+        </label>
+        <label class="cal-custom-range__field">
+          <span>{{ t.calendarTo }}</span>
+          <input type="date" :value="customEnd" @change="setCustomEnd($event.target.value)" />
+        </label>
+      </div>
+
+      <!-- ============ MONTH ============ -->
+      <div v-if="timeframe === 'month'" class="cal-month">
+        <div class="cal-month__weekdays">
+          <div v-for="(wd, i) in weekdayLabels" :key="i" class="cal-month__weekday">{{ wd }}</div>
+        </div>
+        <div class="cal-month__grid">
+          <div
+            v-for="(day, di) in monthDays"
+            :key="di"
+            class="cal-month__cell"
+            :class="{
+              'cal-month__cell--out': day.getMonth() !== anchorDate.getMonth(),
+              'cal-month__cell--today': isToday(day),
+              'cal-month__cell--drop': dragOverKey === dayKeyOf(day),
+            }"
+            @dragover.prevent="onDayDragOver(day)"
+            @dragleave="onDayDragLeave(day)"
+            @drop.prevent="onDayDrop(day)"
+          >
+            <div class="cal-month__date" @click="drillToDay(day)">{{ day.getDate() }}</div>
+            <div class="cal-month__events">
+              <CalendarEvent
+                v-for="ev in cappedDayEvents(day)"
+                :key="ev.rowId"
+                compact
+                :draggable="canEditDate"
+                :fields="eventColumns"
+                :row="ev.row"
+                :resolve-mapping-formula="resolveMappingFormula"
+                :color="eventColor(ev.row)"
+                :time-label="hasTime ? formatTimeLabel(ev.date) : ''"
+                :cell-font-family="cfg.cellFontFamily || ''"
+                :user-focus-color="cfg.userFocusColor || ''"
+                @chip-click="onEventClick(ev.row)"
+                @mouseenter="onEventHover(ev, $event)"
+                @mouseleave="onEventLeave"
+                @dragstart="onEventDragStart(ev, $event)"
+                @dragend="onEventDragEnd"
+              />
+              <button
+                v-if="dayEventCount(day) > MONTH_CELL_CAP"
+                type="button"
+                class="cal-month__more"
+                @click="drillToDay(day)"
+              >{{ t.calendarMore.replace('{count}', dayEventCount(day) - MONTH_CELL_CAP) }}</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- Below grid -->
-      <div v-if="gridFields.length > 0" class="cal-grid-wrap">
-        <div class="cal-grid-title">{{ t.calBelowGridTitle }} <span class="cal-grid-count">{{ visibleRows.length }}</span></div>
-        <div class="cal-grid-scroll">
-          <table class="cal-grid">
-            <thead>
-              <tr>
-                <th v-for="f in gridFields" :key="f">{{ findColumn(f)?.headerName || f }}</th>
-                <th class="cal-grid__nav-col"></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in visibleRows" :key="'g-' + getRowId(row)" @click="onItemClick(row)">
-                <td v-for="f in gridFields" :key="f">
-                  <KanbanField
-                    :column="findColumn(f)"
-                    :row="row"
-                    :resolve-mapping-formula="resolveMappingFormula"
-                    :is-title="false"
-                    :cell-font-family="cfg.cellFontFamily || ''"
-                    :user-focus-color="cfg.userFocusColor || ''"
-                  />
-                </td>
-                <td class="cal-grid__nav-col" @click.stop>
-                  <NavigationButtons
-                    :row-id="getRowId(row)"
-                    :focus-row-id="navigationFocusRowId"
-                    :tab-value="navigationTabValue"
-                    :message-count="getMessageCount(row)"
-                    :workflow-id="navigationWorkflowId"
-                  />
-                </td>
-              </tr>
-              <tr v-if="visibleRows.length === 0">
-                <td :colspan="gridFields.length + 1" class="cal-grid__empty">{{ t.calNoItems }}</td>
-              </tr>
-            </tbody>
-          </table>
+      <!-- ============ TIME-GRID (day / week with timestamps) ============ -->
+      <div v-else-if="isTimeGrid" class="cal-timegrid">
+        <div class="cal-timegrid__head">
+          <div class="cal-timegrid__gutter-head"></div>
+          <div
+            v-for="(day, di) in rangeDays"
+            :key="di"
+            class="cal-timegrid__day-head"
+            :class="{ 'cal-timegrid__day-head--today': isToday(day) }"
+          >
+            <span class="cal-timegrid__day-name">{{ weekdayLabels[di] }}</span>
+            <span class="cal-timegrid__day-num">{{ day.getDate() }}</span>
+          </div>
+        </div>
+        <div class="cal-timegrid__body" ref="timeGridBodyRef">
+          <div class="cal-timegrid__gutter">
+            <div v-for="h in 24" :key="h" class="cal-timegrid__hour-label" :style="{ height: hourPx + 'px' }">
+              {{ hourLabel(h - 1) }}
+            </div>
+          </div>
+          <div
+            v-for="(day, di) in rangeDays"
+            :key="di"
+            class="cal-timegrid__col"
+            :class="{
+              'cal-timegrid__col--today': isToday(day),
+              'cal-timegrid__col--drop': dragOverKey === 'col:' + di,
+            }"
+            @dragover.prevent="onColDragOver(di)"
+            @dragleave="dragOverKey = null"
+            @drop.prevent="onColDrop(day, $event)"
+          >
+            <div v-for="h in 24" :key="h" class="cal-timegrid__hour-line" :style="{ height: hourPx + 'px' }"></div>
+            <div
+              v-for="ev in timeGridEvents(day)"
+              :key="ev.rowId"
+              class="cal-timegrid__event"
+              :data-tg-key="di + ':' + ev.rowId"
+              :data-ideal="ev.idealTop"
+              :style="{ top: eventTop(di, ev) + 'px' }"
+            >
+              <CalendarEvent
+                :compact="isMobileWidth"
+                :draggable="canEditDate"
+                :fields="eventColumns"
+                :row="ev.row"
+                :resolve-mapping-formula="resolveMappingFormula"
+                :color="eventColor(ev.row)"
+                :time-label="formatTimeLabel(ev.date)"
+                :cell-font-family="cfg.cellFontFamily || ''"
+                :user-focus-color="cfg.userFocusColor || ''"
+                @chip-click="onEventClick(ev.row)"
+                @dragstart="onEventDragStart(ev, $event)"
+                @dragend="onEventDragEnd"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ YEAR ============ -->
+      <div v-else-if="timeframe === 'year'" class="cal-year">
+        <div v-for="m in 12" :key="m" class="cal-year__month">
+          <div class="cal-year__month-title" @click="drillToMonth(m - 1)">{{ monthTitle(m - 1) }}</div>
+          <div class="cal-year__weekdays">
+            <span v-for="(wd, i) in weekdayLabelsNarrow" :key="i">{{ wd }}</span>
+          </div>
+          <div class="cal-year__grid">
+            <button
+              v-for="(day, di) in yearMonthDays(m - 1)"
+              :key="di"
+              type="button"
+              class="cal-year__day"
+              :class="{
+                'cal-year__day--out': day.getMonth() !== (m - 1),
+                'cal-year__day--today': isToday(day),
+                'cal-year__day--has': day.getMonth() === (m - 1) && dayEventCount(day) > 0,
+              }"
+              @click="drillToDay(day)"
+            >
+              {{ day.getDate() }}
+              <span v-if="day.getMonth() === (m - 1) && dayEventCount(day) > 0" class="cal-year__dot"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ WEEK COLUMNS (week, date-only column) ============ -->
+      <div v-else-if="isWeekColumns" class="cal-weekcols">
+        <div
+          v-for="(day, di) in rangeDays"
+          :key="di"
+          class="cal-weekcols__col"
+          :class="{
+            'cal-weekcols__col--today': isToday(day),
+            'cal-weekcols__col--drop': dragOverKey === dayKeyOf(day),
+          }"
+          @dragover.prevent="onDayDragOver(day)"
+          @dragleave="onDayDragLeave(day)"
+          @drop.prevent="onDayDrop(day)"
+        >
+          <div class="cal-weekcols__head" @click="drillToDay(day)">
+            <span class="cal-weekcols__day-name">{{ weekdayLabels[di] }}</span>
+            <span class="cal-weekcols__day-num">{{ day.getDate() }}</span>
+          </div>
+          <div class="cal-weekcols__body">
+            <CalendarEvent
+              v-for="ev in dayColumnEvents(day)"
+              :key="ev.rowId"
+              :compact="isMobileWidth"
+              :draggable="canEditDate"
+              :fields="eventColumns"
+              :row="ev.row"
+              :resolve-mapping-formula="resolveMappingFormula"
+              :color="eventColor(ev.row)"
+              :cell-font-family="cfg.cellFontFamily || ''"
+              :user-focus-color="cfg.userFocusColor || ''"
+              @chip-click="onEventClick(ev.row)"
+              @dragstart="onEventDragStart(ev, $event)"
+              @dragend="onEventDragEnd"
+            />
+            <div v-if="dayColumnEvents(day).length === 0" class="cal-weekcols__empty"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ AGENDA (day without time, or custom) ============ -->
+      <div v-else class="cal-agenda">
+        <div v-if="agendaDays.length === 0" class="cal-agenda__empty">{{ t.calendarNoEvents }}</div>
+        <div
+          v-for="grp in agendaDays"
+          :key="grp.key"
+          class="cal-agenda__group"
+          :class="{ 'cal-agenda__group--drop': dragOverKey === grp.key }"
+          @dragover.prevent="onDayDragOver(grp.day)"
+          @dragleave="onDayDragLeave(grp.day)"
+          @drop.prevent="onDayDrop(grp.day)"
+        >
+          <div class="cal-agenda__date" :class="{ 'cal-agenda__date--today': isToday(grp.day) }">
+            <span class="cal-agenda__date-num">{{ grp.day.getDate() }}</span>
+            <span class="cal-agenda__date-rest">{{ agendaDateLabel(grp.day) }}</span>
+          </div>
+          <div class="cal-agenda__events">
+            <CalendarEvent
+              v-for="ev in grp.events"
+              :key="ev.rowId"
+              :draggable="canEditDate"
+              :fields="eventColumns"
+              :row="ev.row"
+              :resolve-mapping-formula="resolveMappingFormula"
+              :color="eventColor(ev.row)"
+              :time-label="hasTime ? formatTimeLabel(ev.date) : ''"
+              :cell-font-family="cfg.cellFontFamily || ''"
+              :user-focus-color="cfg.userFocusColor || ''"
+              @chip-click="onEventClick(ev.row)"
+              @dragstart="onEventDragStart(ev, $event)"
+              @dragend="onEventDragEnd"
+            />
+          </div>
         </div>
       </div>
     </template>
 
-    <!-- Config panel -->
+    <!-- Month hover preview: full event card (like the day view), non-interactive -->
+    <div
+      v-if="hoverEvent"
+      ref="hoverCardRef"
+      class="cal-hover-card"
+      :style="{ top: hoverPos.top + 'px', left: hoverPos.left + 'px', opacity: hoverReady ? 1 : 0 }"
+    >
+      <CalendarEvent
+        :key="hoverEvent.rowId"
+        :fields="eventColumns"
+        :row="hoverEvent.row"
+        :resolve-mapping-formula="resolveMappingFormula"
+        :color="eventColor(hoverEvent.row)"
+        :time-label="hasTime ? formatTimeLabel(hoverEvent.date) : ''"
+        :cell-font-family="cfg.cellFontFamily || ''"
+        :user-focus-color="cfg.userFocusColor || ''"
+      />
+    </div>
+
+    <!-- Config panel (mirrors the kanban .cc-panel) -->
     <div ref="configPanelRef" class="cal-config-anchor">
       <Transition name="cc-fade">
         <div v-if="showConfig" class="cc-panel cal-cc-panel" @click.stop>
           <div class="cc-header">
-            <span class="cc-title">{{ t.calSettings }}</span>
-            <button class="cc-close-btn" @click="showConfig = false" :aria-label="t.kanbanClose || 'Close'">
+            <span class="cc-title">{{ t.calendarSettings }}</span>
+            <button class="cc-close-btn" @click="showConfig = false" :aria-label="t.kanbanClose">
               <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
                 <path d="M1 1l12 12M13 1L1 13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
               </svg>
@@ -244,87 +311,92 @@
           </div>
 
           <div class="cc-tabs" role="tablist">
-            <button
-              type="button"
-              class="cc-tab"
-              :class="{ 'cc-tab--active': activeTab === 'date' }"
-              @click="activeTab = 'date'"
-            >{{ t.calTabDate }}</button>
-            <button
-              type="button"
-              class="cc-tab"
-              :class="{ 'cc-tab--active': activeTab === 'fields' }"
-              @click="activeTab = 'fields'"
-            >{{ t.calTabFields }}</button>
-            <button
-              type="button"
-              class="cc-tab"
-              :class="{ 'cc-tab--active': activeTab === 'grid' }"
-              @click="activeTab = 'grid'"
-            >{{ t.calTabGrid }}</button>
+            <button type="button" class="cc-tab" :class="{ 'cc-tab--active': activeTab === 'date' }" role="tab" @click="activeTab = 'date'">{{ t.calendarDateTab }}</button>
+            <button type="button" class="cc-tab" :class="{ 'cc-tab--active': activeTab === 'fields' }" role="tab" @click="activeTab = 'fields'">{{ t.calendarFieldsTab }}</button>
+            <button v-if="cfg.enableFilterBuilder" type="button" class="cc-tab" :class="{ 'cc-tab--active': activeTab === 'filters' }" role="tab" @click="activeTab = 'filters'">{{ t.filtersTab || 'Filters' }}</button>
           </div>
 
           <!-- Date tab -->
           <template v-if="activeTab === 'date'">
             <div class="cc-group-select-row">
-              <label class="cc-group-select-label">{{ t.calDateField }}</label>
+              <label class="cc-group-select-label">{{ t.calendarDateSource }}</label>
               <select
                 class="cc-group-select"
                 :value="dateField || ''"
                 :disabled="dateColumns.length === 0"
                 @change="setDateField($event.target.value || null)"
               >
-                <option value="">{{ t.calNoDateField }}</option>
-                <option v-for="opt in dateColumns" :key="opt.field" :value="opt.field">
-                  {{ opt.headerName || opt.field }}
-                </option>
+                <option value="">{{ t.calendarNoDateField }}</option>
+                <option v-for="opt in dateColumns" :key="opt.field" :value="opt.field">{{ opt.headerName || opt.field }}</option>
               </select>
             </div>
-            <div v-if="dateColumns.length === 0" class="cc-empty">{{ t.calNoDateColumns }}</div>
 
             <div class="cc-group-select-row">
-              <label class="cc-group-select-label">{{ t.calPeriod }}</label>
-              <select
-                class="cc-group-select"
-                :value="period"
-                @change="setPeriod($event.target.value)"
-              >
-                <option v-for="p in periodOptions" :key="p.value" :value="p.value">{{ p.label }}</option>
+              <label class="cc-group-select-label">{{ t.calendarDefaultViewLabel }}</label>
+              <select class="cc-group-select" :value="defaultView" @change="setDefaultView($event.target.value)">
+                <option v-for="f in defaultViewOptions" :key="f" :value="f">{{ t['calendarFrame_' + f] }}</option>
               </select>
             </div>
+
+            <div class="cc-group-select-row">
+              <label class="cc-group-select-label">{{ t.calendarColorBy }}</label>
+              <select class="cc-group-select" :value="colorByField || ''" @change="setColorByField($event.target.value || null)">
+                <option value="">{{ t.calendarNoColor }}</option>
+                <option v-for="opt in selectColumns" :key="opt.field" :value="opt.field">{{ opt.headerName || opt.field }}</option>
+              </select>
+            </div>
+
+            <label class="cc-group-toggle-row">
+              <input type="checkbox" class="cc-checkbox" :checked="weekStartsOn === 1" @change="setWeekStart($event.target.checked ? 1 : 0)" />
+              <span class="cc-group-toggle-label">{{ t.calendarWeekStartsMonday }}</span>
+            </label>
+
+            <div v-if="dateColumns.length === 0" class="cc-empty">{{ t.calendarNoDateColumns }}</div>
           </template>
 
-          <!-- Calendar card fields tab -->
+          <!-- Fields tab -->
           <template v-else-if="activeTab === 'fields'">
-            <div class="cc-fields-meta">
-              <span>{{ cardFieldsCounter }}</span>
+            <div class="cc-search-row">
+              <div class="cc-search-box">
+                <svg class="cc-search-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                  <circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+                  <path d="M10 10l3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+                <input class="cc-search-input" type="text" v-model="fieldSearch" :placeholder="t.kanbanFieldsSearch" @click.stop />
+              </div>
             </div>
+
+            <div class="cc-fields-meta">
+              <span>{{ fieldsCounterText }}</span>
+              <span class="cc-fields-meta__hint">{{ t.calendarFieldsHint }}</span>
+            </div>
+
             <div class="cc-list">
               <div
-                v-for="col in availableFields"
+                v-for="col in filteredFieldList"
                 :key="col.field"
                 class="cc-row"
                 :class="{
-                  'cc-row--drag-over': cardFieldDragOver === col.field && cardFieldDrag !== col.field,
-                  'cc-row--dragging': cardFieldDrag === col.field,
+                  'cc-row--drag-over': fieldDragOver === col.field && fieldDrag !== col.field,
+                  'cc-row--dragging': fieldDrag === col.field,
                 }"
-                :title="isCardFieldDisabled(col.field) ? cardMaxTooltip : null"
-                :draggable="cardFields.includes(col.field)"
-                @dragstart="onCardFieldDragStart(col.field)"
-                @dragover.prevent="onCardFieldDragOver(col.field)"
-                @drop.prevent="onCardFieldDrop(col.field)"
-                @dragend="onCardFieldDragEnd"
+                :title="isFieldDisabled(col.field) ? maxFieldsTooltip : null"
+                :draggable="!fieldSearch && eventFields.includes(col.field)"
+                @dragstart="onFieldDragStart(col.field)"
+                @dragover.prevent="onFieldDragOver(col.field)"
+                @drop.prevent="onFieldDrop(col.field)"
+                @dragend="onFieldDragEnd"
               >
-                <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': isCardFieldDisabled(col.field) }">
+                <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': isFieldDisabled(col.field) }">
                   <input
                     type="checkbox"
                     class="cc-checkbox"
-                    :checked="cardFields.includes(col.field)"
-                    :disabled="isCardFieldDisabled(col.field)"
-                    @change="toggleCardField(col.field)"
+                    :checked="eventFields.includes(col.field)"
+                    :disabled="isFieldDisabled(col.field)"
+                    @change="toggleEventField(col.field)"
                   />
                 </label>
-                <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !cardFields.includes(col.field) }">
+                <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !eventFields.includes(col.field) || !!fieldSearch }">
                   <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
                     <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
                     <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
@@ -332,51 +404,20 @@
                   </svg>
                 </span>
                 <span class="cc-col-name">{{ col.headerName || col.field }}</span>
-                <span v-if="cardFields.indexOf(col.field) === 0" class="cc-field-badge">{{ t.kanbanTitleBadge || 'Title' }}</span>
+                <span v-if="eventFields.indexOf(col.field) === 0" class="cc-field-badge">{{ t.kanbanTitleBadge }}</span>
               </div>
-              <div v-if="availableFields.length === 0" class="cc-empty">{{ t.kanbanNoFieldsMatch || 'No fields.' }}</div>
+              <div v-if="filteredFieldList.length === 0" class="cc-empty">{{ t.kanbanNoFieldsMatch }}</div>
             </div>
           </template>
 
-          <!-- Below-grid fields tab -->
-          <template v-else-if="activeTab === 'grid'">
-            <div class="cc-fields-meta">
-              <span>{{ gridFieldsCounter }}</span>
-            </div>
-            <div class="cc-list">
-              <div
-                v-for="col in availableGridFields"
-                :key="col.field"
-                class="cc-row"
-                :class="{
-                  'cc-row--drag-over': gridFieldDragOver === col.field && gridFieldDrag !== col.field,
-                  'cc-row--dragging': gridFieldDrag === col.field,
-                }"
-                :draggable="gridFields.includes(col.field)"
-                @dragstart="onGridFieldDragStart(col.field)"
-                @dragover.prevent="onGridFieldDragOver(col.field)"
-                @drop.prevent="onGridFieldDrop(col.field)"
-                @dragend="onGridFieldDragEnd"
-              >
-                <label class="cc-checkbox-wrap">
-                  <input
-                    type="checkbox"
-                    class="cc-checkbox"
-                    :checked="gridFields.includes(col.field)"
-                    @change="toggleGridField(col.field)"
-                  />
-                </label>
-                <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !gridFields.includes(col.field) }">
-                  <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
-                    <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
-                    <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
-                    <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
-                  </svg>
-                </span>
-                <span class="cc-col-name">{{ col.headerName || col.field }}</span>
-              </div>
-              <div v-if="availableGridFields.length === 0" class="cc-empty">{{ t.kanbanNoFieldsMatch || 'No fields.' }}</div>
-            </div>
+          <!-- Filters tab (Filter Builder) -->
+          <template v-else-if="activeTab === 'filters'">
+            <FilterBuilder
+              :columns="filterBuilderColumns"
+              :model-value="normalizedAdvancedFilters"
+              :data-source="cfg.dataSource"
+              @update:model-value="setAdvancedFilters"
+            />
           </template>
         </div>
       </Transition>
@@ -385,62 +426,55 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import KanbanField from '../kanban/components/KanbanField.vue';
-import NavigationButtons from '../kanban/components/NavigationButtons.vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import CalendarEvent from './components/CalendarEvent.vue';
+import FilterBuilder from '../shared/components/FilterBuilder.vue';
+import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
+import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
+import { useResponsive } from '../shared/composables/useResponsive.js';
 import { getTranslations } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
+import {
+  parseEventDate,
+  startOfDay,
+  dayKey,
+  isSameDay,
+  addDays,
+  getRange,
+  buildMonthGrid,
+  daysBetween,
+  bucketEventsByDay,
+  weekdayNames,
+  periodLabel,
+  monthName,
+  formatTime,
+} from './utils/calendarUtils.js';
 
-const MAX_CARD_FIELDS = 3;
-const MAX_GRID_FIELDS = 8;
-const PERIODS = ['day', 'week', 'month', 'year'];
+const MAX_EVENT_FIELDS = 5;
+const MONTH_CELL_CAP = 3;
+const HOUR_PX = 44;
+const SLOT_PX = 52; // assumed time-grid card height, used to detect overlaps
+const TIMEGRID_GAP = 8; // minimum vertical gap between stacked time-grid events
+const TIMEFRAMES = ['day', 'week', 'month', 'year', 'custom'];
 
-// Local fallbacks used when getTranslations() doesn't include calendar keys yet.
-const CAL_FALLBACK = {
-  calEmptyTitle: 'Configure your calendar',
-  calEmptySubtitle: 'Pick a date field from the configuration panel.',
-  calSettings: 'Calendar settings',
-  calTabDate: 'Date',
-  calTabFields: 'Item fields',
-  calTabGrid: 'Grid columns',
-  calDateField: 'Date field',
-  calNoDateField: 'No date field',
-  calNoDateColumns: 'No date or date-time columns available.',
-  calPeriod: 'Period',
-  calToday: 'Today',
-  calPrev: 'Previous',
-  calNext: 'Next',
-  calNoItems: 'No items in this range.',
-  calBelowGridTitle: 'Records in view',
-  calPeriodDay: 'Day',
-  calPeriodWeek: 'Week',
-  calPeriodMonth: 'Month',
-  calPeriodYear: 'Year',
-  calCardFieldsCounter: '{count} / {max} item fields selected',
-  calGridFieldsCounter: '{count} / {max} grid columns selected',
-  calCardMaxTooltip: 'Maximum {max} item fields',
-};
+// Navigation workflow run on event click — same global workflow + parameters as
+// the grid's navigation button. `tab` is the value of a global formula.
+const NAV_WORKFLOW_ID = 'd4ab2a61-2728-4dc3-a144-9fd3d558411e';
+const NAV_TAB_FORMULA_ID = 'ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd';
 
-const tr = (t, key) => (t && t[key]) || CAL_FALLBACK[key] || key;
+// Fallback WeWeb Object variable used to persist calendar navigation state when
+// the "Calendar State — Variable ID" setting is left empty (e.g. on component
+// instances placed before that setting existed). Overridden by the setting.
+const DEFAULT_STATE_VAR_ID = '39535f5a-df56-47e4-b54a-8e963e02302f';
 
-// ---- date helpers (local) ----
-const startOfDay = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
-const endOfDay   = (d) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x; };
-const addDays    = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
-const addMonths  = (d, n) => { const x = new Date(d); x.setMonth(x.getMonth() + n); return x; };
-const addYears   = (d, n) => { const x = new Date(d); x.setFullYear(x.getFullYear() + n); return x; };
-const startOfWeek = (d) => {
-  const x = startOfDay(d);
-  // Monday as week start. JS getDay(): 0=Sun ... 6=Sat
-  const dow = (x.getDay() + 6) % 7;
-  return addDays(x, -dow);
-};
-const isoDay = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+// Per-instance calendar navigation state (timeframe + anchor), keyed by uid.
+// Module-level so it survives component unmount/remount during SPA page
+// navigation, but resets on a full page reload.
+const NAV_STATE_CACHE = new Map();
 
 export default {
   name: 'Calendar',
-  components: { KanbanField, NavigationButtons },
+  components: { CalendarEvent, FilterBuilder },
   props: {
     content: { type: Object, required: true },
     uid: { type: String, required: true },
@@ -452,7 +486,7 @@ export default {
   setup(props, ctx) {
     const { resolveMappingFormula } = wwLib.wwFormula.useFormula();
 
-    // ---- merged config (same shape as kanban) ----
+    // Merged config — identical pattern to Datagrid.vue / Kanban.vue.
     const cfg = computed(() => {
       const content = props.content;
       if (!content || typeof content !== 'object') return content ?? {};
@@ -463,40 +497,15 @@ export default {
       excludeSet.add('baseConfig');
       excludeSet.add('baseConfigExcludes');
       const merged = { ...content };
-      for (const key of Object.keys(base)) if (!excludeSet.has(key)) merged[key] = base[key];
+      for (const key of Object.keys(base)) {
+        if (!excludeSet.has(key)) merged[key] = base[key];
+      }
       return merged;
     });
 
     const t = computed(() => getTranslations(cfg.value?.lang || 'en'));
+    const lang = computed(() => cfg.value?.lang || 'en');
 
-    const periodOptions = computed(() => [
-      { value: 'day', label: tr(t.value, 'calPeriodDay') },
-      { value: 'week', label: tr(t.value, 'calPeriodWeek') },
-      { value: 'month', label: tr(t.value, 'calPeriodMonth') },
-      { value: 'year', label: tr(t.value, 'calPeriodYear') },
-    ]);
-
-    // ---- navigation buttons context (mirrors kanban) ----
-    const NAVIGATION_TAB_FORMULA = {
-      type: 'f',
-      code: "formulas['ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd']()",
-    };
-    const NAVIGATION_WORKFLOW_ID = 'd4ab2a61-2728-4dc3-a144-9fd3d558411e';
-    const navigationFocusRowId = computed(() => cfg.value?.focusedRowId);
-    const navigationTabValue = computed(() =>
-      Number(resolveMappingFormula(NAVIGATION_TAB_FORMULA) ?? 0)
-    );
-    const navigationWorkflowId = computed(() => NAVIGATION_WORKFLOW_ID);
-    const getMessageCount = (row) => {
-      const formula = cfg.value?.navigationMessageCountFormula;
-      if (formula) {
-        const v = resolveMappingFormula(formula, row);
-        if (v != null && v !== '') return Number(v) || 0;
-      }
-      return row?.conversation?.messages?.length ?? 0;
-    };
-
-    // ---- css variables (mirrors kanban) ----
     const cssVars = computed(() => ({
       '--ag-foreground-color': cfg.value?.textColor || cfg.value?.cellColor || '#1f2937',
       '--ag-background-color': cfg.value?.backgroundColor || '#ffffff',
@@ -505,88 +514,91 @@ export default {
       '--ww-data-grid_cc-border-color': cfg.value?.columnChooserBorderColor || cfg.value?.borderColor || 'rgba(0,0,0,0.08)',
       '--ww-data-grid_cc-text-color': cfg.value?.columnChooserTextColor || cfg.value?.textColor || '#1f2937',
       '--ww-data-grid_cc-accent-color': cfg.value?.columnChooserAccentColor || '#3b82f6',
+      // Filter Builder accent — driven by the cell Selection Border Color.
+      '--ww-data-grid_filter-accent-color': cfg.value?.cellSelectionBorderColor || cfg.value?.columnChooserAccentColor || '#2563eb',
       '--ww-data-grid_cc-border-radius': cfg.value?.columnChooserBorderRadius || '8px',
-      '--ww-data-grid_cc-width': cfg.value?.columnChooserWidth || '320px',
-      '--ww-data-grid_navigation-bg': cfg.value?.navigationButtonBackground ?? 'transparent',
-      '--ww-data-grid_navigation-hoverBg': cfg.value?.navigationButtonHoverBackground ?? 'rgba(0,0,0,0.04)',
-      '--ww-data-grid_navigation-focusBg': cfg.value?.navigationButtonFocusBackground ?? 'rgba(0,0,0,0.08)',
-      '--ww-data-grid_navigation-iconColor': cfg.value?.navigationIconColor ?? 'currentColor',
-      '--ww-data-grid_navigation-borderColor':
-        cfg.value?.navigationBorderColor || cfg.value?.borderColor || '#e5e7eb',
-      '--ww-data-grid_navigation-focusBorderColor':
-        cfg.value?.navigationFocusBorderColor ||
-        cfg.value?.navigationBorderColor ||
-        cfg.value?.borderColor ||
-        '#e5e7eb',
-      '--ww-data-grid_navigation-chatActiveBg':
-        cfg.value?.navigationChatActiveBackground ?? 'rgba(59,130,246,0.12)',
-      '--ww-data-grid_navigation-badgeBg': cfg.value?.navigationBadgeBackground ?? '#ef4444',
-      '--ww-data-grid_navigation-badgeColor': cfg.value?.navigationBadgeTextColor ?? '#ffffff',
+      // Border used to mark the current day (instead of a background fill).
+      // Driven by the "Selection Border Color" style property; falls back to
+      // the accent color so today stays visible when it isn't set.
+      '--cal-today-border-color': cfg.value?.cellSelectionBorderColor || cfg.value?.columnChooserAccentColor || '#3b82f6',
       fontFamily: cfg.value?.cellFontFamily || 'inherit',
     }));
 
-    // ---- local state ----
+    // Root height — keeps the calendar height-bounded so it scrolls internally
+    // instead of overflowing its WeWeb wrapper.
+    //  - "auto" Height Mode: size to content (the page scrolls).
+    //  - "fixed" Height Mode: use the configured Grid Height. An empty or "auto"
+    //    Grid Height means "fill the wrapper" (height:100%), so the calendar
+    //    adapts to a wrapper sized by the surrounding page layout. A px value
+    //    (e.g. 600px) gives the calendar its own bounded height instead.
+    const rootStyle = computed(() => {
+      if (cfg.value?.layout === 'auto') return {};
+      const h = cfg.value?.height;
+      const fill = !h || h === 'auto';
+      return { height: fill ? '100%' : h, minHeight: '0' };
+    });
+
+    // Filter Builder state (shared `advancedFilters` component variable).
+    const {
+      normalizedAdvancedFilters,
+      setAdvancedFilters,
+    } = useAdvancedFilters(props, { getDefault: () => cfg.value?.defaultAdvancedFilters });
+    const filterBuilderColumns = computed(() => cfg.value?.columns || []);
+
+    // ---- Local state, hydrated from viewConfiguration.calendar ----
     const dateField = ref(null);
-    const period = ref('month');
-    const cardFields = ref([]);
-    const gridFields = ref([]);
-    const cursor = ref(startOfDay(new Date())); // current focused date
+    const eventFields = ref([]);
+    const colorByField = ref(null);
+    const defaultView = ref('month'); // saved default timeframe (part of the view)
+    const timeframe = ref('month');   // live/navigated timeframe (not a saved edit)
+    const anchorDate = ref(startOfDay(new Date()));
+    const customStart = ref('');
+    const customEnd = ref('');
+    const weekStartsOn = ref(1);
 
     const showConfig = ref(false);
     const activeTab = ref('date');
+    const fieldSearch = ref('');
 
-    const cardFieldDrag = ref(null);
-    const cardFieldDragOver = ref(null);
-    const gridFieldDrag = ref(null);
-    const gridFieldDragOver = ref(null);
+    const fieldDrag = ref(null);
+    const fieldDragOver = ref(null);
 
     const rootRef = ref(null);
     const configPanelRef = ref(null);
 
-    // Apply / write gating, same shape as kanban.
+    // Component-width based responsive state (toggles .is-compact / .is-mobile on
+    // the root); all views reflow via CSS keyed off these classes.
+    const { isCompact: isCompactWidth, isMobile: isMobileWidth } = useResponsive(rootRef);
+
+    // viewEdited write gating (mirrors Kanban).
     const isApplyingConfig = ref(true);
     const firstApplyDone = ref(false);
     let applyConfigGen = 0;
 
-    // ---- columns helpers ----
     const findColumn = (field) => {
       if (!field) return null;
-      return (cfg.value?.columns || []).find((c) => c?.field === field) || null;
+      return (cfg.value?.columns || []).find(c => c?.field === field) || null;
     };
-    const isDateColumn = (c) =>
-      !!c && !!c.field && (c.cellDataType === 'dateString' || c.cellDataType === 'dateTime');
-    const dateColumns = computed(() =>
-      (cfg.value?.columns || []).filter(isDateColumn)
-    );
-    const availableFields = computed(() => {
+
+    const dateColumns = computed(() => {
       const cols = cfg.value?.columns || [];
-      const filtered = cols.filter((c) => c && c.field && c.cellDataType !== 'action');
-      // selected first, then the rest
-      const selected = cardFields.value.map((f) => filtered.find((c) => c.field === f)).filter(Boolean);
-      const rest = filtered.filter((c) => !cardFields.value.includes(c.field));
-      return [...selected, ...rest];
-    });
-    const availableGridFields = computed(() => {
-      const cols = cfg.value?.columns || [];
-      const filtered = cols.filter((c) => c && c.field && c.cellDataType !== 'action');
-      const selected = gridFields.value.map((f) => filtered.find((c) => c.field === f)).filter(Boolean);
-      const rest = filtered.filter((c) => !gridFields.value.includes(c.field));
-      return [...selected, ...rest];
+      return cols.filter(c => c && c.field && (c.cellDataType === 'dateString' || c.cellDataType === 'dateTime'));
     });
 
-    const cardFieldsCounter = computed(() =>
-      tr(t.value, 'calCardFieldsCounter')
-        .replace('{count}', cardFields.value.length)
-        .replace('{max}', MAX_CARD_FIELDS)
-    );
-    const gridFieldsCounter = computed(() =>
-      tr(t.value, 'calGridFieldsCounter')
-        .replace('{count}', gridFields.value.length)
-        .replace('{max}', MAX_GRID_FIELDS)
-    );
-    const cardMaxTooltip = computed(() =>
-      tr(t.value, 'calCardMaxTooltip').replace('{max}', MAX_CARD_FIELDS)
-    );
+    const selectColumns = computed(() => {
+      const cols = cfg.value?.columns || [];
+      return cols.filter(c => c && c.field && c.cellDataType === 'select');
+    });
+
+    const availableFields = computed(() => {
+      const cols = cfg.value?.columns || [];
+      return cols.filter(c => c && c.field && c.cellDataType !== 'action');
+    });
+
+    const firstFieldFallback = () => {
+      const first = availableFields.value[0];
+      return first ? [first.field] : [];
+    };
 
     // ---- viewConfiguration sync ----
     const readCalendarFromViewConfig = () => {
@@ -595,49 +607,94 @@ export default {
       return c;
     };
 
+    // Snapshot of the view-defining state. Excludes navigation state — the anchor
+    // date, custom range, AND the timeframe — because moving between day/week/
+    // month/year/custom is navigation, not a view edit. `viewEdited` is computed
+    // against the LAST APPLIED snapshot (not the raw viewConfiguration), so
+    // auto-applied defaults (e.g. the min-1 eventFields fallback) never count as
+    // a user edit. Only the user changing the view's definition diverges.
+    // Normalize an advanced-filters object for comparison/persistence.
+    const normAdvanced = (v) => {
+      const conditions = Array.isArray(v?.conditions) ? v.conditions : [];
+      return { combinator: conditions.length ? (v?.combinator === 'or' ? 'or' : 'and') : 'and', conditions };
+    };
+
+    const snapshotViewState = () => ({
+      dateField: dateField.value ?? null,
+      eventFields: [...eventFields.value],
+      colorByField: colorByField.value ?? null,
+      defaultView: defaultView.value,
+      weekStartsOn: weekStartsOn.value,
+      advancedFilters: normAdvanced(normalizedAdvancedFilters.value),
+    });
+    let appliedBaseline = null;
+
+
     const applyViewConfig = () => {
       const c = readCalendarFromViewConfig();
       isApplyingConfig.value = true;
       const myGen = ++applyConfigGen;
-      const validFields = new Set((cfg.value?.columns || []).map((x) => x?.field).filter(Boolean));
-      const validDateFields = new Set(dateColumns.value.map((x) => x.field));
+      const validFields = new Set((cfg.value?.columns || []).map(col => col?.field).filter(Boolean));
+      const validDate = (f) => dateColumns.value.some(col => col.field === f);
 
       if (c) {
-        dateField.value = c.dateField && validDateFields.has(c.dateField) ? c.dateField : null;
-        period.value = PERIODS.includes(c.period) ? c.period : 'month';
-        cardFields.value = Array.isArray(c.cardFields)
-          ? c.cardFields.filter((f) => validFields.has(f)).slice(0, MAX_CARD_FIELDS)
+        dateField.value = c.dateField && validDate(c.dateField) ? c.dateField : null;
+        const cleaned = Array.isArray(c.eventFields)
+          ? c.eventFields.filter(f => validFields.has(f)).slice(0, MAX_EVENT_FIELDS)
           : [];
-        gridFields.value = Array.isArray(c.gridFields)
-          ? c.gridFields.filter((f) => validFields.has(f)).slice(0, MAX_GRID_FIELDS)
-          : [];
+        eventFields.value = cleaned.length ? cleaned : firstFieldFallback();
+        colorByField.value = c.colorByField && selectColumns.value.some(col => col.field === c.colorByField) ? c.colorByField : null;
+        defaultView.value = defaultViewOptions.includes(c.defaultView) ? c.defaultView : 'month';
+        // The calendar opens on the saved default view. Navigation moves from here.
+        timeframe.value = defaultView.value;
+        // Always open on the current period (today).
+        anchorDate.value = startOfDay(new Date());
+        customStart.value = c.customStart || '';
+        customEnd.value = c.customEnd || '';
+        weekStartsOn.value = c.weekStartsOn === 0 ? 0 : 1;
       } else {
-        dateField.value = dateColumns.value[0]?.field || null;
-        period.value = 'month';
-        cardFields.value = [];
-        gridFields.value = [];
+        dateField.value = null;
+        eventFields.value = firstFieldFallback();
+        colorByField.value = null;
+        defaultView.value = 'month';
+        timeframe.value = 'month';
+        anchorDate.value = startOfDay(new Date());
+        customStart.value = '';
+        customEnd.value = '';
+        weekStartsOn.value = 1;
       }
+
+      // Restore advanced (Filter Builder) filters when present in the view config.
+      // Only when the key exists, so an absent key keeps the seeded defaults.
+      const vc = cfg.value?.viewConfiguration;
+      if (vc && typeof vc === 'object' && 'advancedFilters' in vc) {
+        const adv = vc.advancedFilters;
+        setAdvancedFilters({
+          combinator: adv?.combinator === 'or' ? 'or' : 'and',
+          conditions: Array.isArray(adv?.conditions) ? adv.conditions : [],
+        });
+      }
+
+      // Baseline = exactly what we just applied, so the auto-defaults aren't
+      // mistaken for user edits.
+      appliedBaseline = snapshotViewState();
 
       setTimeout(() => {
         if (myGen !== applyConfigGen) return;
         isApplyingConfig.value = false;
         firstApplyDone.value = true;
-        const variableId = cfg.value?.viewEditedVariableId;
-        if (variableId) {
-          try { wwLib.wwVariable.updateValue(variableId, false); } catch (_) { /* noop */ }
-        }
+        settleViewEdited();
       }, 0);
     };
 
-    // Exposed currentConfig variable (matches Datagrid/Kanban — only one view
-    // mounts at a time, so no double-registration at runtime).
-    const { setValue: setCurrentConfig } = wwLib.wwVariable.useComponentVariable({
-      uid: props.uid,
-      name: 'currentConfig',
-      type: 'object',
-      defaultValue: { calendar: { dateField: null, period: 'month', cardFields: [], gridFields: [] } },
-      readonly: true,
-    });
+    const { value: currentConfig, setValue: setCurrentConfig } =
+      wwLib.wwVariable.useComponentVariable({
+        uid: props.uid,
+        name: 'currentConfig',
+        type: 'object',
+        defaultValue: { calendar: { dateField: null, eventFields: [], timeframe: 'month' } },
+        readonly: true,
+      });
 
     const arraysEqual = (a, b) => {
       if (!Array.isArray(a) || !Array.isArray(b)) return false;
@@ -646,60 +703,161 @@ export default {
       return true;
     };
 
+    // True only when the user has diverged the view from the applied baseline.
+    // The live `timeframe` is intentionally excluded — switching views is
+    // navigation; only the saved `defaultView` counts as a view edit.
+    const computeEdited = () => {
+      const base = appliedBaseline || snapshotViewState();
+      const curAdvanced = normAdvanced(normalizedAdvancedFilters.value);
+      const baseAdvanced = base.advancedFilters || normAdvanced(null);
+      return (
+        base.dateField !== (dateField.value ?? null) ||
+        !arraysEqual(base.eventFields, eventFields.value) ||
+        base.colorByField !== (colorByField.value ?? null) ||
+        base.defaultView !== defaultView.value ||
+        base.weekStartsOn !== weekStartsOn.value ||
+        baseAdvanced.combinator !== curAdvanced.combinator ||
+        JSON.stringify(baseAdvanced.conditions) !== JSON.stringify(curAdvanced.conditions)
+      );
+    };
+    // Write the current edited state to the shared WeWeb variable.
+    const settleViewEdited = () => {
+      const variableId = cfg.value?.viewEditedVariableId;
+      if (!variableId) return;
+      try { wwLib.wwVariable.updateValue(variableId, computeEdited()); } catch (_) { /* noop */ }
+    };
+
     const writeCurrentConfig = () => {
       const config = {
         calendar: {
           dateField: dateField.value,
-          period: period.value,
-          cardFields: [...cardFields.value],
-          gridFields: [...gridFields.value],
+          eventFields: [...eventFields.value],
+          colorByField: colorByField.value,
+          defaultView: defaultView.value,
+          timeframe: timeframe.value,
+          anchorDate: dayKey(anchorDate.value),
+          customStart: customStart.value || null,
+          customEnd: customEnd.value || null,
+          weekStartsOn: weekStartsOn.value,
         },
+        advancedFilters: normAdvanced(normalizedAdvancedFilters.value),
       };
-      try { setCurrentConfig(config); } catch (_) { /* noop */ }
+      setCurrentConfig(config);
+
       if (isApplyingConfig.value || !firstApplyDone.value) return;
-      const variableId = cfg.value?.viewEditedVariableId;
-      if (!variableId) return;
-      const baseline = readCalendarFromViewConfig() || {};
-      const edited =
-        (baseline.dateField ?? null) !== (dateField.value ?? null) ||
-        (baseline.period ?? 'month') !== period.value ||
-        !arraysEqual(baseline.cardFields || [], cardFields.value) ||
-        !arraysEqual(baseline.gridFields || [], gridFields.value);
-      try { wwLib.wwVariable.updateValue(variableId, edited); } catch (_) { /* noop */ }
+      settleViewEdited();
     };
 
-    watch([dateField, period, cardFields, gridFields], () => writeCurrentConfig(), { deep: true });
+    watch(
+      [dateField, eventFields, colorByField, defaultView, timeframe, anchorDate, customStart, customEnd, weekStartsOn, normalizedAdvancedFilters],
+      () => writeCurrentConfig(),
+      { deep: true }
+    );
     watch(() => cfg.value?.viewConfiguration, () => applyViewConfig(), { deep: true });
+
+    // Reapply when columns change (a column may have been removed).
     watch(() => cfg.value?.columns, () => {
-      const validFields = new Set((cfg.value?.columns || []).map((x) => x?.field).filter(Boolean));
-      const validDateFields = new Set(dateColumns.value.map((x) => x.field));
-      const nextCard = cardFields.value.filter((f) => validFields.has(f));
-      const nextGrid = gridFields.value.filter((f) => validFields.has(f));
-      const dfInvalid = dateField.value && !validDateFields.has(dateField.value);
-      if (!arraysEqual(nextCard, cardFields.value) || !arraysEqual(nextGrid, gridFields.value) || dfInvalid) {
+      const validFields = new Set((cfg.value?.columns || []).map(c => c?.field).filter(Boolean));
+      const nextFields = eventFields.value.filter(f => validFields.has(f));
+      const dateInvalid = dateField.value && !dateColumns.value.some(col => col.field === dateField.value);
+      const colorInvalid = colorByField.value && !selectColumns.value.some(col => col.field === colorByField.value);
+      if (!arraysEqual(nextFields, eventFields.value) || dateInvalid || colorInvalid) {
         isApplyingConfig.value = true;
         const myGen = ++applyConfigGen;
-        cardFields.value = nextCard;
-        gridFields.value = nextGrid;
-        if (dfInvalid) dateField.value = dateColumns.value[0]?.field || null;
-        setTimeout(() => {
-          if (myGen !== applyConfigGen) return;
-          isApplyingConfig.value = false;
-        }, 0);
+        eventFields.value = nextFields.length ? nextFields : firstFieldFallback();
+        if (dateInvalid) dateField.value = null;
+        if (colorInvalid) colorByField.value = null;
+        // Programmatic normalization — fold it into the baseline so it isn't a "user edit".
+        appliedBaseline = snapshotViewState();
+        setTimeout(() => { if (myGen === applyConfigGen) isApplyingConfig.value = false; }, 0);
       }
     }, { deep: true });
 
     onMounted(() => applyViewConfig());
 
-    // ---- supabase data fetch (same shape as kanban) ----
+    // ---- Navigation state persistence (survives SPA page navigation) ----
+    // The live timeframe + anchor (and custom range) are remembered per component
+    // instance in a module-level cache, so leaving the calendar page and coming
+    // back lands on the same day/week/month/year you were viewing. A full page
+    // reload clears the cache, so fresh loads still open on today/default. This
+    // is navigation only — it never touches viewEdited or the viewConfiguration.
+    const buildNavState = () => ({
+      timeframe: timeframe.value,
+      anchorDate: dayKey(anchorDate.value),
+      customStart: customStart.value || null,
+      customEnd: customEnd.value || null,
+    });
+
+    // Optional durable persistence to a WeWeb Object variable. The variable
+    // holds a map keyed by this calendar's `uid`, so a single Object variable
+    // can be bound to several calendar instances without them clobbering each
+    // other. Unlike NAV_STATE_CACHE (module-level, cleared on full reload), the
+    // variable survives reloads and page navigation.
+    const stateVarId = () => cfg.value?.calendarStateVariableId || DEFAULT_STATE_VAR_ID;
+    const readNavStateVar = () => {
+      const varId = stateVarId();
+      if (!varId) return null;
+      try {
+        const all = wwLib.wwVariable.getValue(varId);
+        const entry = all && typeof all === 'object' ? all[props.uid] : null;
+        return entry && typeof entry === 'object' ? entry : null;
+      } catch (_) { return null; }
+    };
+    const writeNavStateVar = (state) => {
+      const varId = stateVarId();
+      if (!varId) return;
+      try {
+        const current = wwLib.wwVariable.getValue(varId);
+        const next = current && typeof current === 'object' ? { ...current } : {};
+        next[props.uid] = state;
+        wwLib.wwVariable.updateValue(varId, next);
+      } catch (_) { /* noop */ }
+    };
+
+    const saveNavState = () => {
+      const state = buildNavState();
+      NAV_STATE_CACHE.set(props.uid, state);
+      writeNavStateVar(state);
+    };
+    const applyNavState = (s) => {
+      if (!s || typeof s !== 'object') return false;
+      if (TIMEFRAMES.includes(s.timeframe)) timeframe.value = s.timeframe;
+      const d = s.anchorDate ? parseEventDate(s.anchorDate) : null;
+      if (d) anchorDate.value = startOfDay(d);
+      customStart.value = s.customStart || '';
+      customEnd.value = s.customEnd || '';
+      return true;
+    };
+    const restoreNavState = () => {
+      // The durable variable wins over the in-memory cache when both exist, so
+      // a fresh page load restores the last saved position.
+      applyNavState(readNavStateVar()) || applyNavState(NAV_STATE_CACHE.get(props.uid));
+    };
+
+    // Registered AFTER the applyViewConfig onMounted above, so it runs after the
+    // defaults (today / default view) are set and overrides them with the last
+    // position. navReady gates saves so the apply phase doesn't clobber storage.
+    const navReady = ref(false);
+    onMounted(() => {
+      restoreNavState();
+      // Persist the current state once on load so the variable is populated
+      // immediately (not only after the first navigation).
+      saveNavState();
+      nextTick(() => { navReady.value = true; });
+    });
+    watch([timeframe, anchorDate, customStart, customEnd], () => { if (navReady.value) saveNavState(); });
+
+    // ---- Data ----
     const supabaseRows = ref([]);
+    const supabaseFetching = ref(false);
     const fetchSupabase = async () => {
       if (cfg.value?.dataSource !== 'supabase') return;
       const tableName = cfg.value?.supabaseTable;
       if (!tableName) return;
       const supabase = wwLib?.wwPlugins?.supabase?.instance;
       if (!supabase) return;
-      const max = Number(cfg.value?.calendarMaxRows) || Number(cfg.value?.kanbanMaxRows) || 1000;
+      const max = Number(cfg.value?.kanbanMaxRows) || 1000;
+      supabaseFetching.value = true;
       try {
         const { data } = await fetchSupabaseDataInfinite({
           supabaseInstance: supabase,
@@ -709,6 +867,7 @@ export default {
           searchValue: null,
           searchableColumns: null,
           filterModel: null,
+          advancedFilters: normalizedAdvancedFilters.value,
           sortModel: null,
           startRow: 0,
           endRow: max,
@@ -722,6 +881,8 @@ export default {
           },
           applySearchToSupabase: (q) => q,
           convertFilterToSupabase: (_, q) => q,
+          convertConditionsToSupabase,
+          content: props.content,
           getSupabaseSortField: (id) => id,
           formatFiltersForLog: () => '(calendar)',
         });
@@ -729,10 +890,12 @@ export default {
       } catch (e) {
         console.warn('[Calendar] Supabase fetch failed:', e?.message || e);
         supabaseRows.value = [];
+      } finally {
+        supabaseFetching.value = false;
       }
     };
     watch(
-      () => [cfg.value?.dataSource, cfg.value?.supabaseTable, cfg.value?.supabaseQuery, cfg.value?.supabaseFilters, cfg.value?.calendarMaxRows],
+      () => [cfg.value?.dataSource, cfg.value?.supabaseTable, cfg.value?.supabaseQuery, cfg.value?.supabaseFilters, cfg.value?.kanbanMaxRows, normalizedAdvancedFilters.value],
       () => fetchSupabase(),
       { deep: true }
     );
@@ -746,276 +909,486 @@ export default {
 
     const getRowId = (row) => {
       const fromFormula = resolveMappingFormula(cfg.value?.idFormula, row);
-      if (fromFormula !== null && fromFormula !== undefined && fromFormula !== '') {
-        return String(fromFormula);
-      }
+      if (fromFormula !== null && fromFormula !== undefined && fromFormula !== '') return String(fromFormula);
       return row?.id != null ? String(row.id) : null;
     };
 
-    const getRowDate = (row) => {
-      const f = dateField.value;
-      if (!f || !row) return null;
-      const raw = row[f];
-      if (raw == null || raw === '') return null;
-      const d = new Date(raw);
-      return isNaN(d.getTime()) ? null : d;
-    };
+    // ---- Derived: columns, events, ranges ----
+    const dateColumn = computed(() => findColumn(dateField.value));
+    const hasTime = computed(() => dateColumn.value?.cellDataType === 'dateTime');
+    const colorByColumn = computed(() => findColumn(colorByField.value));
 
-    // ---- current period range ----
-    const periodRange = computed(() => {
-      const c = cursor.value;
-      switch (period.value) {
-        case 'day': return { start: startOfDay(c), end: endOfDay(c) };
-        case 'week': {
-          const s = startOfWeek(c);
-          return { start: s, end: endOfDay(addDays(s, 6)) };
-        }
-        case 'year': {
-          const s = new Date(c.getFullYear(), 0, 1);
-          return { start: startOfDay(s), end: endOfDay(new Date(c.getFullYear(), 11, 31)) };
-        }
-        case 'month':
-        default: {
-          const s = new Date(c.getFullYear(), c.getMonth(), 1);
-          const e = new Date(c.getFullYear(), c.getMonth() + 1, 0);
-          return { start: startOfDay(s), end: endOfDay(e) };
-        }
-      }
+    const eventColumns = computed(() => {
+      return eventFields.value.map(f => findColumn(f)).filter(Boolean);
     });
 
-    const visibleRows = computed(() => {
-      if (!dateField.value) return [];
-      const { start, end } = periodRange.value;
-      const out = [];
-      for (const row of allRows.value) {
-        const d = getRowDate(row);
-        if (!d) continue;
-        if (d >= start && d <= end) out.push(row);
-      }
-      out.sort((a, b) => {
-        const da = getRowDate(a)?.getTime() ?? 0;
-        const db = getRowDate(b)?.getTime() ?? 0;
-        return da - db;
+    const eventColor = (row) => {
+      const col = colorByColumn.value;
+      if (!col) return '';
+      const v = row?.[col.field];
+      if (v == null) return '';
+      const opts = Array.isArray(col.options) ? col.options : [];
+      const match = opts.find(o => String(o?.value) === String(v));
+      return match?.color || '';
+    };
+
+    const parsed = computed(() => bucketEventsByDay(allRows.value, dateField.value));
+    const buckets = computed(() => parsed.value.buckets);
+
+    const range = computed(() =>
+      getRange(timeframe.value, anchorDate.value, weekStartsOn.value, customStart.value, customEnd.value)
+    );
+
+    const rangeDays = computed(() => daysBetween(range.value.start, range.value.end));
+
+    const isTimeGrid = computed(() =>
+      (timeframe.value === 'day' || timeframe.value === 'week') && hasTime.value
+    );
+    // Week with a date-only column → Google-style day columns (no time grid).
+    const isWeekColumns = computed(() => timeframe.value === 'week' && !hasTime.value);
+
+    // ---- Month ----
+    const monthDays = computed(() => buildMonthGrid(anchorDate.value, weekStartsOn.value).flat());
+    const dayEvents = (day) => buckets.value.get(dayKey(day)) || [];
+    const dayEventCount = (day) => dayEvents(day).length;
+    const cappedDayEvents = (day) =>
+      dayEvents(day).slice(0, MONTH_CELL_CAP).map(e => ({ row: e.row, date: e.date, rowId: getRowId(e.row) }));
+    // All events for a day (week-columns layout), in time order.
+    const dayColumnEvents = (day) =>
+      dayEvents(day).map(e => ({ row: e.row, date: e.date, rowId: getRowId(e.row) }));
+
+    // ---- Time-grid ----
+    // Events are single points in time (no duration), anchored at their start
+    // time (idealTop). Cards have variable height (depends on how many fields are
+    // shown), so the actual non-overlap stacking is done after render by
+    // measuring each card — see layoutTimeGrid() / eventTop().
+    const timeGridEvents = (day) => {
+      return dayEvents(day)
+        .map(e => {
+          const minutes = e.date.getHours() * 60 + e.date.getMinutes();
+          return { row: e.row, date: e.date, rowId: getRowId(e.row), idealTop: (minutes / 60) * hourPx.value };
+        })
+        .sort((a, b) => a.idealTop - b.idealTop);
+    };
+
+    // Measured non-overlap layout: key `${dayIndex}:${rowId}` -> resolved top px.
+    const timeGridBodyRef = ref(null);
+    const eventTops = ref(new Map());
+    const eventTop = (di, ev) => {
+      const v = eventTops.value.get(di + ':' + ev.rowId);
+      return v != null ? v : ev.idealTop;
+    };
+
+    // Hour row height. Stretches so the 24 hours fill the visible body height
+    // (lines reach the bottom of the component); never shrinks below HOUR_PX, so
+    // a short component scrolls instead.
+    const hourPx = ref(HOUR_PX);
+    const computeHourPx = () => {
+      const body = timeGridBodyRef.value;
+      const h = body?.clientHeight || 0;
+      if (!h) return;
+      hourPx.value = Math.max(HOUR_PX, h / 24);
+    };
+
+    // For each day column, walk its event cards in time order and push each down
+    // to clear the previous card's measured bottom + gap, so taller (multi-field)
+    // cards never overlap the next event.
+    const layoutTimeGrid = () => {
+      const body = timeGridBodyRef.value;
+      if (!body) return;
+      const next = new Map();
+      body.querySelectorAll('.cal-timegrid__col').forEach(col => {
+        let lastBottom = -Infinity;
+        col.querySelectorAll('.cal-timegrid__event').forEach(el => {
+          const ideal = parseFloat(el.dataset.ideal) || 0;
+          let top = ideal;
+          if (top < lastBottom + TIMEGRID_GAP) top = lastBottom + TIMEGRID_GAP;
+          lastBottom = top + (el.offsetHeight || SLOT_PX);
+          next.set(el.dataset.tgKey, top);
+        });
       });
+      eventTops.value = next;
+    };
+
+    // Re-measure after any change that affects which cards render or how tall
+    // they are. Heights are independent of `top`, so applying the new tops never
+    // re-triggers a height change (no layout loop).
+    watch(
+      () => [allRows.value, eventFields.value, dateField.value, timeframe.value, anchorDate.value, weekStartsOn.value, hasTime.value],
+      () => nextTick(layoutTimeGrid),
+      { deep: true }
+    );
+    const relayoutTimeGrid = () => { computeHourPx(); nextTick(layoutTimeGrid); };
+    let timeGridRO = null;
+    watch(timeGridBodyRef, (el) => {
+      if (timeGridRO) { timeGridRO.disconnect(); timeGridRO = null; }
+      if (el && typeof ResizeObserver !== 'undefined') {
+        timeGridRO = new ResizeObserver(() => relayoutTimeGrid());
+        timeGridRO.observe(el);
+      }
+    });
+    onMounted(() => nextTick(relayoutTimeGrid));
+    onBeforeUnmount(() => { if (timeGridRO) { timeGridRO.disconnect(); timeGridRO = null; } });
+
+    // ---- Year ----
+    const yearMonthDays = (monthIndex) =>
+      buildMonthGrid(new Date(anchorDate.value.getFullYear(), monthIndex, 1), weekStartsOn.value).flat();
+    const monthTitle = (monthIndex) => monthName(monthIndex, lang.value, 'long');
+
+    // ---- Agenda ----
+    const agendaDays = computed(() => {
+      const days = rangeDays.value;
+      const out = [];
+      for (const day of days) {
+        const evs = (buckets.value.get(dayKey(day)) || [])
+          .map(e => ({ row: e.row, date: e.date, rowId: getRowId(e.row) }));
+        if (evs.length) out.push({ key: dayKey(day), day, events: evs });
+      }
       return out;
     });
 
-    // group rows by ISO day (for fast cell lookup in month/week)
-    const rowsByDay = computed(() => {
-      const m = new Map();
-      for (const row of allRows.value) {
-        const d = getRowDate(row);
-        if (!d) continue;
-        const key = isoDay(d);
-        let arr = m.get(key);
-        if (!arr) { arr = []; m.set(key, arr); }
-        arr.push(row);
+    // ---- Labels ----
+    const weekdayLabels = computed(() => {
+      if (timeframe.value === 'day') {
+        // Single column header for day view
+        return [weekdayNames(lang.value, anchorDate.value.getDay(), 'short')[0]];
       }
-      return m;
+      return weekdayNames(lang.value, weekStartsOn.value, 'short');
     });
+    const weekdayLabelsNarrow = computed(() => weekdayNames(lang.value, weekStartsOn.value, 'narrow'));
+    const periodTitle = computed(() => periodLabel(timeframe.value, anchorDate.value, lang.value, range.value));
 
-    // ---- labels ----
-    const monthName = (idx) =>
-      ['January', 'February', 'March', 'April', 'May', 'June',
-       'July', 'August', 'September', 'October', 'November', 'December'][idx];
-    const monthShort = (idx) =>
-      ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][idx];
+    const isToday = (day) => isSameDay(day, new Date());
+    const formatTimeLabel = (date) => formatTime(date, lang.value);
+    const hourLabel = (h) => `${String(h).padStart(2, '0')}:00`;
+    const agendaDateLabel = (day) => periodLabel('day', day, lang.value);
 
-    const dayHeaders = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-    const rangeLabel = computed(() => {
-      const c = cursor.value;
-      switch (period.value) {
-        case 'day': return `${dayHeaderLabel(c)}`;
-        case 'week': {
-          const s = startOfWeek(c);
-          const e = addDays(s, 6);
-          return `${s.getDate()} ${monthShort(s.getMonth())} – ${e.getDate()} ${monthShort(e.getMonth())} ${e.getFullYear()}`;
+    // ---- Navigation ----
+    const goPrev = () => shiftAnchor(-1);
+    const goNext = () => shiftAnchor(1);
+    const goToday = () => { anchorDate.value = startOfDay(new Date()); };
+    const shiftAnchor = (dir) => {
+      const a = anchorDate.value;
+      switch (timeframe.value) {
+        case 'day': anchorDate.value = addDays(a, dir); break;
+        case 'week': anchorDate.value = addDays(a, dir * 7); break;
+        case 'year': anchorDate.value = new Date(a.getFullYear() + dir, a.getMonth(), a.getDate()); break;
+        case 'custom': {
+          const span = Math.max(1, rangeDays.value.length);
+          anchorDate.value = addDays(a, dir * span);
+          break;
         }
-        case 'year': return `${c.getFullYear()}`;
         case 'month':
-        default: return `${monthName(c.getMonth())} ${c.getFullYear()}`;
-      }
-    });
-
-    function dayHeaderLabel(d) {
-      return `${dayHeaders[(d.getDay() + 6) % 7]} ${d.getDate()} ${monthShort(d.getMonth())} ${d.getFullYear()}`;
-    }
-
-    const weekDays = computed(() => {
-      const s = startOfWeek(cursor.value);
-      const today = startOfDay(new Date());
-      const out = [];
-      for (let i = 0; i < 7; i++) {
-        const d = addDays(s, i);
-        const key = isoDay(d);
-        const rows = rowsByDay.value.get(key) || [];
-        out.push({
-          date: d,
-          iso: key,
-          dow: dayHeaders[i],
-          dom: d.getDate(),
-          rows,
-          isToday: sameDay(d, today),
-        });
-      }
-      return out;
-    });
-
-    const monthCells = computed(() => {
-      const c = cursor.value;
-      const firstOfMonth = new Date(c.getFullYear(), c.getMonth(), 1);
-      const gridStart = startOfWeek(firstOfMonth);
-      const today = startOfDay(new Date());
-      const out = [];
-      for (let i = 0; i < 42; i++) {
-        const d = addDays(gridStart, i);
-        const key = isoDay(d);
-        out.push({
-          date: d,
-          iso: key,
-          dom: d.getDate(),
-          inMonth: d.getMonth() === c.getMonth(),
-          isToday: sameDay(d, today),
-          rows: rowsByDay.value.get(key) || [],
-        });
-      }
-      return out;
-    });
-
-    const yearMonths = computed(() => {
-      const year = cursor.value.getFullYear();
-      const today = startOfDay(new Date());
-      const out = [];
-      for (let m = 0; m < 12; m++) {
-        const first = new Date(year, m, 1);
-        const gridStart = startOfWeek(first);
-        const cells = [];
-        let count = 0;
-        for (let i = 0; i < 42; i++) {
-          const d = addDays(gridStart, i);
-          const inMonth = d.getMonth() === m;
-          const rows = inMonth ? (rowsByDay.value.get(isoDay(d)) || []) : [];
-          if (rows.length) count += rows.length;
-          cells.push({
-            inMonth,
-            isToday: sameDay(d, today),
-            dom: d.getDate(),
-            count: rows.length,
-          });
-        }
-        out.push({ idx: m, label: monthShort(m), cells, count });
-      }
-      return out;
-    });
-
-    // ---- toolbar actions ----
-    const goToday = () => { cursor.value = startOfDay(new Date()); };
-    const goPrev = () => {
-      switch (period.value) {
-        case 'day': cursor.value = addDays(cursor.value, -1); break;
-        case 'week': cursor.value = addDays(cursor.value, -7); break;
-        case 'year': cursor.value = addYears(cursor.value, -1); break;
-        case 'month':
-        default: cursor.value = addMonths(cursor.value, -1); break;
-      }
-    };
-    const goNext = () => {
-      switch (period.value) {
-        case 'day': cursor.value = addDays(cursor.value, 1); break;
-        case 'week': cursor.value = addDays(cursor.value, 7); break;
-        case 'year': cursor.value = addYears(cursor.value, 1); break;
-        case 'month':
-        default: cursor.value = addMonths(cursor.value, 1); break;
+        default: anchorDate.value = new Date(a.getFullYear(), a.getMonth() + dir, 1); break;
       }
     };
 
-    const setPeriod = (p) => { if (PERIODS.includes(p)) period.value = p; };
-    const setDateField = (f) => { dateField.value = f || null; };
-
-    const drillToDay = (d) => { cursor.value = startOfDay(d); period.value = 'day'; };
-    const drillToMonth = (idx) => {
-      cursor.value = new Date(cursor.value.getFullYear(), idx, 1);
-      period.value = 'month';
+    const setTimeframe = (f) => { if (TIMEFRAMES.includes(f)) timeframe.value = f; };
+    const drillToDay = (day) => { anchorDate.value = startOfDay(day); timeframe.value = 'day'; };
+    const drillToMonth = (monthIndex) => {
+      anchorDate.value = new Date(anchorDate.value.getFullYear(), monthIndex, 1);
+      timeframe.value = 'month';
+    };
+    const setCustomStart = (v) => { customStart.value = v || ''; };
+    const setCustomEnd = (v) => { customEnd.value = v || ''; };
+    const setWeekStart = (v) => { weekStartsOn.value = v === 0 ? 0 : 1; };
+    // Selectable default views (custom is a navigation-only timeframe, not a default).
+    const defaultViewOptions = TIMEFRAMES.filter(f => f !== 'custom');
+    // Sets the saved default view and switches the current view to preview it.
+    const setDefaultView = (v) => {
+      if (!defaultViewOptions.includes(v)) return;
+      defaultView.value = v;
+      timeframe.value = v;
     };
 
-    // ---- item time label (for day view) ----
-    const pad = (n) => String(n).padStart(2, '0');
-    const formatItemTime = (row) => {
-      const d = getRowDate(row);
-      if (!d) return '';
-      const col = findColumn(dateField.value);
-      if (col?.cellDataType === 'dateTime') {
-        return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    // ---- Config: date / color / fields ----
+    const setDateField = (field) => { dateField.value = field || null; };
+    const setColorByField = (field) => { colorByField.value = field || null; };
+
+    const fieldsCounterText = computed(() =>
+      t.value.kanbanFieldsCounter.replace('{count}', eventFields.value.length).replace('{max}', MAX_EVENT_FIELDS)
+    );
+    const maxFieldsTooltip = computed(() =>
+      (t.value.kanbanMaxFields || 'Maximum {max} fields').replace('{max}', MAX_EVENT_FIELDS)
+    );
+
+    const filteredFieldList = computed(() => {
+      const q = fieldSearch.value.trim().toLowerCase();
+      const list = availableFields.value;
+      if (!q) {
+        const selected = eventFields.value.map(f => list.find(c => c.field === f)).filter(Boolean);
+        const unselected = list.filter(c => !eventFields.value.includes(c.field));
+        return [...selected, ...unselected];
       }
-      return '';
+      return list.filter(c => (c.headerName || c.field).toLowerCase().includes(q));
+    });
+
+    const isFieldDisabled = (field) => {
+      if (eventFields.value.includes(field)) return false;
+      return eventFields.value.length >= MAX_EVENT_FIELDS;
     };
 
-    // ---- click ----
-    const onItemClick = (row) => {
-      const id = getRowId(row);
+    const toggleEventField = (field) => {
+      const idx = eventFields.value.indexOf(field);
+      if (idx >= 0) {
+        // Enforce min 1 — can't remove the last remaining field.
+        if (eventFields.value.length <= 1) return;
+        eventFields.value = eventFields.value.filter(f => f !== field);
+      } else if (eventFields.value.length < MAX_EVENT_FIELDS) {
+        eventFields.value = [...eventFields.value, field];
+      }
+    };
+
+    const onFieldDragStart = (field) => { if (eventFields.value.includes(field)) fieldDrag.value = field; };
+    const onFieldDragOver = (field) => {
+      if (!fieldDrag.value) return;
+      if (eventFields.value.includes(field)) fieldDragOver.value = field;
+    };
+    const onFieldDrop = (target) => {
+      const src = fieldDrag.value;
+      fieldDrag.value = null;
+      fieldDragOver.value = null;
+      if (!src || src === target) return;
+      if (!eventFields.value.includes(target) || !eventFields.value.includes(src)) return;
+      const arr = [...eventFields.value];
+      arr.splice(arr.indexOf(src), 1);
+      arr.splice(arr.indexOf(target), 0, src);
+      eventFields.value = arr;
+    };
+    const onFieldDragEnd = () => { fieldDrag.value = null; fieldDragOver.value = null; };
+
+    // ---- Event click ----
+    // Runs the same global navigation workflow as the grid's navigation button,
+    // with the same parameters: { tab, id, openNewTab }. `tab` is the value of a
+    // global formula; `id` is the clicked row's id. Also emits 'rowClicked' for
+    // parity with the grid/kanban card click.
+    const onEventClick = (row) => {
+      const idFromFormula = resolveMappingFormula(cfg.value?.idFormula, row);
+      const id =
+        idFromFormula !== null && idFromFormula !== undefined && idFromFormula !== ''
+          ? idFromFormula
+          : row?.id;
+
+      let tab = null;
+      try {
+        tab = resolveMappingFormula({ type: 'f', code: `formulas['${NAV_TAB_FORMULA_ID}']()` }, row);
+      } catch (_) { /* noop */ }
+
+      try {
+        wwLib.wwWorkflow.executeGlobal(NAV_WORKFLOW_ID, { tab, id, openNewTab: false });
+      } catch (e) {
+        console.warn('[Calendar] navigation workflow failed:', e?.message || e);
+      }
+
       ctx.emit('trigger-event', {
         name: 'rowClicked',
-        event: { row, id, index: 0, displayIndex: 0 },
+        event: { row, id: getRowId(row), index: 0, displayIndex: 0 },
       });
     };
 
-    // ---- field tab actions ----
-    const isCardFieldDisabled = (field) => {
-      if (cardFields.value.includes(field)) return false;
-      return cardFields.value.length >= MAX_CARD_FIELDS;
-    };
-    const toggleCardField = (field) => {
-      const idx = cardFields.value.indexOf(field);
-      if (idx >= 0) cardFields.value = cardFields.value.filter((f) => f !== field);
-      else if (cardFields.value.length < MAX_CARD_FIELDS) cardFields.value = [...cardFields.value, field];
-    };
-    const onCardFieldDragStart = (field) => {
-      if (!cardFields.value.includes(field)) return;
-      cardFieldDrag.value = field;
-    };
-    const onCardFieldDragOver = (field) => {
-      if (!cardFieldDrag.value || !cardFields.value.includes(field)) return;
-      cardFieldDragOver.value = field;
-    };
-    const onCardFieldDrop = (target) => {
-      const src = cardFieldDrag.value;
-      cardFieldDrag.value = null; cardFieldDragOver.value = null;
-      if (!src || src === target) return;
-      if (!cardFields.value.includes(target) || !cardFields.value.includes(src)) return;
-      const arr = [...cardFields.value];
-      arr.splice(arr.indexOf(src), 1);
-      arr.splice(arr.indexOf(target), 0, src);
-      cardFields.value = arr;
-    };
-    const onCardFieldDragEnd = () => { cardFieldDrag.value = null; cardFieldDragOver.value = null; };
+    // ---- Month hover preview ----
+    // Hovering a compact month chip shows the full event card (like the day
+    // view) in a floating, non-interactive popover positioned near the chip.
+    const hoverEvent = ref(null);
+    const hoverPos = ref({ top: 0, left: 0 });
+    const hoverReady = ref(false); // gates visibility until measured & positioned
+    const hoverCardRef = ref(null);
+    let hoverHideTimer = null;
+    let hoverSourceRect = null; // bounding rect of the hovered chip
+    const HOVER_CARD_W = 260;
+    const HOVER_MARGIN = 8;
 
-    const toggleGridField = (field) => {
-      const idx = gridFields.value.indexOf(field);
-      if (idx >= 0) gridFields.value = gridFields.value.filter((f) => f !== field);
-      else if (gridFields.value.length < MAX_GRID_FIELDS) gridFields.value = [...gridFields.value, field];
+    const onEventHover = (ev, domEvent) => {
+      const el = domEvent?.currentTarget;
+      if (!el) return;
+      if (hoverHideTimer) { clearTimeout(hoverHideTimer); hoverHideTimer = null; }
+      hoverSourceRect = el.getBoundingClientRect();
+      // Provisional position; hidden (hoverReady=false) until measured next tick.
+      hoverPos.value = { top: hoverSourceRect.bottom + 4, left: hoverSourceRect.left };
+      hoverReady.value = false;
+      hoverEvent.value = ev;
+      nextTick(positionHoverCard);
     };
-    const onGridFieldDragStart = (field) => {
-      if (!gridFields.value.includes(field)) return;
-      gridFieldDrag.value = field;
-    };
-    const onGridFieldDragOver = (field) => {
-      if (!gridFieldDrag.value || !gridFields.value.includes(field)) return;
-      gridFieldDragOver.value = field;
-    };
-    const onGridFieldDrop = (target) => {
-      const src = gridFieldDrag.value;
-      gridFieldDrag.value = null; gridFieldDragOver.value = null;
-      if (!src || src === target) return;
-      if (!gridFields.value.includes(target) || !gridFields.value.includes(src)) return;
-      const arr = [...gridFields.value];
-      arr.splice(arr.indexOf(src), 1);
-      arr.splice(arr.indexOf(target), 0, src);
-      gridFields.value = arr;
-    };
-    const onGridFieldDragEnd = () => { gridFieldDrag.value = null; gridFieldDragOver.value = null; };
 
-    // ---- config visibility: same external WeWeb variable as the datagrid's column chooser ----
+    // Clamp the preview so it stays inside BOTH the viewport and the calendar
+    // wrapper. Prefers below the chip; flips above when it would overflow the
+    // bottom. Measured after render so the real card height is used.
+    const positionHoverCard = () => {
+      const card = hoverCardRef.value;
+      const rect = hoverSourceRect;
+      if (!card || !rect) return;
+      const win = (wwLib.getFrontWindow && wwLib.getFrontWindow()) || window;
+      const root = rootRef.value;
+      const rootRect = root
+        ? root.getBoundingClientRect()
+        : { left: 0, top: 0, right: win.innerWidth, bottom: win.innerHeight };
+      const cw = card.offsetWidth || HOVER_CARD_W;
+      const ch = card.offsetHeight || 0;
+
+      // Allowed bounds = intersection of viewport and wrapper, minus a margin.
+      const minLeft = Math.max(HOVER_MARGIN, rootRect.left + 4);
+      const maxRight = Math.min(win.innerWidth - HOVER_MARGIN, rootRect.right - 4);
+      const minTop = Math.max(HOVER_MARGIN, rootRect.top + 4);
+      const maxBottom = Math.min(win.innerHeight - HOVER_MARGIN, rootRect.bottom - 4);
+
+      let left = Math.min(rect.left, maxRight - cw);
+      left = Math.max(minLeft, left);
+
+      let top = rect.bottom + 4;
+      if (top + ch > maxBottom) {
+        const above = rect.top - 4 - ch;
+        top = above >= minTop ? above : Math.max(minTop, maxBottom - ch);
+      }
+      top = Math.max(minTop, Math.min(top, maxBottom - ch));
+
+      hoverPos.value = { top, left };
+      hoverReady.value = true;
+    };
+
+    const onEventLeave = () => {
+      if (hoverHideTimer) clearTimeout(hoverHideTimer);
+      // Small delay so moving between adjacent chips doesn't flicker the popover.
+      hoverHideTimer = setTimeout(() => { hoverEvent.value = null; hoverHideTimer = null; }, 60);
+    };
+
+    // ---- Drag & drop to reschedule (only when the date column is editable) ----
+    const canEditDate = computed(() => !!dateColumn.value?.editable);
+    const dragData = ref(null);     // the event currently being dragged
+    const dragOverKey = ref(null);  // dayKey or 'col:<index>' for drop highlight
+
+    const onEventDragStart = (ev, domEvent) => {
+      if (!canEditDate.value) { domEvent?.preventDefault?.(); return; }
+      dragData.value = ev;
+      hoverEvent.value = null;
+      try {
+        domEvent.dataTransfer.setData('text/plain', String(ev.rowId ?? ''));
+        domEvent.dataTransfer.effectAllowed = 'move';
+      } catch (_) { /* noop */ }
+    };
+    const onEventDragEnd = () => { dragData.value = null; dragOverKey.value = null; stopDragNav(); };
+
+    // Hovering the prev/next buttons during a drag flips the period (month/week/…)
+    // after a short dwell and keeps repeating, so you can drop on another month.
+    let dragNavTimer = null;
+    const stopDragNav = () => { if (dragNavTimer) { clearTimeout(dragNavTimer); dragNavTimer = null; } };
+    const startDragNav = (dir) => {
+      if (!dragData.value || dragNavTimer) return;
+      const tick = () => {
+        if (!dragData.value) { stopDragNav(); return; }
+        if (dir < 0) goPrev(); else goNext();
+        dragNavTimer = setTimeout(tick, 700);
+      };
+      dragNavTimer = setTimeout(tick, 600);
+    };
+
+    const onDayDragOver = (day) => { if (dragData.value) dragOverKey.value = dayKey(day); };
+    const onDayDragLeave = (day) => { if (dragOverKey.value === dayKey(day)) dragOverKey.value = null; };
+    const onDayDrop = (day) => {
+      const ev = dragData.value;
+      dragData.value = null; dragOverKey.value = null; stopDragNav();
+      if (ev) rescheduleEvent(ev, day, null);
+    };
+
+    const onColDragOver = (di) => { if (dragData.value) dragOverKey.value = 'col:' + di; };
+    const onColDrop = (day, domEvent) => {
+      const ev = dragData.value;
+      dragData.value = null; dragOverKey.value = null; stopDragNav();
+      if (!ev) return;
+      // Derive the drop time from the vertical position within the day column.
+      let minutes = null;
+      const el = domEvent?.currentTarget;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const y = domEvent.clientY - rect.top;
+        minutes = Math.max(0, Math.min(23 * 60 + 45, Math.round(((y / hourPx.value) * 60) / 15) * 15));
+      }
+      rescheduleEvent(ev, day, minutes);
+    };
+
+    // Serialize the new Date back into the same shape as the original value so we
+    // don't change the column's storage format (epoch / date-only / datetime).
+    const serializeDateValue = (oldValue, d, col) => {
+      const pad = (n) => String(n).padStart(2, '0');
+      const ymd = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      if (typeof oldValue === 'number') {
+        const ms = d.getTime();
+        return oldValue < 1e12 ? Math.round(ms / 1000) : ms;
+      }
+      if (typeof oldValue === 'string' && /^\d+$/.test(oldValue.trim())) {
+        const ms = d.getTime();
+        return String(Number(oldValue.trim()) < 1e12 ? Math.round(ms / 1000) : ms);
+      }
+      if (col?.cellDataType === 'dateTime' || (typeof oldValue === 'string' && /\d{2}:\d{2}/.test(oldValue))) {
+        return `${ymd}T${time}`;
+      }
+      return ymd;
+    };
+
+    const updateRowInSupabase = async (rowId, columnId, newValue) => {
+      const updateTable = (cfg.value?.supabaseUpdateTable || '').trim();
+      const queryTable = (cfg.value?.supabaseTable || '').trim();
+      const tableName = updateTable || queryTable;
+      if (!tableName) {
+        console.warn('[Calendar] No writable target — set "Supabase Update Table" or handle cellValueChanged in a workflow.');
+        return null;
+      }
+      const supabase = wwLib?.wwPlugins?.supabase?.instance;
+      if (!supabase) { console.warn('[Calendar] Supabase plugin not available.'); return false; }
+      const idFieldName = (cfg.value?.supabaseIdField || 'id').trim() || 'id';
+      try {
+        const { error } = await supabase.from(tableName).update({ [columnId]: newValue }).eq(idFieldName, rowId);
+        if (error) {
+          const msg = String(error.message || error).toLowerCase();
+          const looksLikeViewError =
+            msg.includes('cannot update') || msg.includes('not updatable') || msg.includes('updatable') ||
+            error.code === '0A000' || error.code === '42809';
+          if (looksLikeViewError && !updateTable) {
+            console.warn(`[Calendar] UPDATE on "${tableName}" failed (non-updatable view?). Set "Supabase Update Table" or handle cellValueChanged in a workflow.`);
+            return null;
+          }
+          console.warn('[Calendar] Supabase update error:', error.message || error);
+          return false;
+        }
+        return true;
+      } catch (e) {
+        console.warn('[Calendar] Supabase update threw:', e?.message || e);
+        return false;
+      }
+    };
+
+    // Optimistic local update + (optional) direct Supabase write + cellValueChanged.
+    const rescheduleEvent = async (ev, targetDay, minutes) => {
+      const col = dateColumn.value;
+      if (!col || !canEditDate.value) return;
+      const field = col.field;
+      const row = ev.row;
+      const oldValue = row?.[field];
+      const orig = parseEventDate(oldValue) || new Date();
+      const useMin = minutes != null ? minutes : orig.getHours() * 60 + orig.getMinutes();
+      const nd = new Date(
+        targetDay.getFullYear(), targetDay.getMonth(), targetDay.getDate(),
+        Math.floor(useMin / 60), useMin % 60, minutes != null ? 0 : orig.getSeconds(), 0
+      );
+      const newValue = serializeDateValue(oldValue, nd, col);
+      if (newValue === oldValue) return;
+
+      // Optimistic local update (rows are deep-reactive, so the event moves).
+      try { row[field] = newValue; } catch (_) { /* noop */ }
+
+      const directUpdate = !!col.isDirectUpdate;
+      if (directUpdate && cfg.value?.dataSource === 'supabase') {
+        const ok = await updateRowInSupabase(ev.rowId, field, newValue);
+        if (ok === false) { try { row[field] = oldValue; } catch (_) { /* noop */ } return; }
+      }
+
+      ctx.emit('trigger-event', {
+        name: 'cellValueChanged',
+        event: { oldValue, newValue, columnId: field, row, isDirectUpdate: directUpdate },
+      });
+    };
+
+    // ---- Config panel open/close (driven by columnChooserVariableId) ----
     const onDocumentClick = (evt) => {
       if (!showConfig.value) return;
       const panel = configPanelRef.value;
@@ -1033,11 +1406,10 @@ export default {
       } else {
         if (clickOutsideTimer) { clearTimeout(clickOutsideTimer); clickOutsideTimer = null; }
         wwLib.getFrontDocument().removeEventListener('click', onDocumentClick);
+        fieldSearch.value = '';
       }
       const varId = cfg.value?.columnChooserVariableId;
-      if (varId) {
-        try { wwLib.wwVariable.updateValue(varId, val); } catch (_) { /* noop */ }
-      }
+      if (varId) { try { wwLib.wwVariable.updateValue(varId, val); } catch (_) { /* noop */ } }
     });
     watch(
       () => {
@@ -1054,42 +1426,48 @@ export default {
     );
     onBeforeUnmount(() => {
       if (clickOutsideTimer) clearTimeout(clickOutsideTimer);
+      if (hoverHideTimer) clearTimeout(hoverHideTimer);
+      stopDragNav();
       try { wwLib.getFrontDocument().removeEventListener('click', onDocumentClick); } catch (_) { /* noop */ }
     });
 
-    // Translation accessor used in the template — keys not yet present in
-    // sharedHelpers fall through to CAL_FALLBACK.
-    const tProxy = computed(() => {
-      const base = t.value || {};
-      const out = { ...base };
-      for (const k of Object.keys(CAL_FALLBACK)) if (out[k] === undefined) out[k] = CAL_FALLBACK[k];
-      return out;
-    });
+    // Exposed method (matches the forwarded-method contract in wwElement.vue).
+    const refreshData = () => fetchSupabase();
 
     return {
-      rootRef, configPanelRef,
-      cfg, cssVars,
-      t: tProxy,
-      periodOptions,
-      dateField, period, cardFields, gridFields, cursor,
-      showConfig, activeTab,
-      cardFieldDrag, cardFieldDragOver, gridFieldDrag, gridFieldDragOver,
-      dateColumns, availableFields, availableGridFields,
-      cardFieldsCounter, gridFieldsCounter, cardMaxTooltip,
-      visibleRows,
-      weekDays, monthCells, yearMonths, dayHeaders,
-      rangeLabel,
-      navigationFocusRowId, navigationTabValue, navigationWorkflowId,
-      resolveMappingFormula,
-      findColumn, getRowId, getMessageCount,
-      goPrev, goNext, goToday, setPeriod, setDateField,
-      drillToDay, drillToMonth,
-      dayHeaderLabel, formatItemTime,
-      onItemClick,
-      isCardFieldDisabled, toggleCardField,
-      onCardFieldDragStart, onCardFieldDragOver, onCardFieldDrop, onCardFieldDragEnd,
-      toggleGridField,
-      onGridFieldDragStart, onGridFieldDragOver, onGridFieldDrop, onGridFieldDragEnd,
+      // refs
+      rootRef, configPanelRef, timeGridBodyRef,
+      // responsive
+      isCompactWidth, isMobileWidth,
+      // Filter Builder
+      normalizedAdvancedFilters, setAdvancedFilters, filterBuilderColumns,
+      // state
+      cfg, cssVars, rootStyle, t,
+      dateField, eventFields, colorByField, defaultView, timeframe, anchorDate,
+      customStart, customEnd, weekStartsOn,
+      showConfig, activeTab, fieldSearch,
+      fieldDrag, fieldDragOver,
+      // constants
+      MAX_EVENT_FIELDS, MONTH_CELL_CAP, hourPx, timeframes: TIMEFRAMES,
+      // computed
+      dateColumns, selectColumns, availableFields, filteredFieldList,
+      hasTime, isTimeGrid, isWeekColumns, eventColumns,
+      monthDays, rangeDays, agendaDays,
+      weekdayLabels, weekdayLabelsNarrow, periodTitle,
+      fieldsCounterText, maxFieldsTooltip,
+      // methods
+      resolveMappingFormula, getRowId,
+      eventColor, dayEvents, dayEventCount, cappedDayEvents, dayColumnEvents, timeGridEvents, eventTop,
+      hoverEvent, hoverPos, hoverReady, hoverCardRef, onEventHover, onEventLeave,
+      canEditDate, dragData, dragOverKey, dayKeyOf: dayKey,
+      onEventDragStart, onEventDragEnd, startDragNav, stopDragNav,
+      onDayDragOver, onDayDragLeave, onDayDrop, onColDragOver, onColDrop,
+      yearMonthDays, monthTitle, isToday, formatTimeLabel, hourLabel, agendaDateLabel,
+      goPrev, goNext, goToday, setTimeframe, drillToDay, drillToMonth,
+      setCustomStart, setCustomEnd, setWeekStart, setDefaultView, defaultViewOptions,
+      setDateField, setColorByField, isFieldDisabled, toggleEventField,
+      onFieldDragStart, onFieldDragOver, onFieldDrop, onFieldDragEnd,
+      onEventClick, refreshData,
     };
   },
 };
@@ -1098,20 +1476,20 @@ export default {
 <style scoped lang="scss">
 .ww-calendar {
   position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: 100%;
+  /* Height is driven inline by `rootStyle` (Height Mode / Grid Height) so the
+     component is always bounded and scrolls internally. min-height:0 lets the
+     flex children shrink and own their scroll areas. */
   min-height: 0;
-  box-sizing: border-box;
   background: var(--ag-background-color, #ffffff);
   color: var(--ag-foreground-color, #1f2937);
   font-family: 'Work Sans', sans-serif;
-  gap: 8px;
-  padding: 12px;
-  overflow: hidden;
 }
 
+/* ===================== Empty state ===================== */
 .cal-empty {
   position: absolute;
   inset: 0;
@@ -1119,7 +1497,7 @@ export default {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 10px;
   padding: 20px;
   text-align: center;
 }
@@ -1131,483 +1509,745 @@ export default {
   line-height: 1.4;
 }
 
-/* Toolbar */
+/* ===================== Toolbar ===================== */
 .cal-toolbar {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  padding: 4px 4px 8px;
-  border-bottom: 1px solid var(--ag-border-color);
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  flex-wrap: wrap;
 }
 .cal-toolbar__nav { display: flex; align-items: center; gap: 6px; }
-.cal-toolbar__label {
-  margin-left: 10px;
+.cal-toolbar__title {
+  flex: 1 1 auto;
+  font-size: 15px;
   font-weight: 600;
-  font-size: 14px;
+  text-transform: capitalize;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.cal-toolbar__periods { display: flex; gap: 4px; }
+.cal-toolbar__frames { display: flex; gap: 2px; }
 
 .cal-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--ag-border-color);
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--ag-background-color, #fff);
+  border: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.12));
   border-radius: 6px;
-  background: var(--ag-background-color);
-  color: var(--ag-foreground-color);
   font-size: 12px;
   font-weight: 500;
+  color: var(--ag-foreground-color, #1f2937);
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
-
-  &:hover { background: rgba(0,0,0,0.04); }
+  transition: background 0.12s, border-color 0.12s;
 }
-.cal-btn--icon { width: 28px; padding: 0; }
-.cal-btn--today { font-weight: 600; }
-.cal-btn--period-active {
-  background: rgba(59, 130, 246, 0.12);
-  border-color: rgba(59, 130, 246, 0.4);
-  color: #2563eb;
+.cal-btn:hover { background: color-mix(in srgb, var(--ag-foreground-color, #000) 6%, transparent); }
+.cal-btn--icon { padding: 5px; }
+/* While dragging, the nav buttons are drop-dwell targets; keep the icon from
+   intercepting dragenter/dragleave so they fire on the button only. */
+.cal-btn--icon svg { pointer-events: none; }
+.cal-btn--dragnav {
+  border-color: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  color: var(--ww-data-grid_cc-accent-color, #3b82f6);
 }
 
-/* Body */
-.cal-body {
+.cal-frame-btn {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--ag-foreground-color, #1f2937) 65%, transparent);
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: capitalize;
+  transition: background 0.12s, color 0.12s;
+}
+.cal-frame-btn:hover { background: color-mix(in srgb, var(--ag-foreground-color, #000) 6%, transparent); }
+.cal-frame-btn--active {
+  color: #fff;
+  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
+}
+
+.cal-custom-range {
+  display: flex;
+  gap: 16px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+}
+.cal-custom-range__field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--ag-foreground-color, #1f2937) 70%, transparent);
+}
+.cal-custom-range__field input {
+  border: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.12));
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 12px;
+  color: var(--ag-foreground-color, #1f2937);
+  background: var(--ag-background-color, #fff);
+}
+
+/* ===================== Month ===================== */
+.cal-month {
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
+  padding: 8px;
+  box-sizing: border-box;
 }
-
-/* Generic event chip */
-.cal-event {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  border-radius: 6px;
-  padding: 6px 8px;
-  border: 1px solid var(--ag-border-color);
-  background: var(--ag-background-color);
-
-  &:hover { background: rgba(0,0,0,0.03); }
-}
-.cal-event__nav {
-  flex: 0 0 auto;
-  margin-left: auto;
-  order: 99;
-}
-.cal-event__nav--small :deep(.ww-nav-btn) {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-}
-.cal-event__nav--small :deep(.ww-nav-btn svg) { width: 12px; height: 12px; }
-.cal-event__time {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 600;
-  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 75%, transparent);
-  min-width: 38px;
-}
-.cal-event__fields {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* DAY */
-.cal-day { display: flex; flex-direction: column; gap: 6px; padding: 4px; }
-.cal-day__header {
-  font-weight: 600;
-  font-size: 13px;
-  padding: 4px 2px 8px;
-  border-bottom: 1px dashed var(--ag-border-color);
-}
-.cal-day__list { display: flex; flex-direction: column; gap: 6px; }
-.cal-event--row { padding: 10px 12px; }
-
-/* WEEK */
-.cal-week { padding: 4px; }
-.cal-week__grid {
+.cal-month__weekdays {
   display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 4px;
+  grid-template-columns: repeat(7, 1fr);
 }
-.cal-week__day {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--ag-border-color);
-  border-radius: 6px;
-  background: var(--ag-background-color);
-  min-height: 280px;
-}
-.cal-week__day--today { border-color: rgba(59,130,246,0.5); }
-.cal-week__day-header {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 6px 0;
-  border-bottom: 1px solid var(--ag-border-color);
-  cursor: pointer;
-}
-.cal-week__day-header:hover { background: rgba(0,0,0,0.03); }
-.cal-week__dow { font-size: 10px; text-transform: uppercase; opacity: 0.6; }
-.cal-week__dom { font-size: 16px; font-weight: 600; }
-.cal-week__day-body {
-  padding: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  overflow-y: auto;
-  flex: 1 1 auto;
-}
-.cal-event--chip {
-  flex-direction: column;
-  align-items: stretch;
-  padding: 6px 8px;
-  gap: 2px;
-  background: rgba(59,130,246,0.06);
-  border-color: rgba(59,130,246,0.25);
-}
-.cal-event--chip .cal-event__nav {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  margin-left: 0;
-}
-
-/* MONTH */
-.cal-month { padding: 4px; display: flex; flex-direction: column; gap: 4px; }
-.cal-month__dow-row {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 4px;
-}
-.cal-month__dow {
-  font-size: 11px;
-  text-transform: uppercase;
-  opacity: 0.6;
+.cal-month__weekday {
+  padding: 6px 4px;
   text-align: center;
-  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 60%, transparent);
 }
 .cal-month__grid {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-auto-rows: minmax(96px, 1fr);
-  gap: 4px;
   flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  grid-auto-rows: 1fr;
+  border-top: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  border-left: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  min-height: 0;
 }
 .cal-month__cell {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--ag-border-color);
-  border-radius: 6px;
-  background: var(--ag-background-color);
+  gap: 3px;
+  padding: 4px;
+  border-right: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  min-height: 0;
   overflow: hidden;
 }
-.cal-month__cell--other {
-  background: rgba(0,0,0,0.02);
-  color: color-mix(in srgb, var(--ag-foreground-color, #9ca3af) 50%, transparent);
-}
-.cal-month__cell--today { border-color: rgba(59,130,246,0.5); }
-.cal-month__cell-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 4px 6px;
+.cal-month__cell--out { background: color-mix(in srgb, var(--ag-foreground-color, #000) 3%, transparent); }
+.cal-month__cell--out .cal-month__date { opacity: 0.45; }
+.cal-month__date {
+  align-self: flex-start;
   font-size: 12px;
   font-weight: 600;
+  padding: 2px 5px;
+  border-radius: 50%;
   cursor: pointer;
-  border-bottom: 1px solid transparent;
+  line-height: 1.4;
 }
-.cal-month__cell-header:hover { background: rgba(0,0,0,0.03); }
-.cal-month__cell-count {
-  font-size: 10px;
-  background: rgba(59,130,246,0.15);
-  color: #2563eb;
-  padding: 1px 6px;
+/* Mark today with a border (selection border color) instead of a fill. */
+.cal-month__cell--today {
+  box-shadow: inset 0 0 0 2px var(--cal-today-border-color, var(--ww-data-grid_cc-accent-color, #3b82f6));
   border-radius: 8px;
-  font-weight: 600;
 }
-.cal-month__cell-body {
-  padding: 2px 4px 4px;
+.cal-month__events {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  overflow: hidden;
-  flex: 1 1 auto;
+  // `overflow-x: hidden` is explicit: with only `overflow-y: auto` the x axis
+  // computes to `auto`, so an event chip touching the edge spawns a stray
+  // horizontal scrollbar. Pairing both axes suppresses it.
+  overflow: hidden auto;
+  min-height: 0;
+  min-width: 0;
 }
-.cal-event--mini {
-  padding: 2px 4px 2px 6px;
-  font-size: 11px;
-  gap: 4px;
-  background: rgba(59,130,246,0.06);
-  border-color: rgba(59,130,246,0.2);
-}
-.cal-event--mini .cal-event__nav { position: static; margin-left: auto; }
-.cal-month__cell-more {
+.cal-month__more {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 1px 4px;
   font-size: 10px;
   font-weight: 600;
-  opacity: 0.7;
-  padding: 0 4px;
+  color: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  cursor: pointer;
 }
 
-/* YEAR */
+/* ===================== Time-grid ===================== */
+.cal-timegrid {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.cal-timegrid__head {
+  display: flex;
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+}
+.cal-timegrid__gutter-head { flex: 0 0 56px; }
+.cal-timegrid__day-head {
+  flex: 1 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 4px;
+  border-left: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+}
+.cal-timegrid__day-name {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 60%, transparent);
+}
+.cal-timegrid__day-num { font-size: 15px; font-weight: 600; }
+.cal-timegrid__day-head--today .cal-timegrid__day-num { color: var(--ww-data-grid_cc-accent-color, #3b82f6); }
+
+.cal-timegrid__body {
+  flex: 1 1 auto;
+  display: flex;
+  // x explicit (see .cal-month__events) — absolutely-positioned events are
+  // already constrained by their left/right, so no horizontal scroll is wanted.
+  overflow: hidden auto;
+  min-height: 0;
+}
+.cal-timegrid__gutter { flex: 0 0 56px; }
+.cal-timegrid__hour-label {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 2px 6px 0 0;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 60%, transparent);
+  box-sizing: border-box;
+}
+.cal-timegrid__col {
+  position: relative;
+  flex: 1 1 0;
+  border-left: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+}
+/* Mark today with a border (selection border color) instead of a fill. Inset
+   box-shadow avoids the layout shift a real border would cause on the column. */
+.cal-timegrid__col--today { box-shadow: inset 0 0 0 2px var(--cal-today-border-color, var(--ww-data-grid_cc-accent-color, #3b82f6)); border-radius: 8px; }
+/* Drag & drop reschedule highlights */
+.cal-month__cell--drop,
+.cal-timegrid__col--drop,
+.cal-agenda__group--drop {
+  background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 12%, transparent);
+  outline: 1px dashed var(--ww-data-grid_cc-accent-color, #3b82f6);
+  outline-offset: -1px;
+}
+.cal-timegrid__hour-line {
+  border-bottom: 1px solid color-mix(in srgb, var(--ag-border-color, rgba(0, 0, 0, 0.08)) 60%, transparent);
+  box-sizing: border-box;
+}
+.cal-timegrid__event {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  /* Only `top` is set inline. Overlapping events are pushed down (not split into
+     columns), so each card spans the full column width. No fixed height:
+     single-point events size to their content so the border isn't clipped. */
+}
+
+/* ===================== Week columns (date-only week) ===================== */
+.cal-weekcols {
+  /* Fill the calendar's remaining height when it is bounded; never collapse
+     below this floor when it isn't (date-only columns have little content, so
+     without a floor the day columns would shrink to their content height). */
+  flex: 1 1 auto;
+  display: flex;
+  align-items: stretch; /* columns fill the full height so their borders reach the bottom */
+  min-height: 420px;
+  overflow: hidden;
+}
+.cal-weekcols__col {
+  flex: 1 1 0;
+  /* `align-self: stretch` fills the full available height — but only when the
+     height stays `auto`. Setting an explicit `height: 100%` here disables the
+     stretch and collapses to content height whenever the calendar isn't
+     bounded by a definite-height wrapper, so it is intentionally omitted. */
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-left: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+}
+.cal-weekcols__col:first-child { border-left: none; }
+/* Mark today with a border (selection border color) instead of a fill. */
+.cal-weekcols__col--today { box-shadow: inset 0 0 0 2px var(--cal-today-border-color, var(--ww-data-grid_cc-accent-color, #3b82f6)); border-radius: 8px; }
+.cal-weekcols__col--drop {
+  background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 12%, transparent);
+  outline: 1px dashed var(--ww-data-grid_cc-accent-color, #3b82f6);
+  outline-offset: -1px;
+}
+.cal-weekcols__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
+  cursor: pointer;
+}
+.cal-weekcols__day-name {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 60%, transparent);
+}
+.cal-weekcols__day-num { font-size: 16px; font-weight: 600; }
+.cal-weekcols__col--today .cal-weekcols__day-num { color: var(--ww-data-grid_cc-accent-color, #3b82f6); }
+.cal-weekcols__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 6px;
+  overflow: hidden auto;
+  min-height: 0;
+  min-width: 0;
+}
+.cal-weekcols__empty { flex: 1 1 auto; min-height: 20px; }
+
+/* ===================== Year ===================== */
 .cal-year {
-  padding: 4px;
+  flex: 1 1 auto;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px;
+  padding: 14px;
+  overflow-y: auto;
+  min-height: 0;
 }
 .cal-year__month {
-  border: 1px solid var(--ag-border-color);
+  border: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.08));
   border-radius: 8px;
   padding: 8px;
+}
+.cal-year__month-title {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: capitalize;
+  margin-bottom: 6px;
   cursor: pointer;
-  background: var(--ag-background-color);
-
-  &:hover { background: rgba(0,0,0,0.03); }
 }
-.cal-year__title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-weight: 600;
-  font-size: 12px;
-  padding-bottom: 6px;
-}
-.cal-year__count {
-  font-size: 10px;
-  background: rgba(59,130,246,0.15);
-  color: #2563eb;
-  padding: 1px 6px;
-  border-radius: 8px;
-  font-weight: 600;
-  &:empty { display: none; }
-}
-.cal-year__mini {
+.cal-year__weekdays,
+.cal-year__grid {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
 }
-.cal-year__dow {
+.cal-year__weekdays span {
+  text-align: center;
   font-size: 9px;
-  opacity: 0.55;
-  text-align: center;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 55%, transparent);
+  padding-bottom: 2px;
 }
-.cal-year__cell {
-  font-size: 10px;
-  text-align: center;
-  padding: 2px 0;
-  border-radius: 3px;
-  background: transparent;
-}
-.cal-year__cell--other { opacity: 0.3; }
-.cal-year__cell--today { outline: 1px solid rgba(59,130,246,0.55); }
-.cal-year__cell--has-events {
-  background: rgba(59,130,246,0.14);
-  color: #1d4ed8;
-  font-weight: 600;
-}
-
-/* Below grid */
-.cal-grid-wrap {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--ag-border-color);
-  padding-top: 8px;
-  display: flex;
-  flex-direction: column;
-  max-height: 35%;
-  min-height: 100px;
-}
-.cal-grid-title {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 0 4px 6px;
+.cal-year__day {
+  position: relative;
+  appearance: none;
+  background: none;
+  border: none;
+  aspect-ratio: 1;
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-.cal-grid-count {
+  justify-content: center;
   font-size: 10px;
-  background: rgba(0,0,0,0.06);
-  padding: 1px 6px;
-  border-radius: 8px;
-  font-weight: 600;
+  color: var(--ag-foreground-color, #1f2937);
+  cursor: pointer;
+  border-radius: 50%;
 }
-.cal-grid-scroll {
-  overflow: auto;
-  border: 1px solid var(--ag-border-color);
-  border-radius: 6px;
+.cal-year__day:hover { background: color-mix(in srgb, var(--ag-foreground-color, #000) 8%, transparent); }
+.cal-year__day--out { color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 40%, transparent); }
+.cal-year__day--today {
+  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  color: #fff;
 }
-.cal-grid {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-.cal-grid th, .cal-grid td {
-  text-align: left;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--ag-border-color);
-  vertical-align: middle;
-}
-.cal-grid th {
-  position: sticky;
-  top: 0;
-  background: var(--ag-background-color);
-  font-weight: 600;
-  font-size: 11px;
-  text-transform: uppercase;
-  opacity: 0.7;
-  z-index: 1;
-}
-.cal-grid tbody tr { cursor: pointer; }
-.cal-grid tbody tr:hover { background: rgba(0,0,0,0.03); }
-.cal-grid__nav-col { width: 80px; }
-.cal-grid__empty {
-  text-align: center;
-  padding: 14px;
-  opacity: 0.6;
-}
-
-.cal-empty-cell {
-  text-align: center;
-  padding: 16px 8px;
-  opacity: 0.6;
-  font-size: 12px;
-}
-.cal-empty-cell--soft { padding: 4px; min-height: 8px; }
-
-/* Config panel — minimal subset of the kanban cc-panel styles, kept local. */
-.cal-config-anchor { position: relative; }
-.cc-panel {
+.cal-year__day--has { font-weight: 700; }
+.cal-year__dot {
   position: absolute;
-  top: 0;
-  right: 0;
-  z-index: 50;
-  width: var(--ww-data-grid_cc-width, 320px);
-  background: var(--ww-data-grid_cc-background, #ffffff);
-  color: var(--ww-data-grid_cc-text-color, #1f2937);
-  border: 1px solid var(--ww-data-grid_cc-border-color, rgba(0,0,0,0.08));
-  border-radius: var(--ww-data-grid_cc-border-radius, 8px);
-  box-shadow: 0 10px 30px rgba(0,0,0,0.15);
-  padding: 12px;
+  bottom: 1px;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
+}
+.cal-year__day--today .cal-year__dot { background: #fff; }
+
+/* ===================== Agenda ===================== */
+.cal-agenda {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
+  padding: 12px;
+  overflow: hidden auto;
+  min-height: 0;
+  min-width: 0;
+}
+.cal-agenda__empty {
+  margin: auto;
+  font-size: 13px;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 70%, transparent);
+}
+.cal-agenda__group {
+  display: flex;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--ag-border-color, rgba(0, 0, 0, 0.06));
+}
+.cal-agenda__date {
+  flex: 0 0 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-top: 4px;
+}
+.cal-agenda__date-num { font-size: 20px; font-weight: 700; line-height: 1.1; }
+.cal-agenda__date-rest {
+  font-size: 11px;
+  line-height: 1.3;
+  color: color-mix(in srgb, var(--ag-foreground-color, #6b7280) 70%, transparent);
+}
+.cal-agenda__date--today .cal-agenda__date-num { color: var(--ww-data-grid_cc-accent-color, #3b82f6); }
+.cal-agenda__events {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* ===================== Month hover preview ===================== */
+.cal-hover-card {
+  position: fixed;
+  z-index: 20;
+  width: 260px;
+  pointer-events: none; /* preview only — never steals hover from the chip */
+  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.2));
+  transition: opacity 0.08s ease;
+}
+
+/* ===================== Config panel (mirrors kanban .cc-*) ===================== */
+.cal-config-anchor { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+.cal-cc-panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  pointer-events: auto;
+  width: 760px;
+  max-width: calc(100% - 24px);
+  box-sizing: border-box;
+  background: var(--ww-data-grid_cc-background, #ffffff);
+  border: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.08));
+  border-radius: var(--ww-data-grid_cc-border-radius, 8px);
+  color: var(--ww-data-grid_cc-text-color, #1f2937);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.14);
+  display: flex;
+  flex-direction: column;
+  // Stay inside the wrapper with a 12px gap at the bottom (12px top + 12px).
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-family: 'Work Sans', sans-serif;
+
+  // Apply Work Sans to all descendants, including form controls (inputs /
+  // selects / textareas) which don't inherit font-family by default.
+  *, *::before, *::after {
+    font-family: 'Work Sans', sans-serif;
+  }
 }
 .cc-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.06));
 }
-.cc-title { font-weight: 600; font-size: 13px; }
+.cc-title { font-size: 14px; font-weight: 700; }
 .cc-close-btn {
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
-  background: transparent;
-  border: 1px solid var(--ww-data-grid_cc-border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: none;
   border-radius: 4px;
   cursor: pointer;
-  color: inherit;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 60%, transparent);
+  &:hover {
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #000000) 8%, transparent);
+    color: var(--ww-data-grid_cc-text-color, #1f2937);
+  }
 }
-.cc-tabs { display: flex; gap: 4px; }
+.cc-tabs {
+  display: flex;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.06));
+}
 .cc-tab {
-  flex: 1 1 auto;
-  padding: 6px 8px;
-  font-size: 12px;
+  appearance: none;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 9px 12px;
+  font-size: 13px;
   font-weight: 500;
-  background: transparent;
-  color: inherit;
-  border: 1px solid var(--ww-data-grid_cc-border-color);
-  border-radius: 6px;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 60%, transparent);
   cursor: pointer;
-}
-.cc-tab--active {
-  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
-  color: #ffffff;
-  border-color: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  border-radius: 4px 4px 0 0;
+  &:hover:not(.cc-tab--active) {
+    color: var(--ww-data-grid_cc-text-color, #1f2937);
+    background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #000000) 6%, transparent);
+  }
+  &.cc-tab--active {
+    color: var(--ww-data-grid_cc-text-color, #1f2937);
+    border-bottom-color: var(--ww-data-grid_cc-accent-color, #3b82f6);
+    font-weight: 600;
+  }
 }
 .cc-group-select-row {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.06));
 }
 .cc-group-select-label {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  opacity: 0.7;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 65%, transparent);
 }
 .cc-group-select {
-  height: 28px;
-  padding: 0 6px;
-  border: 1px solid var(--ww-data-grid_cc-border-color);
-  border-radius: 6px;
-  background: var(--ww-data-grid_cc-background);
-  color: inherit;
+  flex: 1 1 auto;
+  appearance: none;
+  background: var(--ww-data-grid_cc-background, #ffffff);
+  border: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.1));
+  border-radius: 4px;
+  padding: 5px 8px;
   font-size: 12px;
+  color: var(--ww-data-grid_cc-text-color, #1f2937);
+  cursor: pointer;
+  &:focus { outline: none; border-color: var(--ww-data-grid_cc-accent-color, #3b82f6); }
+}
+.cc-group-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+}
+.cc-group-toggle-label { font-size: 12px; }
+.cc-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.06));
+}
+.cc-search-box { position: relative; flex: 1 1 auto; }
+.cc-search-icon {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 50%, transparent);
+}
+.cc-search-input {
+  width: 100%;
+  padding: 5px 8px 5px 28px;
+  background: var(--ww-data-grid_cc-background, #ffffff);
+  border: 1px solid var(--ww-data-grid_cc-border-color, rgba(0, 0, 0, 0.1));
+  border-radius: 4px;
+  font-size: 12px;
+  color: var(--ww-data-grid_cc-text-color, #1f2937);
+  &:focus { outline: none; border-color: var(--ww-data-grid_cc-accent-color, #3b82f6); }
 }
 .cc-fields-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
   font-size: 11px;
-  opacity: 0.7;
-  padding: 0 2px;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 60%, transparent);
 }
+.cc-fields-meta__hint { font-style: italic; }
 .cc-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  max-height: 260px;
-  overflow: auto;
+  padding: 4px 8px 10px;
+  max-height: 320px;
+  overflow-y: auto;
 }
 .cc-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  cursor: default;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
   font-size: 12px;
+  cursor: grab;
+  user-select: none;
+  transition: background 0.1s;
+  &:hover { background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #000000) 5%, transparent); }
+  &:active { cursor: grabbing; }
 }
-.cc-row:hover { background: rgba(0,0,0,0.04); }
-.cc-row--drag-over { outline: 2px dashed var(--ww-data-grid_cc-accent-color, #3b82f6); }
-.cc-row--dragging { opacity: 0.55; }
-.cc-checkbox-wrap { display: inline-flex; align-items: center; }
-.cc-checkbox-wrap--locked { opacity: 0.45; }
-.cc-checkbox { width: 14px; height: 14px; }
-.cc-drag-handle { color: rgba(0,0,0,0.35); cursor: grab; line-height: 0; }
-.cc-drag-handle--disabled { opacity: 0.3; cursor: default; }
-.cc-col-name { flex: 1 1 auto; }
+.cc-row--dragging { opacity: 0.4; }
+.cc-row--drag-over {
+  background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 12%, transparent);
+  border: 1px dashed var(--ww-data-grid_cc-accent-color, #3b82f6);
+  padding: 5px 7px;
+}
+.cc-checkbox-wrap { display: inline-flex; align-items: center; flex-shrink: 0; cursor: pointer; }
+.cc-checkbox-wrap--locked { cursor: not-allowed; opacity: 0.5; }
+/* Custom checkbox — matches the grid's column chooser. */
+.cc-checkbox {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 2px solid var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+  background: transparent;
+  position: relative;
+  transition: background 0.15s, border-color 0.15s;
+
+  &:checked {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0px;
+      width: 5px;
+      height: 9px;
+      border: 2px solid var(--ww-data-grid_cc-background, #fff);
+      border-top: none;
+      border-left: none;
+      transform: rotate(45deg);
+    }
+  }
+
+  &:indeterminate {
+    background: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-active-color, #3b9eff));
+
+    &::after {
+      content: '';
+      position: absolute;
+      left: 2px;
+      top: 50%;
+      width: 8px;
+      height: 2px;
+      background: var(--ww-data-grid_cc-background, #fff);
+      transform: translateY(-50%);
+    }
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+}
+.cc-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 35%, transparent);
+}
+.cc-drag-handle--disabled { opacity: 0.25; }
+.cc-col-name {
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .cc-field-badge {
-  font-size: 9px;
-  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
-  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
   padding: 1px 6px;
   border-radius: 8px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  background: var(--ww-data-grid_cc-accent-color, #3b82f6);
+  color: #ffffff;
 }
 .cc-empty {
-  padding: 8px;
-  font-size: 11px;
-  opacity: 0.7;
+  padding: 16px 14px;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #1f2937) 55%, transparent);
   text-align: center;
 }
+.cc-fade-enter-active, .cc-fade-leave-active { transition: opacity 0.12s ease, transform 0.12s ease; }
+.cc-fade-enter-from, .cc-fade-leave-to { opacity: 0; transform: translateY(-4px); }
 
-.cc-fade-enter-active, .cc-fade-leave-active {
-  transition: opacity 120ms ease, transform 120ms ease;
+/* ===================== Mobile (component width based) ===================== */
+// All 5 views stay available on mobile; each reflows for narrow widths and
+// bigger touch targets. Keyed off the .is-compact / .is-mobile classes set by
+// useResponsive (the toolbar already wraps via flex-wrap).
+.ww-calendar.is-compact {
+  // Roomier tap targets on the toolbar controls.
+  .cal-btn { padding: 7px 12px; font-size: 13px; }
+  .cal-btn--icon { padding: 7px; }
+  .cal-frame-btn { padding: 6px 10px; }
 }
-.cc-fade-enter-from, .cc-fade-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
+
+.ww-calendar.is-mobile {
+  // ---- Month: tighter cells, smaller chips so 7 columns stay legible. ----
+  .cal-month__cell { padding: 2px; gap: 2px; }
+  .cal-month__date { font-size: 11px; padding: 1px 4px; }
+
+  // ---- Time-grid (day/week): slimmer gutter, larger hour labels, wider
+  // event side margins for touch. ----
+  .cal-timegrid__gutter-head,
+  .cal-timegrid__gutter { flex-basis: 40px; }
+  .cal-timegrid__hour-label { font-size: 11px; padding-right: 4px; }
+  .cal-timegrid__event { left: 5px; right: 5px; }
+
+  // ---- Week columns: keep the base full-height fill (flex:1 + 420px floor);
+  // the 7 day columns share the width equally so they fit without horizontal
+  // scroll. (Overriding min-height here collapses the columns to header height.)
+
+  // ---- Compact chips in the narrow day columns (week + time-grid): let the
+  // title wrap to multiple lines instead of truncating, so it stays readable in
+  // ~55px-wide columns. Scoped to these containers via :deep so the month
+  // view's tiny cells keep single-line chips. ----
+  .cal-weekcols :deep(.cal-event--compact),
+  .cal-timegrid :deep(.cal-event--compact) {
+    align-items: flex-start;
+  }
+  .cal-weekcols :deep(.cal-event__compact-title),
+  .cal-timegrid :deep(.cal-event__compact-title) {
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere; // break a long unbroken word to fit the column
+  }
+
+  // ---- Year: smaller month tiles so two-ish fit per row. ----
+  .cal-year { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 10px; }
+
+  // ---- Agenda: narrower date column. ----
+  .cal-agenda__group { gap: 8px; }
+  .cal-agenda__date { flex-basis: 76px; }
+  .cal-agenda__date-num { font-size: 18px; }
+
+  // ---- Config panel: fill the component as a sheet. ----
+  .cal-cc-panel {
+    top: 8px;
+    right: 8px;
+    left: 8px;
+    width: auto;
+    max-width: none;
+    max-height: calc(100% - 16px);
+  }
 }
 </style>

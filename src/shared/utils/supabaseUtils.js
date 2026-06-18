@@ -35,12 +35,15 @@ export async function fetchSupabaseDataUnified(config) {
     searchValue,
     searchableColumns,
     filterModel,
+    advancedFilters,
     sortModel,
     defaultSortField,
     pagination,
     applyManualFilters,
     applySearchToSupabase,
     convertFilterToSupabase,
+    convertConditionsToSupabase,
+    content,
     getSupabaseSortField,
     formatFiltersForLog
   } = config;
@@ -65,6 +68,11 @@ export async function fetchSupabaseDataUnified(config) {
   // Apply filters
   if (filterModel && Object.keys(filterModel).length > 0) {
     query = convertFilterToSupabase(filterModel, query);
+  }
+
+  // Apply advanced filters (Filter Builder — flat cross-column AND/OR)
+  if (advancedFilters && Array.isArray(advancedFilters.conditions) && advancedFilters.conditions.length > 0 && typeof convertConditionsToSupabase === 'function') {
+    query = convertConditionsToSupabase(advancedFilters, query, content);
   }
 
   // Apply sorting
@@ -176,9 +184,12 @@ export async function fetchSupabaseDataCount(config) {
     searchValue,
     searchableColumns,
     filterModel,
+    advancedFilters,
     applyManualFilters,
     applySearchToSupabase,
     convertFilterToSupabase,
+    convertConditionsToSupabase,
+    content,
     formatFiltersForLog,
   } = config;
 
@@ -198,6 +209,9 @@ export async function fetchSupabaseDataCount(config) {
   }
   if (filterModel && Object.keys(filterModel).length > 0) {
     query = convertFilterToSupabase(filterModel, query);
+  }
+  if (advancedFilters && Array.isArray(advancedFilters.conditions) && advancedFilters.conditions.length > 0 && typeof convertConditionsToSupabase === 'function') {
+    query = convertConditionsToSupabase(advancedFilters, query, content);
   }
 
   const filtersText = formatFiltersForLog ? formatFiltersForLog(filterModel) : 'unknown';
