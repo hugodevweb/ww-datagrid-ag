@@ -48,6 +48,7 @@ export default {
     cellFontFamily: { type: String, default: '' },
     userFocusColor: { type: String, default: '' },
   },
+  
   emits: ['chip-click'],
   computed: {
     titleColumn() {
