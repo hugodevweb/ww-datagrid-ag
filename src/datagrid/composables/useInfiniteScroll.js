@@ -216,7 +216,14 @@ export function useInfiniteScroll(
     groupValue,
     filterModel = null,
     sortModel = null,
-    searchValue = readSearchValue()
+    searchValue = readSearchValue(),
+    // When true, skip the known-empty fast path and always hit the server.
+    // Used by explicit refetch paths (filter/sort/search change), where the
+    // cached count is stale: a group filtered down to 0 keeps a cached count
+    // of 0, so on filter REMOVAL the fast path would write an empty entry and
+    // skip the fetch — the badge then refreshes to the real count while the
+    // grid still shows "no rows". Forcing the fetch keeps the two in sync.
+    force = false
   ) => {
     if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
     // Idempotent: if state is already populated (initial fetch already
@@ -236,7 +243,7 @@ export function useInfiniteScroll(
     // matching rows. Skip the no-op data fetch and write an empty entry
     // so AG Grid's noRowsOverlay can render immediately.
     const knownCount = groupInfiniteCounts.value.get(groupValue);
-    if (knownCount === 0) {
+    if (!force && knownCount === 0) {
       writeGroupEntry(groupValue, {
         rowData: [],
         total: 0,
@@ -329,7 +336,10 @@ export function useInfiniteScroll(
   ) => {
     if (!isInfiniteScrollEnabled.value || !isGroupingActive.value) return;
     writeGroupEntry(groupValue, { rowData: [], offset: 0, loaded: false, loadingMore: false });
-    await loadInitialForGroup(groupValue, filterModel, sortModel, searchValue);
+    // force=true: an explicit refetch must hit the server even if the cached
+    // count is 0 — that count may be stale (e.g. the group was filtered down to
+    // 0 and we're now removing the filter).
+    await loadInitialForGroup(groupValue, filterModel, sortModel, searchValue, true);
   };
 
   // Filter/sort/search/table changes in grouped mode dispatch through here.

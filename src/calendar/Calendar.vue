@@ -91,6 +91,7 @@
                 :key="ev.rowId"
                 compact
                 :draggable="canEditDate"
+                :focused="isFocused(ev.rowId)"
                 :fields="eventColumns"
                 :row="ev.row"
                 :resolve-mapping-formula="resolveMappingFormula"
@@ -159,6 +160,7 @@
               <CalendarEvent
                 :compact="isMobileWidth"
                 :draggable="canEditDate"
+                :focused="isFocused(ev.rowId)"
                 :fields="eventColumns"
                 :row="ev.row"
                 :resolve-mapping-formula="resolveMappingFormula"
@@ -226,6 +228,7 @@
               :key="ev.rowId"
               :compact="isMobileWidth"
               :draggable="canEditDate"
+              :focused="isFocused(ev.rowId)"
               :fields="eventColumns"
               :row="ev.row"
               :resolve-mapping-formula="resolveMappingFormula"
@@ -262,6 +265,7 @@
               v-for="ev in grp.events"
               :key="ev.rowId"
               :draggable="canEditDate"
+              :focused="isFocused(ev.rowId)"
               :fields="eventColumns"
               :row="ev.row"
               :resolve-mapping-formula="resolveMappingFormula"
@@ -287,6 +291,7 @@
     >
       <CalendarEvent
         :key="hoverEvent.rowId"
+        :focused="isFocused(hoverEvent.rowId)"
         :fields="eventColumns"
         :row="hoverEvent.row"
         :resolve-mapping-formula="resolveMappingFormula"
@@ -918,6 +923,16 @@ export default {
       return row?.id != null ? String(row.id) : null;
     };
 
+    // The row currently displayed in the detail screen (outside this component),
+    // bound via the shared `focusedRowId` config. When it matches an event's id
+    // we render that event with the focused styling. Normalized to a string so
+    // it compares cleanly against getRowId()'s string output.
+    const focusedRowId = computed(() => {
+      const v = cfg.value?.focusedRowId;
+      return v === null || v === undefined || v === '' ? null : String(v);
+    });
+    const isFocused = (rowId) => focusedRowId.value !== null && rowId != null && String(rowId) === focusedRowId.value;
+
     // ---- Derived: columns, events, ranges ----
     const dateColumn = computed(() => findColumn(dateField.value));
     const hasTime = computed(() => dateColumn.value?.cellDataType === 'dateTime');
@@ -1461,7 +1476,7 @@ export default {
       weekdayLabels, weekdayLabelsNarrow, periodTitle,
       fieldsCounterText, maxFieldsTooltip,
       // methods
-      resolveMappingFormula, getRowId,
+      resolveMappingFormula, getRowId, isFocused,
       eventColor, dayEvents, dayEventCount, cappedDayEvents, dayColumnEvents, timeGridEvents, eventTop,
       hoverEvent, hoverPos, hoverReady, hoverCardRef, onEventHover, onEventLeave,
       canEditDate, dragData, dragOverKey, dayKeyOf: dayKey,

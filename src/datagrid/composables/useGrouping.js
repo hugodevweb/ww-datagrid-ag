@@ -1022,6 +1022,21 @@ export function useGrouping(
     dropZoneRegistry.delete(groupValue);
   };
 
+  // Collapse-only teardown. When a group collapses its grid unmounts, but its
+  // `.ww-group` container stays in the DOM (now just the header) and remains a
+  // valid drop target — every inbound zone's `getContainer` is lazy, so it keeps
+  // resolving to that same stable element. So we must NOT remove the inbound
+  // zones peers registered targeting this group: doing so is exactly what made
+  // dropping a row onto a collapsed group impossible (the zone vanished and
+  // nothing re-registered it, because the orderedGroups-values watch below only
+  // fires when the set of group *values* changes, not on a mere collapse).
+  // We only drop this group's *outbound* bucket — those zones were owned by the
+  // api AG Grid is destroying, so they're already gone on AG Grid's side; we
+  // just clear our bookkeeping so a future re-expand re-registers them cleanly.
+  const tearDownOutboundZonesForGroup = (groupValue) => {
+    dropZoneRegistry.delete(groupValue);
+  };
+
   // Rerun zone setup when the set of groups changes (e.g., a new option is
   // added to the grouping select column, or the user toggles showUnassigned).
   // Watching just the values keeps the watcher quiet on count updates.
@@ -1181,15 +1196,28 @@ export function useGrouping(
   };
 
   const onGroupGridUnmounted = (groupValue) => {
-    // Tear down inbound drop zones BEFORE removing the api from the registry
-    // — tearDownDropZonesForGroup looks up source apis by groupValue.
-    try { tearDownDropZonesForGroup(groupValue); }
+    // Clear only this group's OUTBOUND zones — keep the inbound zones peers
+    // registered against it so a row can still be dropped onto the collapsed
+    // group's header (see tearDownOutboundZonesForGroup for the full rationale).
+    try { tearDownOutboundZonesForGroup(groupValue); }
     catch (_) { /* noop */ }
     try { unobserveGroupLoadMoreSentinel(groupValue); }
     catch (_) { /* noop */ }
+    const removedApi = groupGridApis.value.get(groupValue);
     groupGridApis.value.delete(groupValue);
     groupGridApis.value = new Map(groupGridApis.value);
     groupSelections.value.delete(groupValue);
+    // If the primary `gridApi` pointed at the grid we just tore down (this group
+    // happened to be the one promoted in onGroupGridReady), repoint it at another
+    // still-mounted group grid. Otherwise gridApi.value keeps referencing a
+    // destroyed api, and every external consumer that drives the grid through it
+    // — the Filter Builder forward-sync, paginated refetch, sort — silently
+    // no-ops because setFilterModel/etc. on a dead grid fires no events.
+    if (removedApi && gridApi.value === removedApi) {
+      const next = Array.from(groupGridApis.value.values()).find(Boolean) || null;
+      gridApi.value = next;
+      gridReady.value = !!next;
+    }
     updateGroupHorizontalScrollbarMetrics();
   };
 
@@ -1575,6 +1603,21 @@ export function useGrouping(
             );
           } catch (_) { /* noop */ }
           try {
+            // Columns that currently carry a filter on THIS grid but are absent
+            // from the desired model must be explicitly cleared. AG Grid's
+            // api-level setFilterModel is unreliable at *removing* custom filter
+            // types (select / user / record) — calling it with a model that
+            // simply omits the column often leaves the column's filter instance
+            // active, so the grid keeps client-side-filtering the rows and the
+            // records the old filter excluded never reappear. Capture the
+            // before-state so we know which instances to force-clear below.
+            const before = (() => {
+              try { return api.getFilterModel() || {}; } catch (_) { return {}; }
+            })();
+            const colsToClear = Object.keys(before).filter(
+              (colId) => !(plainModel && plainModel[colId] != null)
+            );
+
             const result = api.setFilterModel(plainModel);
             if (result && typeof result.then === 'function') {
               await result.catch(() => { /* noop */ });
@@ -1597,6 +1640,23 @@ export function useGrouping(
                 }
               } catch (_) { /* noop */ }
             }
+            // Force-clear removed columns whose instance is still active after
+            // the api-level setFilterModel (the unreliable-removal case above).
+            let clearedAny = false;
+            for (const colId of colsToClear) {
+              try {
+                const inst = await api.getColumnFilterInstance?.(colId);
+                const stillActive = typeof inst?.isFilterActive === 'function'
+                  ? inst.isFilterActive()
+                  : false;
+                if (inst && typeof inst.setModel === 'function' && stillActive) {
+                  const r = inst.setModel(null);
+                  if (r && typeof r.then === 'function') await r.catch(() => { /* noop */ });
+                  clearedAny = true;
+                }
+              } catch (_) { /* noop */ }
+            }
+            if (clearedAny) { try { api.onFilterChanged?.(); } catch (_) { /* noop */ } }
           } catch (_) { /* noop */ }
           try {
             api.applyColumnState({ state: sortModel, defaultState: { sort: null } });

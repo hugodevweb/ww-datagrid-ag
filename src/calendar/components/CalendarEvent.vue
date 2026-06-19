@@ -1,7 +1,7 @@
 <template>
   <div
     class="cal-event"
-    :class="{ 'cal-event--compact': compact }"
+    :class="{ 'cal-event--compact': compact, 'cal-event--focused': focused }"
     :style="color ? { '--event-color': color } : null"
     @click="$emit('chip-click')"
   >
@@ -43,6 +43,9 @@ export default {
     row: { type: Object, required: true },
     resolveMappingFormula: { type: Function, required: true },
     compact: { type: Boolean, default: false },
+    // True when this event's row is the one currently displayed in the detail
+    // screen (focusedRowId === this row's id). Drives the focused styling.
+    focused: { type: Boolean, default: false },
     color: { type: String, default: '' },
     timeLabel: { type: String, default: '' },
     cellFontFamily: { type: String, default: '' },
@@ -95,6 +98,18 @@ export default {
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
 }
 
+/* Focused event — the one currently open in the detail screen. Uses the
+   selection accent (same colour the grid/today use) for a tinted background
+   and a stronger ring so it stands out from the other events. */
+.cal-event--focused {
+  --cal-focus-color: var(--cal-today-border-color, var(--ww-data-grid_cc-accent-color, #3b82f6));
+  border-color: var(--cal-focus-color);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cal-focus-color) 45%, transparent);
+}
+.cal-event--focused:hover {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--cal-focus-color) 60%, transparent), 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
 /* Compact chip for month / year day cells: single line. */
 .cal-event--compact {
   flex-direction: row;
@@ -111,6 +126,12 @@ export default {
 .cal-event--compact:hover {
   box-shadow: none;
   background: color-mix(in srgb, var(--event-color, var(--ww-data-grid_cc-accent-color, #3b82f6)) 20%, transparent);
+}
+/* Focused compact chip: keep the single-line layout but mark it with the
+   accent ring + a stronger tinted fill. */
+.cal-event--compact.cal-event--focused,
+.cal-event--compact.cal-event--focused:hover {
+  box-shadow: inset 0 0 0 1.5px var(--cal-focus-color);
 }
 
 .cal-event__dot {

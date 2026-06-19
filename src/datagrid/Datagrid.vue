@@ -151,6 +151,7 @@
           :debounceVerticalScrollbar="false"
           :suppressScrollOnNewData="true"
           @grid-ready="(p) => onGroupGridReady(group.value, p)"
+          @vue:unmounted="() => onGroupGridUnmounted(group.value)"
           @row-selected="(e) => onGroupRowSelected(group.value, e)"
           @selection-changed="(e) => onGroupSelectionChanged(group.value, e)"
           @cell-value-changed="onCellValueChanged"
@@ -1209,6 +1210,20 @@ export default {
     const triggerSupabaseRefetch = () => {
       if (props.content?.dataSource !== 'supabase' || !gridApi.value) return;
       if (isInfiniteScrollEnabled.value) {
+        // Grouped paged-append: each group owns its own client-side grid, so
+        // refreshInfiniteCache() is a no-op here. Dispatch a per-group server
+        // refetch instead — the per-group query already folds in OR-mode
+        // advanced filters via getOrModeAdvancedFilters(). Also refresh the
+        // collapsed-group badge counts so they reflect the new filter.
+        if (isGroupingActive.value) {
+          const sortModel = Array.isArray(sortValue.value) ? sortValue.value : [];
+          const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+          try { refetchAllVisibleGroups(gridApi.value.getFilterModel() || {}, sortModel, searchValue); }
+          catch (e) { /* noop */ }
+          try { scheduleRefreshGroupCounts?.(); } catch (e) { /* noop */ }
+          nextTick(() => setTimeout(() => updateRecordsFromGrid(), 200));
+          return;
+        }
         try { gridApi.value.refreshInfiniteCache?.(); } catch (e) { /* noop */ }
         nextTick(() => setTimeout(() => updateRecordsFromGrid(), 200));
       } else {
@@ -1227,25 +1242,109 @@ export default {
     const canonicalModel = (model) =>
       conditionsToAgGridFilterModel(agGridFilterModelToConditions(model || {}, props.content));
 
+    // Resolve the grid api the forward-sync should drive. In single-grid mode
+    // that's gridApi.value. In grouped mode gridApi.value is just the grid of
+    // one group and can go stale (a collapsed group's destroyed api, or a grid
+    // AG Grid recreated without firing a Vue unmount). Driving a dead api makes
+    // setFilterModel a silent no-op — no filter-changed event, so the `filters`
+    // variable never updates and the groups never refetch. Pick a guaranteed-
+    // live group grid instead; onGroupFilterChanged then fans the change out to
+    // every group and dispatches the per-group server refetch.
+    const resolveFilterTargetApi = () => {
+      const isLive = (api) => {
+        if (!api) return false;
+        try { return typeof api.isDestroyed === 'function' ? !api.isDestroyed() : true; }
+        catch (_) { return false; }
+      };
+      if (!isGroupingActive.value) return gridApi.value;
+      if (isLive(gridApi.value) && Array.from(groupGridApis.value.values()).includes(gridApi.value)) {
+        return gridApi.value;
+      }
+      return Array.from(groupGridApis.value.values()).find(isLive) || null;
+    };
+
+    // Refetch data for an explicit AG Grid filter model, across every data-source
+    // mode. Used by the grouped forward-sync path, which sets the `filters`
+    // variable directly (rather than via the grid's filter-changed event) and so
+    // must drive its own refetch. Reads the model from the argument, NOT from a
+    // grid api — in grouped mode the grids are cleared asynchronously by the
+    // redundant sync watcher, so their getFilterModel() is stale at call time.
+    const dispatchFilterRefetch = (model) => {
+      const filterModel = model || {};
+      if (props.content?.dataSource !== 'supabase') {
+        nextTick(() => setTimeout(() => updateRecordsFromGrid(), 100));
+        return;
+      }
+      const sortModel = Array.isArray(sortValue.value) ? sortValue.value : [];
+      const searchValue = props.content?.enableSearch ? props.content?.searchValue : null;
+      if (isInfiniteScrollEnabled.value) {
+        if (isGroupingActive.value) {
+          try { refetchAllVisibleGroups(filterModel, sortModel, searchValue); } catch (_) { /* noop */ }
+          try { scheduleRefreshGroupCounts?.(); } catch (_) { /* noop */ }
+        } else {
+          try { refetchAll(filterModel, sortModel, searchValue); } catch (_) { /* noop */ }
+        }
+        nextTick(() => setTimeout(() => updateRecordsFromGrid(), 200));
+      } else {
+        const page = (gridApi.value?.paginationGetCurrentPage?.() || 0) + 1;
+        const pageSize = gridApi.value?.paginationGetPageSize?.() || props.content?.paginationPageSize || 10;
+        fetchSupabaseData(page, pageSize, filterModel, sortModel, searchValue);
+      }
+    };
+
     // Forward: builder state → grid.
     watch(
       normalizedAdvancedFilters,
       (adv) => {
-        if (!gridApi.value || isApplyingViewConfig.value) return;
+        if (isApplyingViewConfig.value) return;
+        const targetApi = resolveFilterTargetApi();
         if (adv.combinator === 'and') {
           const desired = conditionsToAgGridFilterModel(adv.conditions);
-          const current = canonicalModel(gridApi.value.getFilterModel());
-          if (JSON.stringify(desired) !== JSON.stringify(current)) {
-            gridApi.value.setFilterModel(Object.keys(desired).length ? desired : null);
+          const model = Object.keys(desired).length ? desired : null;
+
+          if (isGroupingActive.value) {
+            // Grouped mode: the grid filter-changed round-trip is unreliable.
+            // Custom filter types (select / user / record) frequently DON'T fire
+            // filter-changed when cleared via setFilterModel(null), and the
+            // primary group api can be stale — so the event-driven chain leaves
+            // the exposed `filters` variable holding the old value and never
+            // marks the view edited. Make `filters` authoritative instead: set
+            // it directly, let the redundant group-sync watcher push it to every
+            // mounted grid (under its own re-entry guard, so no per-grid refetch
+            // storm), and dispatch a single refetch with the explicit model.
+            if (JSON.stringify(filterValue.value || {}) !== JSON.stringify(desired)) {
+              setFilters(desired);
+              dispatchFilterRefetch(model);
+              if (!isApplyingViewConfig.value) {
+                ctx.emit('trigger-event', { name: 'filterChanged', event: desired });
+              }
+            }
+          } else if (targetApi) {
+            // Single-grid mode: drive the grid; its filter-changed handler
+            // (onFilterChanged) updates the `filters` variable and refetches.
+            const current = canonicalModel(targetApi.getFilterModel());
+            if (JSON.stringify(desired) !== JSON.stringify(current)) {
+              targetApi.setFilterModel(model);
+            }
           }
         } else {
           // OR mode: clear header filters once (which itself triggers a refetch),
           // otherwise refetch directly when editing further OR conditions.
-          const current = gridApi.value.getFilterModel() || {};
-          if (Object.keys(current).length) {
-            gridApi.value.setFilterModel(null);
-          } else {
-            triggerSupabaseRefetch();
+          if (isGroupingActive.value) {
+            // Same authoritative handling as AND: the OR conditions live in the
+            // Supabase query (getOrModeAdvancedFilters), and the header model
+            // stays empty. Clear `filters` if needed and dispatch a refetch.
+            if (Object.keys(filterValue.value || {}).length > 0) {
+              setFilters({});
+            }
+            dispatchFilterRefetch(null);
+          } else if (targetApi) {
+            const current = targetApi.getFilterModel() || {};
+            if (Object.keys(current).length) {
+              targetApi.setFilterModel(null);
+            } else {
+              triggerSupabaseRefetch();
+            }
           }
         }
         // Persist into currentConfig and (re)evaluate the view-edited flag. In
@@ -2523,6 +2622,7 @@ export default {
       groupDragValue,
       groupDragOverValue,
       onGroupGridReady,
+      onGroupGridUnmounted,
       onGroupFilterChanged,
       onGroupSortChanged,
       onGroupColumnResized,
