@@ -122,9 +122,9 @@ export default {
 
 .cal-event__compact-title {
   flex: 1 1 auto;
-  // Without min-width:0 the flex item's automatic minimum is its content size,
-  // so a long title pushes the chip wider than its cell and the ellipsis never
-  // engages. Allow it to shrink.
+  /* Without min-width:0 the flex item's automatic minimum is its content size,
+     so a long title pushes the chip wider than its cell and the ellipsis never
+     engages. Allow it to shrink. */
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
