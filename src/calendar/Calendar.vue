@@ -431,6 +431,7 @@ import CalendarEvent from './components/CalendarEvent.vue';
 import FilterBuilder from '../shared/components/FilterBuilder.vue';
 import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
 import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
+import { useRecordsVariable } from '../shared/composables/useRecordsVariable.js';
 import { useResponsive } from '../shared/composables/useResponsive.js';
 import { getTranslations } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
@@ -906,6 +907,10 @@ export default {
       const data = wwLib.wwUtils.getDataFromCollection(cfg.value?.rowData);
       return Array.isArray(data) ? data : [];
     });
+
+    // Expose `records` / `isFetching` component variables (same names as the
+    // datagrid) so bindings keep working when the calendar is the active view.
+    useRecordsVariable(props, { rows: allRows, isFetching: supabaseFetching });
 
     const getRowId = (row) => {
       const fromFormula = resolveMappingFormula(cfg.value?.idFormula, row);

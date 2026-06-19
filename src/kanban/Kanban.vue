@@ -317,6 +317,7 @@ import { getTranslations } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
 import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
 import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
+import { useRecordsVariable } from '../shared/composables/useRecordsVariable.js';
 import { useResponsive } from '../shared/composables/useResponsive.js';
 
 const UNASSIGNED_GROUP = '__unassigned__';
@@ -776,6 +777,10 @@ export default {
       const data = wwLib.wwUtils.getDataFromCollection(cfg.value?.rowData);
       return Array.isArray(data) ? data : [];
     });
+
+    // Expose `records` / `isFetching` component variables (same names as the
+    // datagrid) so bindings keep working when the kanban is the active view.
+    useRecordsVariable(props, { rows: allRows, isFetching: supabaseFetching });
 
     const rowGroupKey = (row) => {
       if (!groupBy.value) return UNASSIGNED_GROUP;
