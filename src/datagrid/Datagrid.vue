@@ -264,6 +264,17 @@
             >
               {{ getTranslations(cfg?.lang || 'en').filtersTab || 'Filters' }}
             </button>
+            <button
+              v-if="cfg.allowColumnHiding"
+              type="button"
+              class="cc-tab"
+              :class="{ 'cc-tab--active': activeChooserTab === 'styling' }"
+              role="tab"
+              :aria-selected="activeChooserTab === 'styling'"
+              @click="activeChooserTab = 'styling'"
+            >
+              {{ getTranslations(cfg?.lang || 'en').stylingTab || 'Styling' }}
+            </button>
           </div>
 
           <!-- Tab: Columns -->
@@ -436,6 +447,275 @@
               @update:model-value="setAdvancedFilters"
             />
           </template>
+
+          <!-- Tab: Conditional Styling -->
+          <template v-else-if="activeChooserTab === 'styling'">
+            <div class="cc-styling-actions">
+              <button type="button" class="cc-styling-add-btn" @click="addUserRule()">
+                + {{ getTranslations(cfg?.lang || 'en').addRule || 'Add rule' }}
+              </button>
+            </div>
+
+            <div v-if="!userRules || userRules.length === 0" class="cc-empty">
+              {{ getTranslations(cfg?.lang || 'en').noRulesYet || 'No rules yet. Add one to color rows based on their content.' }}
+            </div>
+
+            <div v-else class="cc-styling-list">
+              <div
+                v-for="(rule, ruleIdx) in userRules"
+                :key="rule.id"
+                class="cc-styling-rule"
+                :class="{
+                  'cc-styling-rule--drag-over': userRuleDragOverId === rule.id && userRuleDragId !== rule.id,
+                  'cc-styling-rule--dragging': userRuleDragId === rule.id,
+                }"
+                :draggable="userRuleDragId === null || userRuleDragId === rule.id"
+                @dragstart="onUserRuleDragStart(rule.id)"
+                @dragover.prevent="onUserRuleDragOver(rule.id)"
+                @drop.prevent="onUserRuleDrop(rule.id)"
+                @dragend="onUserRuleDragEnd"
+              >
+                <div class="cc-styling-rule-header" @click="toggleRuleExpanded(rule.id)">
+                  <span class="cc-drag-handle">
+                    <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
+                      <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
+                      <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
+                      <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
+                    </svg>
+                  </span>
+                  <span
+                    class="cc-styling-rule-swatch"
+                    :style="{
+                      backgroundColor: rule.backgroundColor || 'transparent',
+                      color: rule.textColor || 'inherit',
+                      fontWeight: rule.bold ? 'bold' : 'normal',
+                      fontStyle: rule.italic ? 'italic' : 'normal',
+                    }"
+                  >Aa</span>
+                  <span class="cc-styling-rule-name">
+                    {{ rule.label || ((getTranslations(cfg?.lang || 'en').ruleN || 'Rule {n}').replace('{n}', ruleIdx + 1)) }}
+                  </span>
+                  <button
+                    type="button"
+                    class="cc-styling-rule-delete"
+                    :aria-label="getTranslations(cfg?.lang || 'en').deleteRule || 'Delete rule'"
+                    @click.stop="deleteUserRule(rule.id)"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                      <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <div v-if="expandedRuleIds.has(rule.id)" class="cc-styling-rule-body" @click.stop>
+                  <!-- Label -->
+                  <label class="cc-styling-field">
+                    <span class="cc-styling-field-label">{{ getTranslations(cfg?.lang || 'en').ruleLabel || 'Rule name' }}</span>
+                    <input
+                      type="text"
+                      class="cc-styling-input"
+                      :value="rule.label"
+                      @input="updateUserRule(rule.id, { label: $event.target.value })"
+                    />
+                  </label>
+
+                  <!-- Conditions -->
+                  <div class="cc-styling-field">
+                    <span class="cc-styling-field-label">{{ getTranslations(cfg?.lang || 'en').conditions || 'Conditions' }}</span>
+                    <div
+                      v-for="(cond, cIdx) in rule.conditions"
+                      :key="cIdx"
+                      class="cc-styling-condition-wrap"
+                    >
+                      <div class="cc-styling-condition">
+                        <select
+                          class="cc-styling-select"
+                          :value="cond.field"
+                          @change="updateUserCondition(rule.id, cIdx, { field: $event.target.value })"
+                        >
+                          <option value="" disabled>{{ getTranslations(cfg?.lang || 'en').pickColumn || 'Select a column' }}</option>
+                          <option
+                            v-for="opt in userRuleColumnOptions"
+                            :key="opt.field"
+                            :value="opt.field"
+                          >{{ opt.headerName }}</option>
+                        </select>
+                        <select
+                          class="cc-styling-select"
+                          :value="cond.operator"
+                          @change="onOperatorChange(rule.id, cIdx, $event.target.value)"
+                        >
+                          <option
+                            v-for="op in getOperatorsForField(cond.field)"
+                            :key="op.key"
+                            :value="op.key"
+                          >{{ op.label }}</option>
+                        </select>
+                        <!-- Value input — varies by column kind + operator -->
+                        <template v-if="getValueInputKind(cond) === 'picker'">
+                          <button
+                            type="button"
+                            class="cc-styling-input cc-styling-input--value cc-styling-picker-toggle"
+                            :class="{ 'cc-styling-picker-toggle--open': isPickerOpen(rule.id, cIdx), 'cc-styling-picker-toggle--placeholder': !Array.isArray(cond.value) || cond.value.length === 0 }"
+                            @click="togglePicker(rule.id, cIdx)"
+                          >
+                            <span class="cc-styling-picker-summary">{{ pickerSummary(cond) }}</span>
+                            <svg width="10" height="6" viewBox="0 0 10 6" fill="none" class="cc-styling-picker-chevron">
+                              <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                          </button>
+                        </template>
+                        <template v-else-if="getValueInputKind(cond) === 'date'">
+                          <input
+                            type="date"
+                            class="cc-styling-input cc-styling-input--value"
+                            :value="cond.value"
+                            @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
+                          />
+                        </template>
+                        <template v-else-if="getValueInputKind(cond) === 'number'">
+                          <input
+                            type="number"
+                            class="cc-styling-input cc-styling-input--value"
+                            :value="cond.value"
+                            :placeholder="getTranslations(cfg?.lang || 'en').value || 'Value'"
+                            @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
+                          />
+                        </template>
+                        <template v-else-if="getValueInputKind(cond) === 'text'">
+                          <input
+                            type="text"
+                            class="cc-styling-input cc-styling-input--value"
+                            :value="cond.value"
+                            :placeholder="getTranslations(cfg?.lang || 'en').value || 'Value'"
+                            @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
+                          />
+                        </template>
+                        <button
+                          type="button"
+                          class="cc-styling-condition-delete"
+                          :disabled="rule.conditions.length <= 1"
+                          :aria-label="getTranslations(cfg?.lang || 'en').deleteCondition || 'Remove condition'"
+                          @click="deleteUserCondition(rule.id, cIdx)"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <!-- Inline picker (in normal flow so it scrolls with the panel) -->
+                      <div v-if="getValueInputKind(cond) === 'picker' && isPickerOpen(rule.id, cIdx)" class="cc-styling-picker-inline" @click.stop>
+                        <FilterValuePicker
+                          :column="getColumnDef(cond.field) || {}"
+                          :model-value="Array.isArray(cond.value) ? cond.value : []"
+                          @update:model-value="updateUserCondition(rule.id, cIdx, { value: $event })"
+                        />
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="cc-styling-add-condition-btn"
+                      @click="addUserCondition(rule.id)"
+                    >+ {{ getTranslations(cfg?.lang || 'en').addCondition || 'Add condition' }}</button>
+                  </div>
+
+                  <!-- Style controls -->
+                  <div class="cc-styling-row cc-styling-row--colors">
+                    <label class="cc-styling-color-field">
+                      <span class="cc-styling-field-label">{{ getTranslations(cfg?.lang || 'en').backgroundColorLabel || 'Background' }}</span>
+                      <span class="cc-styling-color-control">
+                        <span
+                          class="cc-styling-color-swatch"
+                          :class="{ 'cc-styling-color-swatch--empty': !rule.backgroundColor }"
+                          :style="{ backgroundColor: rule.backgroundColor || 'transparent' }"
+                        ></span>
+                        <span class="cc-styling-color-value">{{ rule.backgroundColor || (getTranslations(cfg?.lang || 'en').noneShort || 'None') }}</span>
+                        <input
+                          type="color"
+                          class="cc-styling-color-input"
+                          :value="rule.backgroundColor || '#ffffff'"
+                          :aria-label="getTranslations(cfg?.lang || 'en').backgroundColorLabel || 'Background'"
+                          @input="updateUserRule(rule.id, { backgroundColor: $event.target.value })"
+                        />
+                        <button
+                          v-if="rule.backgroundColor"
+                          type="button"
+                          class="cc-styling-clear-color"
+                          :aria-label="getTranslations(cfg?.lang || 'en').clear || 'Clear'"
+                          @click.stop.prevent="updateUserRule(rule.id, { backgroundColor: '' })"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                          </svg>
+                        </button>
+                      </span>
+                    </label>
+                    <label class="cc-styling-color-field">
+                      <span class="cc-styling-field-label">{{ getTranslations(cfg?.lang || 'en').textColorLabel || 'Text' }}</span>
+                      <span class="cc-styling-color-control">
+                        <span
+                          class="cc-styling-color-swatch"
+                          :class="{ 'cc-styling-color-swatch--empty': !rule.textColor }"
+                          :style="{ backgroundColor: rule.textColor || 'transparent' }"
+                        ></span>
+                        <span class="cc-styling-color-value">{{ rule.textColor || (getTranslations(cfg?.lang || 'en').noneShort || 'None') }}</span>
+                        <input
+                          type="color"
+                          class="cc-styling-color-input"
+                          :value="rule.textColor || '#000000'"
+                          :aria-label="getTranslations(cfg?.lang || 'en').textColorLabel || 'Text'"
+                          @input="updateUserRule(rule.id, { textColor: $event.target.value })"
+                        />
+                        <button
+                          v-if="rule.textColor"
+                          type="button"
+                          class="cc-styling-clear-color"
+                          :aria-label="getTranslations(cfg?.lang || 'en').clear || 'Clear'"
+                          @click.stop.prevent="updateUserRule(rule.id, { textColor: '' })"
+                        >
+                          <svg width="10" height="10" viewBox="0 0 12 12" fill="none">
+                            <path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                          </svg>
+                        </button>
+                      </span>
+                    </label>
+                  </div>
+
+                  <div class="cc-styling-field">
+                    <span class="cc-styling-field-label">{{ getTranslations(cfg?.lang || 'en').styleLabel || 'Style' }}</span>
+                    <div class="cc-styling-toggle-group">
+                      <button
+                        type="button"
+                        class="cc-styling-toggle-btn"
+                        :class="{ 'cc-styling-toggle-btn--active': rule.bold }"
+                        :aria-pressed="rule.bold"
+                        :aria-label="getTranslations(cfg?.lang || 'en').boldLabel || 'Bold'"
+                        @click="updateUserRule(rule.id, { bold: !rule.bold })"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/>
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        class="cc-styling-toggle-btn"
+                        :class="{ 'cc-styling-toggle-btn--active': rule.italic }"
+                        :aria-pressed="rule.italic"
+                        :aria-label="getTranslations(cfg?.lang || 'en').italicLabel || 'Italic'"
+                        @click="updateUserRule(rule.id, { italic: !rule.italic })"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                          <line x1="19" x2="10" y1="4" y2="4"/>
+                          <line x1="14" x2="5" y1="20" y2="20"/>
+                          <line x1="15" x2="9" y1="4" y2="20"/>
+                        </svg>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </template>
         </div>
       </Transition>
     </div>
@@ -578,6 +858,7 @@ import {
 } from "../shared/utils/convertConditionsToSupabase.js";
 import { useAdvancedFilters } from "../shared/composables/useAdvancedFilters.js";
 import FilterBuilder from "../shared/components/FilterBuilder.vue";
+import FilterValuePicker from "../shared/components/FilterValuePicker.vue";
 import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
 import { useDataFetch } from "./composables/useDataFetch.js";
@@ -587,6 +868,8 @@ import { useGrouping } from "./composables/useGrouping.js";
 import { useViewConfig } from "./composables/useViewConfig.js";
 import { useColumnState } from "./composables/useColumnState.js";
 import { useColumnChooser } from "./composables/useColumnChooser.js";
+import { useUserConditionalStyles } from "./composables/useUserConditionalStyles.js";
+import { OPERATORS, getOperatorsForType, operatorNeedsValue, operatorIsMulti, normalizeColumnKind, getOperatorLabel } from "./utils/conditionStyleHelpers.js";
 import { useCellEditing } from "./composables/useCellEditing.js";
 import { useGridActions } from "./composables/useGridActions.js";
 import { useResponsive } from "../shared/composables/useResponsive.js";
@@ -609,6 +892,7 @@ export default {
     RecordCellRenderer,
     UserFilterComponent,
     FilterBuilder,
+    FilterValuePicker,
   },
   props: {
     content: {
@@ -849,6 +1133,8 @@ export default {
       getUpdateCurrentConfig: () => updateCurrentConfig,
       getShowColumnChooser: () => showColumnChooser,
       getChooserColumnOrder: () => chooserColumnOrder,
+      // Late-bound — useUserConditionalStyles is created AFTER useColumnState.
+      getUserConditionalRowStyles: () => userRules,
     });
 
     // Composable: column chooser — owns the chooser-panel state + the
@@ -887,6 +1173,146 @@ export default {
       // Late-bound — useViewConfig is created AFTER:
       getUpdateCurrentConfig: () => updateCurrentConfig,
     });
+
+    // Composable: user-defined conditional row styling rules. Owns the
+    // `userRules` array that lives inside viewConfiguration.userConditionalRowStyles
+    // and currentConfig.userConditionalRowStyles. Mutations call
+    // updateCurrentConfig (thunked — useViewConfig is created AFTER).
+    const {
+      userRules,
+      addRule: addUserRule,
+      updateRule: updateUserRule,
+      deleteRule: deleteUserRule,
+      reorderRules: reorderUserRules,
+      addCondition: addUserCondition,
+      updateCondition: updateUserCondition,
+      deleteCondition: deleteUserCondition,
+    } = useUserConditionalStyles(cfg, {
+      getUpdateCurrentConfig: () => updateCurrentConfig,
+    });
+    // Local UI state for the Conditional Styling chooser tab.
+    const expandedRuleIds = ref(new Set());
+    const userRuleDragId = ref(null);
+    const userRuleDragOverId = ref(null);
+    const toggleRuleExpanded = (id) => {
+      const next = new Set(expandedRuleIds.value);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      expandedRuleIds.value = next;
+    };
+    const onUserRuleDragStart = (id) => { userRuleDragId.value = id; };
+    const onUserRuleDragOver = (id) => { userRuleDragOverId.value = id; };
+    const onUserRuleDrop = (id) => {
+      const fromId = userRuleDragId.value;
+      userRuleDragId.value = null;
+      userRuleDragOverId.value = null;
+      if (!fromId || fromId === id) return;
+      const fromIdx = userRules.value.findIndex(r => r.id === fromId);
+      const toIdx = userRules.value.findIndex(r => r.id === id);
+      reorderUserRules(fromIdx, toIdx);
+    };
+    const onUserRuleDragEnd = () => {
+      userRuleDragId.value = null;
+      userRuleDragOverId.value = null;
+    };
+    // Build column options for the field dropdown. Excludes columns that don't
+    // expose row data (navigation, action, image-only) — they have no value
+    // for conditions to read.
+    const STYLING_EXCLUDED_TYPES = new Set(['navigation', 'action']);
+    const userRuleColumnOptions = computed(() => {
+      const cols = cfg.value?.columns || [];
+      return cols
+        .filter(c =>
+          c &&
+          c.field &&
+          !c.hide &&
+          !STYLING_EXCLUDED_TYPES.has(c.cellDataType) &&
+          !c.actionName
+        )
+        .map(c => ({
+          field: c.field,
+          headerName: c.headerName || c.field,
+          cellDataType: c.cellDataType || 'any',
+        }));
+    });
+    const getColumnTypeForField = (field) => {
+      const col = userRuleColumnOptions.value.find(c => c.field === field);
+      return col?.cellDataType || 'any';
+    };
+    const getOperatorsForField = (field) => {
+      const t = getTranslations(cfg.value?.lang || 'en');
+      return getOperatorsForType(getColumnTypeForField(field)).map(op => ({
+        ...op,
+        label: getOperatorLabel(op.key, t),
+      }));
+    };
+    const conditionNeedsValue = (operator) => operatorNeedsValue(operator);
+    const conditionIsMulti = (operator) => operatorIsMulti(operator);
+
+    // Find the raw column definition (carries options/users/recordTable for the picker).
+    const getColumnDef = (field) => (cfg.value?.columns || []).find(c => c?.field === field) || null;
+
+    // What value input to render for a (field, operator) pair:
+    //   'none' — operator takes no value (isEmpty / isTrue / etc.)
+    //   'picker' — open FilterValuePicker (select/user/record + isAnyOf/isNoneOf)
+    //   'date' | 'number' | 'text' — native input
+    const getValueInputKind = (cond) => {
+      if (!operatorNeedsValue(cond.operator)) return 'none';
+      if (operatorIsMulti(cond.operator)) return 'picker';
+      const kind = normalizeColumnKind(getColumnTypeForField(cond.field));
+      if (kind === 'date') return 'date';
+      if (kind === 'number') return 'number';
+      return 'text';
+    };
+
+    // When the operator switches between scalar and multi, the value type
+    // (string ↔ array) has to change with it — otherwise the picker receives
+    // a string and the text input receives an array.
+    const onOperatorChange = (ruleId, cIdx, newOp) => {
+      const rule = userRules.value.find(r => r.id === ruleId);
+      const cond = rule?.conditions?.[cIdx];
+      if (!cond) return;
+      const wasMulti = operatorIsMulti(cond.operator);
+      const willBeMulti = operatorIsMulti(newOp);
+      const patch = { operator: newOp };
+      if (wasMulti !== willBeMulti) patch.value = willBeMulti ? [] : '';
+      updateUserCondition(ruleId, cIdx, patch);
+    };
+
+    // Inline picker open state. Mirrors FilterBuilder's "one row open at a time".
+    // Key shape: `${ruleId}|${cIdx}`.
+    const openPickerKey = ref(null);
+    const togglePicker = (ruleId, cIdx) => {
+      const key = ruleId + '|' + cIdx;
+      openPickerKey.value = openPickerKey.value === key ? null : key;
+    };
+    const isPickerOpen = (ruleId, cIdx) => openPickerKey.value === ruleId + '|' + cIdx;
+
+    // Compact summary shown on the picker toggle button.
+    const pickerSummary = (cond) => {
+      const t = getTranslations(cfg.value?.lang || 'en');
+      const placeholder = t.pickValuesPlaceholder || 'Pick values…';
+      if (!Array.isArray(cond.value) || cond.value.length === 0) return placeholder;
+      const col = getColumnDef(cond.field);
+      const kind = normalizeColumnKind(col?.cellDataType);
+      const labelFor = (v) => {
+        if (kind === 'select') {
+          const opt = (col?.options || []).find(o => String(o?.value ?? '') === String(v));
+          return opt?.label ?? String(v);
+        }
+        if (kind === 'user') {
+          const u = (col?.users || []).find(x => String(x?.id) === String(v));
+          if (!u) return String(v);
+          const name = u.full_name || u.name || u.email;
+          return name ?? String(v);
+        }
+        return String(v);
+      };
+      const labels = cond.value.slice(0, 2).map(labelFor);
+      const more = cond.value.length - labels.length;
+      return more > 0
+        ? `${labels.join(', ')} +${more}`
+        : labels.join(', ');
+    };
 
     const activeCreateColumnField = ref(null);
     const activeCreateRow = ref(null);
@@ -1068,6 +1494,22 @@ export default {
       chooserColumnOrder, chooserHiddenState,
       isVirtualColumn,
       isEmptyConfigValue,
+      // User conditional row styles plumbing.
+      getUserRules: () => userRules,
+      setUserRules: (incoming) => {
+        if (!Array.isArray(incoming)) { userRules.value = []; return; }
+        userRules.value = incoming.map(r => ({
+          id: r?.id || `ucs-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+          label: typeof r?.label === 'string' ? r.label : '',
+          conditions: Array.isArray(r?.conditions)
+            ? r.conditions.map(c => ({ field: c?.field || '', operator: c?.operator || 'equals', value: c?.value ?? '' }))
+            : [],
+          backgroundColor: r?.backgroundColor || '',
+          textColor: r?.textColor || '',
+          bold: !!r?.bold,
+          italic: !!r?.italic,
+        }));
+      },
     });
 
 
@@ -1756,6 +2198,44 @@ export default {
         }
       }
       // Removed deep: true - shallow comparison is sufficient since we're hashing content
+    );
+
+    // User-defined conditional row styles: mirror the prop-rules watcher above
+    // so adding / editing / deleting a user rule actually re-paints rows.
+    // Without this, the rowStyle computed yields a fresh function but AG Grid
+    // keeps its cached per-row styles until something forces a redraw.
+    const lastUserRulesHash = ref(null);
+    watch(
+      // Deep watch — rule edits mutate inner fields (color picker, conditions),
+      // so a shallow `() => userRules.value` watcher misses them.
+      userRules,
+      (newRules) => {
+        const arr = Array.isArray(newRules) ? newRules : [];
+        const hash = arr.length === 0 ? '0' : JSON.stringify(arr);
+        if (hash === lastUserRulesHash.value) return;
+        lastUserRulesHash.value = hash;
+
+        if (!gridReady.value || isGridRendering.value) return;
+        const hasActiveEditor =
+          gridApi.value &&
+          typeof gridApi.value.getEditingCells === 'function' &&
+          gridApi.value.getEditingCells().length > 0;
+        if (hasActiveEditor) return;
+
+        // Redraw single-grid mode.
+        if (gridApi.value) {
+          gridApiUtils.redrawRows(gridApi.value).catch(err => {
+            console.warn('[Datagrid] user conditional styles redraw error:', err);
+          });
+        }
+        // Redraw every per-group grid (grouped mode).
+        try {
+          groupGridApis?.value?.forEach((api) => {
+            try { api?.redrawRows?.(); } catch (_) { /* noop */ }
+          });
+        } catch (_) { /* noop */ }
+      },
+      { deep: true }
     );
 
     // Track the last applied focused row ID to avoid duplicate applications
@@ -2614,6 +3094,33 @@ export default {
       onChooserDragOver,
       onChooserDrop,
       onChooserDragEnd,
+      // ========== USER CONDITIONAL STYLES EXPORTS ==========
+      userRules,
+      addUserRule,
+      updateUserRule,
+      deleteUserRule,
+      addUserCondition,
+      updateUserCondition,
+      deleteUserCondition,
+      expandedRuleIds,
+      userRuleDragId,
+      userRuleDragOverId,
+      toggleRuleExpanded,
+      onUserRuleDragStart,
+      onUserRuleDragOver,
+      onUserRuleDrop,
+      onUserRuleDragEnd,
+      userRuleColumnOptions,
+      getOperatorsForField,
+      conditionNeedsValue,
+      conditionIsMulti,
+      getValueInputKind,
+      getColumnDef,
+      onOperatorChange,
+      openPickerKey,
+      togglePicker,
+      isPickerOpen,
+      pickerSummary,
       // ========== GROUPING EXPORTS ==========
       isGroupingActive,
       orderedGroups,
@@ -3450,6 +3957,295 @@ export default {
   font-weight: 600;
   text-align: center;
   line-height: 1.4;
+}
+
+// Conditional Styling tab
+.cc-styling-actions {
+  padding: 10px 14px 4px;
+}
+.cc-styling-add-btn {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px dashed var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  background: transparent;
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  font-size: 13px;
+  cursor: pointer;
+  &:hover {
+    background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #2196F3) 8%, transparent);
+    border-color: var(--ww-data-grid_cc-accent-color, #2196F3);
+  }
+}
+.cc-styling-list {
+  padding: 6px 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.cc-styling-rule {
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 3%, transparent);
+  &--dragging { opacity: 0.5; }
+  &--drag-over { border-color: var(--ww-data-grid_cc-accent-color, #2196F3); }
+}
+.cc-styling-rule-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.cc-styling-rule-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 4px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.cc-styling-rule-name {
+  flex: 1;
+  font-size: 13px;
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-styling-rule-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 60%, transparent);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  &:hover { color: #e74c3c; background: color-mix(in srgb, #e74c3c 10%, transparent); }
+}
+.cc-styling-rule-body {
+  padding: 4px 10px 12px;
+  border-top: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.1)));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cc-styling-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cc-styling-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 60%, transparent);
+}
+.cc-styling-input {
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 5%, transparent);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  font-size: 13px;
+  outline: none;
+  &:focus { border-color: var(--ww-data-grid_cc-accent-color, #2196F3); }
+}
+.cc-styling-input--value { min-width: 0; flex: 1; }
+.cc-styling-select {
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 5%, transparent);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  font-size: 12px;
+  outline: none;
+  min-width: 0;
+  flex: 1;
+}
+.cc-styling-condition-wrap {
+  margin-bottom: 6px;
+}
+.cc-styling-condition {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.cc-styling-picker-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  text-align: left;
+  cursor: pointer;
+  &--placeholder { color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #9aa0aa)) 60%, transparent); }
+  &--open { border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6)); }
+}
+.cc-styling-picker-summary {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-styling-picker-chevron {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: transform 0.15s;
+}
+.cc-styling-picker-toggle--open .cc-styling-picker-chevron {
+  transform: rotate(180deg);
+}
+.cc-styling-picker-inline {
+  margin-top: 6px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.12)));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 4%, transparent);
+  overflow: hidden;
+}
+.cc-styling-condition-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 50%, transparent);
+  padding: 2px 4px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  &:hover:not(:disabled) { color: #e74c3c; background: color-mix(in srgb, #e74c3c 10%, transparent); }
+  &:disabled { opacity: 0.3; cursor: not-allowed; }
+}
+.cc-styling-add-condition-btn {
+  background: none;
+  border: none;
+  color: var(--ww-data-grid_cc-accent-color, #2196F3);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+  text-align: left;
+  &:hover { text-decoration: underline; }
+}
+.cc-styling-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.cc-styling-row--colors {
+  gap: 10px;
+}
+.cc-styling-color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+// Pill-shaped color control: hidden native input covers the whole control so
+// clicking anywhere opens the picker. Inline swatch + hex preview keeps the
+// affordance obvious without the tiny OS-default 36×28 chip.
+.cc-styling-color-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px 4px 8px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 5%, transparent);
+  cursor: pointer;
+  min-width: 0;
+  height: 32px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  &:hover { border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6)); }
+  &:focus-within {
+    border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #3b82f6) 25%, transparent);
+  }
+}
+.cc-styling-color-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  flex-shrink: 0;
+}
+.cc-styling-color-swatch--empty {
+  background:
+    linear-gradient(45deg, transparent 45%, #e74c3c 45%, #e74c3c 55%, transparent 55%),
+    color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 8%, transparent);
+}
+.cc-styling-color-value {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.cc-styling-color-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  border: none;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.cc-styling-clear-color {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 60%, transparent);
+  flex-shrink: 0;
+  &:hover { color: #e74c3c; background: color-mix(in srgb, #e74c3c 12%, transparent); }
+}
+
+.cc-styling-toggle-group {
+  display: inline-flex;
+  gap: 6px;
+}
+.cc-styling-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  border: 1px solid var(--ww-data-grid_cc-border-color, var(--ag-border-color, rgba(255,255,255,0.18)));
+  background: color-mix(in srgb, var(--ww-data-grid_cc-text-color, #ffffff) 5%, transparent);
+  color: var(--ww-data-grid_cc-text-color, var(--ag-foreground-color, #e8eaed));
+  cursor: pointer;
+  transition: border-color 0.15s, background-color 0.15s, color 0.15s;
+  &:hover { border-color: var(--ww-data-grid_cc-accent-color, var(--ag-accent-color, #3b82f6)); }
+  &--active {
+    background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #2196F3) 20%, transparent);
+    border-color: var(--ww-data-grid_cc-accent-color, #2196F3);
+    color: var(--ww-data-grid_cc-accent-color, #2196F3);
+  }
+  svg { display: block; }
 }
 
 // Search row (select-all + search input)

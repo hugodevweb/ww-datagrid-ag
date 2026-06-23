@@ -47,6 +47,10 @@ export function useViewConfig(cfg, props, ctx, {
   chooserColumnOrder, chooserHiddenState,
   isVirtualColumn,
   isEmptyConfigValue,
+  // User conditional row styles plumbing (from useUserConditionalStyles).
+  // Thunked because useUserConditionalStyles is created AFTER useViewConfig.
+  getUserRules,
+  setUserRules,
 }) {
   // Exposed variable for current grid configuration (includes user edits)
   // This can be stored and passed back to viewConfiguration to restore state
@@ -62,6 +66,7 @@ export function useViewConfig(cfg, props, ctx, {
         sorting: [],
         columnsOrder: [],
         hiddenColumns: [],
+        userConditionalRowStyles: [],
       },
       readonly: true,
     });
@@ -120,6 +125,10 @@ export function useViewConfig(cfg, props, ctx, {
     const filterValue = getFilterValue();
     const sortValue = getSortValue();
     const advanced = getAdvancedFilters?.();
+    const userRulesRef = getUserRules?.();
+    const userConditionalRowStyles = Array.isArray(userRulesRef?.value)
+      ? userRulesRef.value
+      : [];
     const config = {
       sizes: getCurrentColumnWidths(),
       filters: filterValue?.value || {},
@@ -131,6 +140,7 @@ export function useViewConfig(cfg, props, ctx, {
       columnsOrder: columns?.map((col) => col.getColId()) || columnOrder.value || [],
       hiddenColumns: hiddenColumns.value || [],
       grouping,
+      userConditionalRowStyles,
     };
 
     setCurrentConfig(config);
@@ -141,7 +151,7 @@ export function useViewConfig(cfg, props, ctx, {
   const isViewConfigEdited = (current, baseline) => {
     if (!baseline || typeof baseline !== 'object') return false;
 
-    const keysToCheck = ['sizes', 'filters', 'advancedFilters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping'];
+    const keysToCheck = ['sizes', 'filters', 'advancedFilters', 'sorting', 'columnsOrder', 'hiddenColumns', 'grouping', 'userConditionalRowStyles'];
 
     for (const key of keysToCheck) {
       const baseVal = baseline[key];
@@ -570,6 +580,23 @@ export function useViewConfig(cfg, props, ctx, {
           debugLog('[ViewConfiguration] Skipped hidden columns (key not present, keeping current state)');
         }
 
+        // 6. User conditional row styles are tightly bound to the view. Unlike
+        // filters/sort/sizes which preserve current state when the key is
+        // absent, styles ALWAYS reset on a view change — absent, empty, or
+        // non-array all mean "clear all rules." This prevents stale styles
+        // from one view leaking into another when switching.
+        {
+          const incoming = viewConfig ? viewConfig.userConditionalRowStyles : undefined;
+          const setUserRulesFn = typeof setUserRules === 'function' ? setUserRules : null;
+          if (Array.isArray(incoming) && incoming.length > 0) {
+            setUserRulesFn?.(incoming);
+            debugLog('[ViewConfiguration] Applied user conditional row styles:', incoming);
+          } else {
+            setUserRulesFn?.([]);
+            debugLog('[ViewConfiguration] Cleared user conditional row styles (absent/empty in new view)');
+          }
+        }
+
         // (Grouping was applied at the top of this try block, before any
         // AG Grid API calls — see step 0 above for rationale.)
 
@@ -669,14 +696,16 @@ export function useViewConfig(cfg, props, ctx, {
       }
 
       // Arm the edited variable once the initial load + suppression window has
-      // fully settled. From here on, genuine user edits report true. The final
-      // updateCurrentConfig() captures any edit made during the load window so
-      // the variable reflects reality at the moment of arming. Guarded by
-      // gridApi (a transient mount that already unmounted is a no-op).
+      // fully settled. From here on, genuine user edits report true. We snapshot
+      // currentConfig FIRST (so the public currentConfig reflects the settled
+      // grid) and arm AFTER — any spurious diff in that snapshot (pixel
+      // rounding, sort serialization quirks) is still blocked by !editedArmed
+      // inside updateViewEditedVariable. Real edits after arming are picked up
+      // by the normal event-driven updateCurrentConfig path.
       setTimeout(() => {
         if (disposed.value || !gridApi.value) return;
-        editedArmed.value = true;
         updateCurrentConfig();
+        editedArmed.value = true;
       }, 2100);
     },
     { immediate: true }
@@ -695,7 +724,7 @@ export function useViewConfig(cfg, props, ctx, {
 
       if (isConfigChanged && newConfig && oldConfig) {
         // Quick check of key properties instead of deep stringify
-        const keys = ['filters', 'advancedFilters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping'];
+        const keys = ['filters', 'advancedFilters', 'sorting', 'columnsOrder', 'sizes', 'hiddenColumns', 'grouping', 'userConditionalRowStyles'];
         hasContentChanged = keys.some(key => {
           const newVal = newConfig[key];
           const oldVal = oldConfig[key];

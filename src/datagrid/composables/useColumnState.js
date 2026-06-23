@@ -1,5 +1,6 @@
 import { ref, computed } from 'vue';
 import { themeQuartz } from 'ag-grid-community';
+import { compileUserRule } from '../utils/conditionStyleHelpers.js';
 
 // Column state: owns the `columnOrder` and `hiddenColumns` WeWeb component
 // variables, the `isVirtualColumn` helper, the user-resize/reorder event
@@ -26,6 +27,9 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
   getUpdateCurrentConfig,
   getShowColumnChooser,
   getChooserColumnOrder,
+  // User-defined conditional row styling rules (from useUserConditionalStyles).
+  // Thunked because useUserConditionalStyles is created AFTER useColumnState.
+  getUserConditionalRowStyles,
 }) {
   // WeWeb component variables: persist column order + hidden state
   const { value: columnOrder, setValue: setColumnOrder } =
@@ -271,10 +275,15 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
     const conditionalRowStyles = props.content?.conditionalRowStyles;
     const hasConditionalStyles = Array.isArray(conditionalRowStyles) && conditionalRowStyles.length > 0;
 
+    // Reactive read so adding/editing a user rule re-evaluates this computed.
+    const userRulesRef = getUserConditionalRowStyles?.();
+    const userRules = userRulesRef?.value;
+    const hasUserRules = Array.isArray(userRules) && userRules.length > 0;
+
     // Pre-compile conditional rules once per conditionalRowStyles change into
     // a flat array of (rowData) => mergedStyleObject|null closures. This
     // hoists the per-rule field lookups out of the per-row hot path.
-    const compiledRules = hasConditionalStyles
+    const propCompiled = hasConditionalStyles
       ? conditionalRowStyles
           .filter(r => r && r.conditionFormula)
           .map(rule => {
@@ -300,6 +309,29 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
               }
             };
           })
+      : null;
+
+    // User rules: compiled the same way. Concatenated AFTER prop rules so the
+    // existing merge loop layers user-defined styles on top (last-write-wins
+    // on overlapping style keys — per the precedence decision in the plan).
+    const userCompiled = hasUserRules
+      ? userRules.map(rule => compileUserRule(rule)).filter(Boolean)
+      : null;
+
+    let compiledRules = null;
+    if (propCompiled && userCompiled) compiledRules = [...propCompiled, ...userCompiled];
+    else if (propCompiled) compiledRules = propCompiled;
+    else if (userCompiled) compiledRules = userCompiled;
+    if (compiledRules && compiledRules.length === 0) compiledRules = null;
+
+    // Build a reset-base object containing every style key we manage. Starting
+    // each row's style from this base ensures AG Grid clears previously-applied
+    // inline styles when a rule's attribute is removed at runtime — without
+    // it, AG Grid only writes the keys present in the returned object and
+    // leaves leftover inline styles (e.g. backgroundColor) on the row DOM.
+    const MANAGED_STYLE_KEYS = ['backgroundColor', 'color', 'fontWeight', 'fontStyle', 'borderLeft', 'borderRight', 'borderTop', 'borderBottom'];
+    const resetBase = compiledRules
+      ? MANAGED_STYLE_KEYS.reduce((acc, k) => { acc[k] = ''; return acc; }, {})
       : null;
 
     return (params) => {
@@ -336,7 +368,9 @@ export function useColumnState(cfg, props, ctx, resolveMappingFormula, {
         isFocusedRow = (baseIdStr === String(focusedRowId));
       }
 
-      let mergedStyle = null;
+      // Start from the reset base so keys NOT written by any matching rule
+      // get cleared (empty string overrides previously-applied inline style).
+      let mergedStyle = resetBase ? { ...resetBase } : null;
       if (compiledRules) {
         for (let i = 0; i < compiledRules.length; i++) {
           const ruleStyle = compiledRules[i](rowData);
