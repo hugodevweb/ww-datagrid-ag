@@ -829,6 +829,24 @@ export default {
       bindable: true,
       hidden: (content) => content.headerHeightMode === "auto",
     },
+    showColumnTypeIcons: {
+      label: { en: "Show Column Type Icons" },
+      type: "OnOff",
+      section: "settings",
+      bindable: true,
+      responsive: true,
+      states: true,
+      defaultValue: true,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: "boolean",
+        tooltip: "Show a Lucide icon for each column's type in its header",
+      },
+      propertyHelp: {
+        tooltip: "When enabled, a small icon representing each column's type (text, number, date, select, user, etc.) is displayed next to the column name in the header.",
+      },
+      /* wwEditor:end */
+    },
     borderColor: {
       type: "Color",
       label: "Inner Border Color",

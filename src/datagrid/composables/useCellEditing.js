@@ -15,6 +15,8 @@ import {
 import SelectFilterWrapper from '../components/SelectFilterWrapper.js';
 import UserFilterWrapper from '../components/UserFilterWrapper.js';
 import RecordFilterWrapper from '../components/RecordFilterWrapper.js';
+import ColumnTypeHeader from '../components/ColumnTypeHeader.js';
+import { getColumnTypeIcon } from '../utils/columnTypeIcons.js';
 import {
   extractUserIds,
   findUserIdByName,
@@ -651,6 +653,23 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
         cellClasses.push("-suppress-row-interaction");
       }
 
+      const cellDataType = col?.cellDataType;
+
+      // Per-column-type header icon (Lucide). Rendered via AG Grid's
+      // innerHeaderComponent so the default header chrome (sort, filter,
+      // menu, resize) is preserved — only the label gets the icon prepended.
+      // Gated by the "Show Column Type Icons" setting (default on).
+      const showTypeIcons = cfg.value?.showColumnTypeIcons !== false
+        && cellDataType !== "navigation";
+      const headerIconProps = showTypeIcons
+        ? {
+            headerComponentParams: {
+              innerHeaderComponent: ColumnTypeHeader,
+              icon: getColumnTypeIcon(cellDataType),
+            },
+          }
+        : {};
+
       const commonProperties = {
         minWidth,
         maxWidth,
@@ -664,10 +683,9 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
           || (viewHiddenColumns !== null && viewHiddenColumns.has(colId)),
         headerClass: col?.headerAlignment ? `-${col?.headerAlignment}` : null,
         ...(cellClasses.length > 0 ? { cellClass: cellClasses } : {}),
+        ...headerIconProps,
         valueSetter: getValueSetter(col),
       };
-
-      const cellDataType = col?.cellDataType;
 
       // Route cellEditorParams.getValidationErrors through the tracking helper
       // so _pendingValidationError is populated and onCellEditingStopped fires

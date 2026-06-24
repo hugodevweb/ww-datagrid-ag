@@ -3431,6 +3431,33 @@ export default {
     height: 100%;
   }
   
+  // Per-column-type header icon (rendered by ColumnTypeHeader innerHeaderComponent)
+  :deep(.cc-header-inner) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
+  }
+  :deep(.cc-col-type-icon) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    opacity: 0.6;
+
+    svg {
+      width: 1em;
+      height: 1em;
+      display: block;
+    }
+  }
+  :deep(.cc-col-type-name) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   :deep(.ag-header-cell) {
     &.-center .ag-header-cell-label {
       justify-content: center;
