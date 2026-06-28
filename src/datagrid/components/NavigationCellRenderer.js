@@ -214,9 +214,8 @@ class NavigationCellRenderer {
     }
     const rowId = p.rowId;
     const tab = button === "chat" ? "chat" : p.tabValue;
-    const workflowId = p.workflowId;
     const focusVariableId = p.focusVariableId;
-    console.log("[Navigation] click", { button, openNewTab, rowId, tab, workflowId, focusVariableId });
+    console.log("[Navigation] click", { button, openNewTab, rowId, tab, focusVariableId });
 
     // Update the focus-row workspace variable directly so the active tab's
     // is-focused styling applies immediately, without depending on the
@@ -230,19 +229,17 @@ class NavigationCellRenderer {
       }
     }
 
-    if (!workflowId) {
-      console.warn("[Navigation] no workflowId configured — workflow NOT executed");
+    // Emit the navigate event up to the component; the user wires it to their
+    // "open record" workflow in the editor (no hard-coded workflow id).
+    if (typeof p.onNavigate !== "function") {
+      console.warn("[Navigation] no onNavigate handler — navigate event NOT emitted");
       return;
     }
     try {
-      wwLib.wwWorkflow.executeGlobal(workflowId, {
-        tab,
-        id: rowId,
-        openNewTab,
-      });
-      console.log("[Navigation] executeGlobal dispatched");
+      p.onNavigate({ id: rowId, tab, openNewTab });
+      console.log("[Navigation] navigate event emitted");
     } catch (e) {
-      console.warn("[Navigation] executeGlobal failed:", e?.message);
+      console.warn("[Navigation] navigate emit failed:", e?.message);
     }
   }
 

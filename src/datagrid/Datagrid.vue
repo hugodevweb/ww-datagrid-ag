@@ -36,7 +36,7 @@
       :rowBuffer="cfg.rowBuffer ?? 25"
       :rowHeight="cfg.rowHeight ?? 40"
       :suppressRowVirtualisation="false"
-      :animateRows="false"
+      :animateRows="true"
       :debounceVerticalScrollbar="false"
       :suppressScrollOnNewData="true"
       @grid-ready="onGridReady"
@@ -567,29 +567,48 @@
                         </template>
                         <template v-else-if="getValueInputKind(cond) === 'date'">
                           <input
+                            v-if="!isPlaceholderToken(cond.value)"
                             type="date"
                             class="cc-styling-input cc-styling-input--value"
                             :value="cond.value"
                             @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
                           />
+                          <span v-else class="cc-styling-input cc-styling-input--value cc-styling-token">
+                            <span class="cc-styling-token-glyph" v-html="placeholderGlyphHtml(cond.value)"></span>{{ placeholderDisplayName(cond.value) }}
+                            <button type="button" class="cc-styling-token-x" @click="updateUserCondition(rule.id, cIdx, { value: '' })" aria-label="Clear">×</button>
+                          </span>
+                          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateUserCondition(rule.id, cIdx, { value: $event })" />
+                          <DatePlaceholderMenu @select="updateUserCondition(rule.id, cIdx, { value: $event })" />
                         </template>
                         <template v-else-if="getValueInputKind(cond) === 'number'">
                           <input
+                            v-if="!isPlaceholderToken(cond.value)"
                             type="number"
                             class="cc-styling-input cc-styling-input--value"
                             :value="cond.value"
                             :placeholder="getTranslations(cfg?.lang || 'en').value || 'Value'"
                             @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
                           />
+                          <span v-else class="cc-styling-input cc-styling-input--value cc-styling-token">
+                            <span class="cc-styling-token-glyph" v-html="placeholderGlyphHtml(cond.value)"></span>{{ placeholderDisplayName(cond.value) }}
+                            <button type="button" class="cc-styling-token-x" @click="updateUserCondition(rule.id, cIdx, { value: '' })" aria-label="Clear">×</button>
+                          </span>
+                          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateUserCondition(rule.id, cIdx, { value: $event })" />
                         </template>
                         <template v-else-if="getValueInputKind(cond) === 'text'">
                           <input
+                            v-if="!isPlaceholderToken(cond.value)"
                             type="text"
                             class="cc-styling-input cc-styling-input--value"
                             :value="cond.value"
                             :placeholder="getTranslations(cfg?.lang || 'en').value || 'Value'"
                             @input="updateUserCondition(rule.id, cIdx, { value: $event.target.value })"
                           />
+                          <span v-else class="cc-styling-input cc-styling-input--value cc-styling-token">
+                            <span class="cc-styling-token-glyph" v-html="placeholderGlyphHtml(cond.value)"></span>{{ placeholderDisplayName(cond.value) }}
+                            <button type="button" class="cc-styling-token-x" @click="updateUserCondition(rule.id, cIdx, { value: '' })" aria-label="Clear">×</button>
+                          </span>
+                          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateUserCondition(rule.id, cIdx, { value: $event })" />
                         </template>
                         <button
                           type="button"
@@ -791,6 +810,9 @@ import RecordCellRenderer from "./components/RecordCellRenderer.vue";
 import UserFilterComponent from "./components/UserFilterComponent.vue";
 import UserFilterWrapper from "./components/UserFilterWrapper.js";
 import RecordFilterWrapper from "./components/RecordFilterWrapper.js";
+import PhoneCellRenderer from "./components/PhoneCellRenderer.vue";
+import EmailCellRenderer from "./components/EmailCellRenderer.vue";
+import PhoneCellEditor from "./components/PhoneCellEditor.vue";
 import {
   clearAllCaches,
   createValidationFunction,
@@ -818,7 +840,8 @@ import {
   normalizeUserColumnOldValue,
   valuesEqual,
   createCacheKey,
-  debounce
+  debounce,
+  readViewConfiguration
 } from "../shared/utils/sharedHelpers.js";
 import {
   fetchSupabaseDataPaginated,
@@ -859,9 +882,12 @@ import {
 import { useAdvancedFilters } from "../shared/composables/useAdvancedFilters.js";
 import FilterBuilder from "../shared/components/FilterBuilder.vue";
 import FilterValuePicker from "../shared/components/FilterValuePicker.vue";
+import PlaceholderMenu from "../shared/components/PlaceholderMenu.vue";
+import DatePlaceholderMenu from "../shared/components/DatePlaceholderMenu.vue";
+import { isPlaceholderToken, placeholderDisplayName, placeholderGlyphHtml } from "../shared/utils/placeholders.js";
 import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
-import { useDataFetch } from "./composables/useDataFetch.js";
+import { useDataFetch, isDirectAdvancedCondition } from "./composables/useDataFetch.js";
 import { useFiltersAndSort } from "./composables/useFiltersAndSort.js";
 import { useInfiniteScroll } from "./composables/useInfiniteScroll.js";
 import { useGrouping } from "./composables/useGrouping.js";
@@ -890,9 +916,14 @@ export default {
     SelectFilterComponent,
     UserCellRenderer,
     RecordCellRenderer,
+    PhoneCellRenderer,
+    PhoneCellEditor,
+    EmailCellRenderer,
     UserFilterComponent,
     FilterBuilder,
     FilterValuePicker,
+    PlaceholderMenu,
+    DatePlaceholderMenu,
   },
   props: {
     content: {
@@ -913,11 +944,14 @@ export default {
 
     // Merged config: baseConfig keys override per-instance content (same logic as Options API cfg)
     const cfg = computed(() => {
+      // viewConfiguration is no longer a bindable prop — it is read directly from
+      // a hardcoded WeWeb variable and always overrides any content/baseConfig value.
+      const viewConfiguration = readViewConfiguration();
       const content = props.content;
-      if (!content || typeof content !== 'object') return content ?? {};
+      if (!content || typeof content !== 'object') return { ...(content ?? {}), viewConfiguration };
       const base = content.baseConfig;
       const excludes = content.baseConfigExcludes;
-      if (!base || typeof base !== 'object') return content;
+      if (!base || typeof base !== 'object') return { ...content, viewConfiguration };
       const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
       excludeSet.add('baseConfig');
       excludeSet.add('baseConfigExcludes');
@@ -925,6 +959,7 @@ export default {
       for (const key of Object.keys(base)) {
         if (!excludeSet.has(key)) merged[key] = base[key];
       }
+      merged.viewConfiguration = viewConfiguration;
       return merged;
     });
 
@@ -955,9 +990,11 @@ export default {
     // navigation button focus styling.
     const NAVIGATION_TAB_FORMULA = {
       type: "f",
-      code: "formulas['ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd']()",
+      // Inlined from the former global formula (id ec0f4ece…, whose name is
+      // stripped at runtime so formulas['name']() can't be used). References the
+      // `recordTab` app variable BY NAME so it survives project duplication.
+      code: "wwFormulas.getKeyValue(variables['recordTab'],globalContext.page?.['id'])||0",
     };
-    const NAVIGATION_WORKFLOW_ID = "d4ab2a61-2728-4dc3-a144-9fd3d558411e";
     const navigationFocusRowId = computed(() => cfg.value.focusedRowId);
     const navContext = {
       focusRowId: navigationFocusRowId,
@@ -971,7 +1008,9 @@ export default {
         }
         return rowData?.conversation?.messages?.length ?? 0;
       },
-      workflowId: NAVIGATION_WORKFLOW_ID,
+      // Emit the navigate trigger event; wire it to "open record" in the editor.
+      onNavigate: (payload) =>
+        ctx.emit("trigger-event", { name: "navigate", event: payload }),
     };
 
     // When the focus-row variable changes, refresh only the navigation column
@@ -1047,6 +1086,16 @@ export default {
     // group-mode horizontal scrollbar metrics). Hoisted above useGrouping
     // since useGrouping reads it for the multi-grid scrollbar sync.
     const gridContainerRef = ref(null);
+
+    // True only for the brief synchronous window of a cell editor's DOM `input`
+    // event (set by the capture-phase listener wired in onMounted, reset on the
+    // next microtask). AG Grid's built-in editors revalidate on every keystroke
+    // (input → onValueChange → validate → getValidationErrors); consulting this
+    // flag lets useCellEditing's getValidationErrors stay silent while the user
+    // is typing so the red border + `validationFailed` workflow only surface on
+    // submission (Enter / Tab / blur commit), which never runs inside an input
+    // event. See onMounted below and useCellEditing's getValidationErrors.
+    const suppressLiveValidation = ref(false);
 
     // Component-width based responsive state (toggles .is-compact / .is-mobile on
     // the root). Detection is the component's own width, not the viewport.
@@ -1264,6 +1313,9 @@ export default {
       return 'text';
     };
 
+    // Column kind for a styling condition — used to scope placeholder offers.
+    const placeholderKind = (cond) => normalizeColumnKind(getColumnTypeForField(cond.field));
+
     // When the operator switches between scalar and multi, the value type
     // (string ↔ array) has to change with it — otherwise the picker receives
     // a string and the text input receives an array.
@@ -1295,6 +1347,7 @@ export default {
       const col = getColumnDef(cond.field);
       const kind = normalizeColumnKind(col?.cellDataType);
       const labelFor = (v) => {
+        if (isPlaceholderToken(v)) return placeholderDisplayName(v);
         if (kind === 'select') {
           const opt = (col?.options || []).find(o => String(o?.value ?? '') === String(v));
           return opt?.label ?? String(v);
@@ -1344,6 +1397,7 @@ export default {
     } = useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       gridApi, debugLog, isGridRendering,
       _pendingValidationError, _validationFiredForCurrentEdit,
+      suppressLiveValidation,
       isGroupingActive, groupingState, groupGridApis,
       isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
@@ -1402,7 +1456,35 @@ export default {
       const body = (wwLib?.getFrontDocument?.() || document).body;
       createPopupTeleportTarget.value = body;
       if (!popupParent.value) popupParent.value = body;
+
+      // Defer validation feedback to submission only. AG Grid's built-in cell
+      // editors revalidate on every keystroke; we flag the synchronous window
+      // of the editor's DOM `input` event so getValidationErrors reports no
+      // errors mid-typing. Capture phase guarantees this runs before AG Grid's
+      // own input handler (which is on the input element itself), and the
+      // microtask reset fires after the whole input→validate chain completes,
+      // leaving submission (Enter/Tab/blur — never inside an input event) to
+      // surface the red border + validationFailed workflow.
+      const root = gridContainerRef.value;
+      if (root) {
+        root.addEventListener('input', onEditorInputCapture, true);
+      }
     });
+
+    // See onMounted: marks live-typing input so validation stays silent until
+    // the edit is submitted. Scoped to AG Grid cell editors so typing in the
+    // filter builder / column chooser inputs is ignored.
+    const onEditorInputCapture = (event) => {
+      const target = event?.target;
+      if (
+        target &&
+        typeof target.closest === 'function' &&
+        target.closest('.ag-cell-editor, .ag-cell-inline-editing, .ag-cell-edit-wrapper')
+      ) {
+        suppressLiveValidation.value = true;
+        queueMicrotask(() => { suppressLiveValidation.value = false; });
+      }
+    };
 
     const { value: activeCreateColumn, setValue: setActiveCreateColumn } =
       wwLib.wwVariable.useComponentVariable({
@@ -1741,7 +1823,12 @@ export default {
         if (isApplyingViewConfig.value) return;
         const targetApi = resolveFilterTargetApi();
         if (adv.combinator === 'and') {
-          const desired = conditionsToAgGridFilterModel(adv.conditions);
+          // Date-token conditions (e.g. %DATE:today%) can't ride AG Grid's built-in
+          // date filter — exclude them from the mirror; they're applied straight to
+          // the Supabase query via getOrModeAdvancedFilters() instead.
+          const mirrorConditions = adv.conditions.filter(c => !isDirectAdvancedCondition(c));
+          const hasDirect = adv.conditions.some(isDirectAdvancedCondition);
+          const desired = conditionsToAgGridFilterModel(mirrorConditions);
           const model = Object.keys(desired).length ? desired : null;
 
           if (isGroupingActive.value) {
@@ -1760,6 +1847,10 @@ export default {
               if (!isApplyingViewConfig.value) {
                 ctx.emit('trigger-event', { name: 'filterChanged', event: desired });
               }
+            } else if (props.content?.dataSource === 'supabase') {
+              // Header model unchanged, but a direct (date-token) condition may
+              // have changed — refetch (the fetch-key guard dedups no-ops).
+              dispatchFilterRefetch(model);
             }
           } else if (targetApi) {
             // Single-grid mode: drive the grid; its filter-changed handler
@@ -1767,6 +1858,10 @@ export default {
             const current = canonicalModel(targetApi.getFilterModel());
             if (JSON.stringify(desired) !== JSON.stringify(current)) {
               targetApi.setFilterModel(model);
+            } else if (props.content?.dataSource === 'supabase') {
+              // Header model unchanged, but a direct (date-token) condition may
+              // have changed — refetch (the fetch-key guard dedups no-ops).
+              triggerSupabaseRefetch();
             }
           }
         } else {
@@ -1804,11 +1899,16 @@ export default {
       filterValue,
       (model) => {
         if (normalizedAdvancedFilters.value.combinator !== 'and') return;
+        // Date-token conditions live only in the builder (not the header model),
+        // so preserve them here — otherwise reconciling against an empty header
+        // model would silently delete them.
+        const currentConditions = normalizedAdvancedFilters.value.conditions;
+        const directConditions = currentConditions.filter(isDirectAdvancedCondition);
         const parsed = agGridFilterModelToConditions(model || {}, props.content);
         const desiredFromModel = conditionsToAgGridFilterModel(parsed);
-        const currentFromConditions = conditionsToAgGridFilterModel(normalizedAdvancedFilters.value.conditions);
-        if (JSON.stringify(desiredFromModel) !== JSON.stringify(currentFromConditions)) {
-          setAdvancedFilters({ combinator: 'and', conditions: parsed });
+        const currentMirror = conditionsToAgGridFilterModel(currentConditions.filter(c => !isDirectAdvancedCondition(c)));
+        if (JSON.stringify(desiredFromModel) !== JSON.stringify(currentMirror)) {
+          setAdvancedFilters({ combinator: 'and', conditions: [...parsed, ...directConditions] });
         }
       },
       { deep: true }
@@ -1872,6 +1972,10 @@ export default {
       console.log('[viewEdited][datagrid] UNMOUNTING');
       if (scrollDebounceTimer.value) {
         clearTimeout(scrollDebounceTimer.value);
+      }
+      const root = gridContainerRef.value;
+      if (root) {
+        root.removeEventListener('input', onEditorInputCapture, true);
       }
     });
 
@@ -2615,6 +2719,9 @@ export default {
       DateCellEditor,
       UserCellRenderer,
       UserFilterComponent,
+      PhoneCellRenderer,
+      PhoneCellEditor,
+      EmailCellRenderer,
     }));
 
     // Per-group rowClassRules. Each per-group grid passes its own groupValue
@@ -3121,6 +3228,10 @@ export default {
       togglePicker,
       isPickerOpen,
       pickerSummary,
+      isPlaceholderToken,
+      placeholderDisplayName,
+      placeholderGlyphHtml,
+      placeholderKind,
       // ========== GROUPING EXPORTS ==========
       isGroupingActive,
       orderedGroups,
@@ -4086,6 +4197,40 @@ export default {
   &:focus { border-color: var(--ww-data-grid_cc-accent-color, #2196F3); }
 }
 .cc-styling-input--value { min-width: 0; flex: 1; }
+.cc-styling-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ww-data-grid_cc-accent-color, #2196F3);
+  border-color: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #2196F3) 45%, transparent);
+  background: color-mix(in srgb, var(--ww-data-grid_cc-accent-color, #2196F3) 14%, transparent);
+  font-weight: 500;
+}
+.cc-styling-token-glyph {
+  font-weight: 700;
+  letter-spacing: -1px;
+  color: #9aa0aa;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  :deep(svg) { width: 15px; height: 15px; }
+}
+.cc-styling-token-x {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  margin-left: auto;
+  padding: 0 2px;
+  opacity: 0.75;
+  &:hover { opacity: 1; }
+}
 .cc-styling-select {
   padding: 6px 8px;
   border-radius: 4px;

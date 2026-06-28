@@ -1,5 +1,24 @@
 <template>
     <div class="select-filter">
+        <!-- Placeholders — insert a runtime token (e.g. %CURRENT_USER%) -->
+        <div v-if="placeholderNames.length" class="select-filter-ph">
+            <button
+                v-for="name in placeholderNames"
+                :key="'ph-' + name"
+                type="button"
+                class="select-filter-option select-ph-option"
+                :class="{ selected: isPlaceholderSelected(name) }"
+                @click="togglePlaceholder(name)"
+            >
+                <span class="option-content">
+                    <span class="checkbox" :class="{ checked: isPlaceholderSelected(name) }">
+                        <span class="checkbox-icon">&#10003;</span>
+                    </span>
+                    <span class="select-ph-glyph" v-html="glyphHtml(name)"></span>
+                    <span class="label">{{ displayName(name) }}</span>
+                </span>
+            </button>
+        </div>
         <div v-if="isLoadingOptions" class="select-filter-empty">
             Loading options...
         </div>
@@ -46,6 +65,8 @@
 </template>
 
 <script>
+import { getPlaceholderNamesForKind, makeToken, resolveValues, placeholderDisplayName, placeholderGlyphHtml } from '../../shared/utils/placeholders.js';
+
 export default {
     name: "SelectFilterComponent",
     props: {
@@ -158,6 +179,9 @@ export default {
         },
         canReset() {
             return this.pendingSelection.size > 0 || this.appliedSelection.size > 0;
+        },
+        placeholderNames() {
+            return getPlaceholderNamesForKind('select');
         },
     },
     watch: {
@@ -444,12 +468,14 @@ export default {
             if (!this.isFilterActive()) {
                 return true;
             }
+            // Resolve placeholder tokens (e.g. %CURRENT_USER%) to real values before matching.
+            const selection = new Set(resolveValues(Array.from(this.appliedSelection)));
             // Get the row value (ID) and check if it's in the applied selection (which contains IDs)
             const rowValue = this.getRowValue(params);
             if (rowValue == null || rowValue === undefined) {
                 return false; // Null/undefined values don't match any filter
             }
-            return this.appliedSelection.has(rowValue);
+            return selection.has(rowValue);
         },
         toggleOption(value) {
             // Store values (IDs) in the selection
@@ -548,6 +574,21 @@ export default {
             }
             return true;
         },
+        placeholderToken(name) {
+            return makeToken(name);
+        },
+        isPlaceholderSelected(name) {
+            return this.pendingSelection.has(makeToken(name));
+        },
+        togglePlaceholder(name) {
+            this.toggleOption(makeToken(name));
+        },
+        displayName(value) {
+            return placeholderDisplayName(value);
+        },
+        glyphHtml(value) {
+            return placeholderGlyphHtml(value);
+        },
         getOptionStyle(option) {
             const backgroundColor = option.color || "#ffffff";
             // Always use white for accent/text color
@@ -580,6 +621,37 @@ export default {
     flex-direction: column;
     gap: 8px;
 }
+
+.select-filter-ph {
+    padding: 8px 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-bottom: 1px solid #e0e0e0;
+    margin-bottom: 4px;
+}
+.select-ph-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #999;
+    padding: 0 4px;
+}
+.select-ph-option {
+    background: color-mix(in srgb, var(--ww-data-grid_filter-accent-color, #2563eb) 8%, #fff);
+}
+.select-ph-option.selected {
+    border-color: var(--ww-data-grid_filter-accent-color, #2563eb) !important;
+}
+.select-ph-glyph {
+    font-weight: 700;
+    letter-spacing: -1px;
+    color: #6b7280;
+    margin-right: 2px;
+    display: inline-flex;
+    align-items: center;
+}
+.select-ph-glyph :deep(svg) { width: 16px; height: 16px; }
 
 .select-filter-option {
     border: 2px solid transparent;

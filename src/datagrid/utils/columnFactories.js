@@ -167,6 +167,16 @@ export function createValidationFunction(col, resolveMappingFormula) {
             }
             break;
 
+          case 'email':
+            if (newValue !== null && newValue !== undefined && newValue !== '') {
+              const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+              if (!emailRegex.test(String(newValue).trim())) {
+                isValid = false;
+                errorMessage = rule.message || 'Please enter a valid email address.';
+              }
+            }
+            break;
+
           case 'custom':
             if (rule.custom) {
               const validationContext = { ...rowData, ...(col?.field ? { [col.field]: newValue } : {}) };
@@ -432,6 +442,11 @@ export function createActionColumnDef(col, commonProperties, onActionTrigger, co
   };
 }
 
+// Fixed width for navigation columns: two 31px icon buttons + 6px gap = 68px of
+// content, plus cell padding. Navigation cells always render the same content, so
+// the column is locked to this width and cannot be resized.
+const NAVIGATION_COLUMN_WIDTH = 90;
+
 // Navigation column factory — renders a fixed pair of icon buttons (detail + chat)
 // per row via the plain-JS NavigationCellRenderer. cellRendererParams is a
 // function so AG Grid re-evaluates it on each refreshCells, picking up the
@@ -439,6 +454,17 @@ export function createActionColumnDef(col, commonProperties, onActionTrigger, co
 export function createNavigationColumnDef(col, commonProperties, navContext) {
   return {
     ...commonProperties,
+    // Lock width: override config width / stored view sizes / flex so the column
+    // is exactly NAVIGATION_COLUMN_WIDTH and the user can't resize it. minWidth
+    // === maxWidth === width keeps it pinned even through other sizing paths;
+    // resizable: false drops the drag handle (overrides defaultColDef.resizable);
+    // flex/suppressSizeToFit stop "size columns to fit" from stretching it.
+    width: NAVIGATION_COLUMN_WIDTH,
+    minWidth: NAVIGATION_COLUMN_WIDTH,
+    maxWidth: NAVIGATION_COLUMN_WIDTH,
+    flex: null,
+    resizable: false,
+    suppressSizeToFit: true,
     headerName: col?.headerName,
     cellRenderer: "NavigationCellRenderer",
     cellRendererParams: (params) => {
@@ -451,7 +477,7 @@ export function createNavigationColumnDef(col, commonProperties, navContext) {
         messageCount: navContext?.resolveMessageCount
           ? navContext.resolveMessageCount(rowData)
           : (rowData?.conversation?.messages?.length ?? 0),
-        workflowId: navContext?.workflowId,
+        onNavigate: navContext?.onNavigate,
       };
     },
     editable: false,

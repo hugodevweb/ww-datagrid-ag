@@ -5,8 +5,17 @@ import {
   createFetchKey,
 } from '../../shared/utils/supabaseUtils.js';
 import { convertFilterToSupabase as _convertFilterToSupabase } from '../utils/convertFilterToSupabase.js';
-import { convertConditionsToSupabase as _convertConditionsToSupabase } from '../../shared/utils/convertConditionsToSupabase.js';
+import { convertConditionsToSupabase as _convertConditionsToSupabase, normalizeFilterType } from '../../shared/utils/convertConditionsToSupabase.js';
 import { getSupabaseSortField as _getSupabaseSortField } from '../utils/supabaseFieldMappings.js';
+import { isPlaceholderToken } from '../../shared/utils/placeholders.js';
+
+// A date condition whose value is a placeholder token (e.g. %DATE:today%) can't
+// be carried by AG Grid's built-in date filter — AG Grid rejects the unparseable
+// value — so it isn't mirrored into the header filter model. Such conditions must
+// be applied straight to the query, where the token is resolved.
+export const isDirectAdvancedCondition = (c) =>
+  normalizeFilterType(c?.type) === 'date' &&
+  (isPlaceholderToken(c?.value) || isPlaceholderToken(c?.valueTo));
 
 // Owns Supabase data fetching: paginated + infinite, fetch guards, the
 // `records` / `isFetching` WeWeb component variables, removed-row tracking,
@@ -97,15 +106,18 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering, g
     _convertConditionsToSupabase(advanced, query, content ?? props.content, debugLog);
   const getSupabaseSortField = (columnId) => _getSupabaseSortField(props.content, columnId);
 
-  // The builder's AND case is mirrored into AG Grid's filterModel (handled by the
-  // normal filterModel path), so here we only forward advanced filters when the
-  // combinator is OR — which AG Grid's flat filter model cannot represent.
+  // Advanced filters applied directly to the Supabase query rather than via AG
+  // Grid's flat filter model:
+  //   - OR mode (AG Grid can't represent an OR group), forwarded whole;
+  //   - AND-mode date-token conditions (see isDirectAdvancedCondition) which AG
+  //     Grid's built-in date filter would otherwise drop.
+  // The builder's other AND conditions are mirrored into the header model.
   const getOrModeAdvancedFilters = () => {
     const advanced = typeof getAdvancedFilters === 'function' ? getAdvancedFilters() : null;
-    if (advanced && advanced.combinator === 'or' && Array.isArray(advanced.conditions) && advanced.conditions.length > 0) {
-      return advanced;
-    }
-    return null;
+    if (!advanced || !Array.isArray(advanced.conditions) || advanced.conditions.length === 0) return null;
+    if (advanced.combinator === 'or') return advanced;
+    const direct = advanced.conditions.filter(isDirectAdvancedCondition);
+    return direct.length > 0 ? { combinator: 'and', conditions: direct } : null;
   };
 
   // Format filters for logging

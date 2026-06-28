@@ -14,7 +14,7 @@ export default {
     focusVariableId: { type: String, default: "" },
     tabValue: { type: Number, default: 0 },
     messageCount: { type: Number, default: 0 },
-    workflowId: { type: String, default: "" },
+    onNavigate: { type: Function, default: null },
   },
   setup(props) {
     const rootRef = ref(null);
@@ -26,7 +26,7 @@ export default {
       focusVariableId: props.focusVariableId,
       tabValue: props.tabValue,
       messageCount: props.messageCount,
-      workflowId: props.workflowId,
+      onNavigate: props.onNavigate,
     });
 
     onMounted(() => {
@@ -38,7 +38,7 @@ export default {
     });
 
     watch(
-      () => [props.rowId, props.focusRowId, props.focusVariableId, props.tabValue, props.messageCount, props.workflowId],
+      () => [props.rowId, props.focusRowId, props.focusVariableId, props.tabValue, props.messageCount],
       () => {
         if (renderer) renderer.refresh(buildParams());
       }

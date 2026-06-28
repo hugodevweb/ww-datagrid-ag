@@ -13,6 +13,26 @@
             Loading records...
         </div>
         <div v-else-if="orderedRecords.length || !searchQuery.trim()" class="record-filter-options">
+            <!-- Placeholders — insert a runtime token (e.g. %CURRENT_USER%) -->
+            <template v-if="placeholderNames.length && !searchQuery.trim()">
+                <button
+                    v-for="name in placeholderNames"
+                    :key="'ph-' + name"
+                    type="button"
+                    class="record-filter-option record-ph-option"
+                    :class="{ selected: isPlaceholderSelected(name) }"
+                    @click="togglePlaceholder(name)"
+                >
+                    <span class="option-content">
+                        <span class="checkbox" :class="{ checked: isPlaceholderSelected(name) }">
+                            <span class="checkbox-icon">&#10003;</span>
+                        </span>
+                        <span class="record-ph-glyph" v-html="glyphHtml(name)"></span>
+                        <span class="record-pill-name">{{ displayName(name) }}</span>
+                    </span>
+                </button>
+                <div class="record-ph-divider"></div>
+            </template>
             <button
                 v-if="!searchQuery.trim()"
                 type="button"
@@ -96,6 +116,8 @@ function getCachedRecords(cacheKey) {
 function setCachedRecords(cacheKey, records) {
     recordCache.set(cacheKey, { records, fetchedAt: Date.now() });
 }
+
+import { getPlaceholderNamesForKind, makeToken, resolveValues, placeholderDisplayName, placeholderGlyphHtml } from '../../shared/utils/placeholders.js';
 
 export default {
     name: "RecordFilterComponent",
@@ -212,8 +234,26 @@ export default {
         canReset() {
             return this.pendingSelection.size > 0 || this.appliedSelection.size > 0;
         },
+        placeholderNames() {
+            return getPlaceholderNamesForKind('record');
+        },
     },
     methods: {
+        placeholderToken(name) {
+            return makeToken(name);
+        },
+        isPlaceholderSelected(name) {
+            return this.pendingSelection.has(makeToken(name));
+        },
+        togglePlaceholder(name) {
+            this.toggleOption(makeToken(name));
+        },
+        displayName(value) {
+            return placeholderDisplayName(value);
+        },
+        glyphHtml(value) {
+            return placeholderGlyphHtml(value);
+        },
         // ─── AG Grid filter interface ────────────────────────────────────────
         getGui() {
             return this.$el;
@@ -223,12 +263,14 @@ export default {
         },
         doesFilterPass(params) {
             if (!this.isFilterActive()) return true;
+            // Resolve placeholder tokens (e.g. %CURRENT_USER%) to real ids before matching.
+            const selection = resolveValues(Array.from(this.appliedSelection));
             const rowValue = this.getRowValue(params);
             if (rowValue == null || rowValue === '') {
-                return this.appliedSelection.has('__empty__');
+                return selection.includes('__empty__');
             }
             const rowStr = String(rowValue);
-            for (const selected of this.appliedSelection) {
+            for (const selected of selection) {
                 if (selected === '__empty__') continue;
                 if (String(selected) === rowStr) return true;
             }
@@ -499,6 +541,28 @@ $accent: var(--ww-data-grid_record-pill-accent-color, #6366f1);
     display: flex;
     flex-direction: column;
 }
+
+.record-ph-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #999;
+    padding: 4px 12px 2px;
+}
+.record-ph-divider {
+    height: 1px;
+    background: #e0e0e0;
+    margin: 4px 8px;
+}
+.record-ph-glyph {
+    font-weight: 700;
+    letter-spacing: -1px;
+    color: #6b7280;
+    margin-right: 4px;
+    display: inline-flex;
+    align-items: center;
+}
+.record-ph-glyph :deep(svg) { width: 16px; height: 16px; }
 
 .record-filter-option {
     border: none;

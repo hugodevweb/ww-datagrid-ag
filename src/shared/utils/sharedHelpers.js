@@ -1,5 +1,7 @@
 // Shared utilities to eliminate code duplication across the component
 
+import { getVarByName } from './wwVariables.js';
+
 /**
  * Translation utilities for filter buttons and UI text
  */
@@ -405,6 +407,28 @@ export const translations = {
     calendarFieldsHint: 'O primeiro campo se torna o título do evento',
   },
 };
+
+/**
+ * WeWeb app variable that supplies the grid/kanban/calendar view configuration.
+ * Replaces the former bindable `viewConfiguration` prop. Referenced by NAME (not
+ * id) so the component survives project duplication. The config lives under the
+ * `tablesSettings` variable's `.config` key (same variable read for `.type`).
+ * Editor binding equivalent: variables['tablesSettings']?.['config']
+ */
+export const VIEW_CONFIG_VARIABLE_NAME = 'tablesSettings';
+
+/**
+ * Read the view configuration from its WeWeb variable. Reactive when called
+ * inside a Vue computed/watcher (wwLib's variable store is reactive).
+ * @returns {object|null} The view configuration object, or null if unavailable
+ */
+export function readViewConfiguration() {
+  try {
+    return getVarByName(VIEW_CONFIG_VARIABLE_NAME)?.config ?? null;
+  } catch (_) {
+    return null;
+  }
+}
 
 /**
  * Get translations for a specific language

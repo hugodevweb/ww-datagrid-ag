@@ -83,7 +83,7 @@
                 :focus-row-id="navigationFocusRowId"
                 :tab-value="navigationTabValue"
                 :message-count="getMessageCount(row)"
-                :workflow-id="navigationWorkflowId"
+                :on-navigate="emitNavigate"
               />
 
               <KanbanField
@@ -313,7 +313,7 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import KanbanField from './components/KanbanField.vue';
 import NavigationButtons from './components/NavigationButtons.vue';
 import FilterBuilder from '../shared/components/FilterBuilder.vue';
-import { getTranslations } from '../shared/utils/sharedHelpers.js';
+import { getTranslations, readViewConfiguration } from '../shared/utils/sharedHelpers.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
 import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
 import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
@@ -340,11 +340,14 @@ export default {
 
     // Merged config (matches Datagrid.vue: baseConfig keys override per-instance content).
     const cfg = computed(() => {
+      // viewConfiguration is no longer a bindable prop — it is read directly from
+      // a hardcoded WeWeb variable and always overrides any content/baseConfig value.
+      const viewConfiguration = readViewConfiguration();
       const content = props.content;
-      if (!content || typeof content !== 'object') return content ?? {};
+      if (!content || typeof content !== 'object') return { ...(content ?? {}), viewConfiguration };
       const base = content.baseConfig;
       const excludes = content.baseConfigExcludes;
-      if (!base || typeof base !== 'object') return content;
+      if (!base || typeof base !== 'object') return { ...content, viewConfiguration };
       const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
       excludeSet.add('baseConfig');
       excludeSet.add('baseConfigExcludes');
@@ -352,6 +355,7 @@ export default {
       for (const key of Object.keys(base)) {
         if (!excludeSet.has(key)) merged[key] = base[key];
       }
+      merged.viewConfiguration = viewConfiguration;
       return merged;
     });
 
@@ -365,9 +369,11 @@ export default {
     // tab formula and workflow id are hardcoded.
     const NAVIGATION_TAB_FORMULA = {
       type: "f",
-      code: "formulas['ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd']()",
+      // Inlined from the former global formula (id ec0f4ece…, whose name is
+      // stripped at runtime so formulas['name']() can't be used). References the
+      // `recordTab` app variable BY NAME so it survives project duplication.
+      code: "wwFormulas.getKeyValue(variables['recordTab'],globalContext.page?.['id'])||0",
     };
-    const NAVIGATION_WORKFLOW_ID = 'd4ab2a61-2728-4dc3-a144-9fd3d558411e';
     const navigationFocusRowId = computed(() => cfg.value?.focusedRowId);
     const navigationTabValue = computed(() =>
       Number(resolveMappingFormula(NAVIGATION_TAB_FORMULA) ?? 0)
@@ -380,7 +386,9 @@ export default {
       },
       { immediate: true }
     );
-    const navigationWorkflowId = computed(() => NAVIGATION_WORKFLOW_ID);
+    // Emit the navigate trigger event; wire it to "open record" in the editor.
+    const emitNavigate = (payload) =>
+      ctx.emit('trigger-event', { name: 'navigate', event: payload });
     const getMessageCount = (row) => {
       const formula = cfg.value?.navigationMessageCountFormula;
       if (formula) {
@@ -1164,7 +1172,7 @@ export default {
       // computed
       selectColumns, availableFields, filteredFieldList, groups, groupedRows,
       openGroups,
-      navigationFocusRowId, navigationTabValue, navigationWorkflowId,
+      navigationFocusRowId, navigationTabValue, emitNavigate,
       // methods
       resolveMappingFormula,
       findColumn, getRowId, getMessageCount,

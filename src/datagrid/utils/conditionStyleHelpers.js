@@ -5,6 +5,8 @@
 // and compiled into per-row style closures that plug into the same merge loop
 // used by the designer-defined `conditionalRowStyles` prop in useColumnState.
 
+import { resolveValue } from '../../shared/utils/placeholders.js';
+
 // Normalise an ag-grid cellDataType to one of the kinds we drive operator
 // lists from. Mirrors normalizeFilterType in convertConditionsToSupabase.js
 // so the styling tab classifies columns the same way the Filter Builder does.
@@ -93,11 +95,22 @@ function coerceNumber(v) {
   return Number.isNaN(n) ? NaN : n;
 }
 
+// Compare two values numerically when possible, else fall back to date parsing.
+// Lets gt/gte/lt/lte work for both numbers and dates (incl. resolved %DATE:…%).
+function compareNumericOrDate(raw, target, cmp) {
+  const a = coerceNumber(raw), b = coerceNumber(target);
+  if (!Number.isNaN(a) && !Number.isNaN(b)) return cmp(a, b);
+  const da = Date.parse(raw), db = Date.parse(target);
+  if (!Number.isNaN(da) && !Number.isNaN(db)) return cmp(da, db);
+  return false;
+}
+
 export function evaluateCondition(condition, rowData) {
   if (!condition || !condition.field || !condition.operator) return false;
   const raw = readField(rowData, condition.field);
   const op = condition.operator;
-  const target = condition.value;
+  // Resolve placeholder tokens (e.g. %CURRENT_USER%) against the runtime variable.
+  const target = resolveValue(condition.value);
 
   switch (op) {
     case 'isEmpty':    return isEmptyValue(raw);
@@ -110,10 +123,10 @@ export function evaluateCondition(condition, rowData) {
     case 'notContains':return !String(raw ?? '').toLowerCase().includes(String(target ?? '').toLowerCase());
     case 'startsWith': return String(raw ?? '').toLowerCase().startsWith(String(target ?? '').toLowerCase());
     case 'endsWith':   return String(raw ?? '').toLowerCase().endsWith(String(target ?? '').toLowerCase());
-    case 'gt':         { const a = coerceNumber(raw), b = coerceNumber(target); return !Number.isNaN(a) && !Number.isNaN(b) && a > b; }
-    case 'gte':        { const a = coerceNumber(raw), b = coerceNumber(target); return !Number.isNaN(a) && !Number.isNaN(b) && a >= b; }
-    case 'lt':         { const a = coerceNumber(raw), b = coerceNumber(target); return !Number.isNaN(a) && !Number.isNaN(b) && a < b; }
-    case 'lte':        { const a = coerceNumber(raw), b = coerceNumber(target); return !Number.isNaN(a) && !Number.isNaN(b) && a <= b; }
+    case 'gt':         return compareNumericOrDate(raw, target, (x, y) => x > y);
+    case 'gte':        return compareNumericOrDate(raw, target, (x, y) => x >= y);
+    case 'lt':         return compareNumericOrDate(raw, target, (x, y) => x < y);
+    case 'lte':        return compareNumericOrDate(raw, target, (x, y) => x <= y);
     case 'isAnyOf':    {
       if (!Array.isArray(target) || target.length === 0) return false;
       // For multi-value cells (e.g. multi-select arrays), match if ANY raw value is in target.

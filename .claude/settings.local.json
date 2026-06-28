@@ -41,7 +41,14 @@
       "Bash(node --check src/datagrid/composables/useGrouping.js)",
       "Bash(tee /tmp/serve_s3.log)",
       "Bash(xargs cat)",
-      "Bash(dir package.json)"
+      "Bash(dir package.json)",
+      "Bash(navigation)",
+      "Bash(image\" | head -20)",
+      "mcp__0abfaf2f-220a-4c1e-826f-c1fb8d0e70bd__switchProject",
+      "mcp__0abfaf2f-220a-4c1e-826f-c1fb8d0e70bd__searchVariables",
+      "mcp__0abfaf2f-220a-4c1e-826f-c1fb8d0e70bd__searchFrontendAppPageFunctionWorkflows",
+      "Bash(cd /c/VS_code/vueJs/ww-datagrid-ag/weweb-front/public/data && grep -oE '.{0,140}ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd.{0,140}' *.json | head -c 4000)",
+      "Bash(sort -k5 -n)"
     ]
   }
 }

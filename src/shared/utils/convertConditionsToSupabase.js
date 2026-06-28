@@ -1,5 +1,6 @@
 import { convertFilterToSupabase } from '../../datagrid/utils/convertFilterToSupabase.js';
 import { getSupabaseFilterField, findColumnByField } from '../../datagrid/utils/supabaseFieldMappings.js';
+import { resolveValue } from './placeholders.js';
 
 // ---------------------------------------------------------------------------
 // Filter Builder — flat, cross-column AND/OR conditions → Supabase query.
@@ -158,7 +159,9 @@ const conditionToOrToken = (condition, content) => {
   const kind = normalizeFilterType(condition.type);
   const ctype = String(condition.type || '').toLowerCase();
   const op = condition.operator;
-  const v = condition.value;
+  // Resolve placeholder tokens (e.g. %CURRENT_USER%) against the runtime variable.
+  const v = resolveValue(condition.value);
+  const vTo = resolveValue(condition.valueTo);
 
   switch (kind) {
     case 'text':
@@ -181,7 +184,7 @@ const conditionToOrToken = (condition, content) => {
         case 'greaterThanOrEqual': return `${field}.gte.${numVal(kind, ctype, v)}`;
         case 'lessThan': return `${field}.lt.${numVal(kind, ctype, v)}`;
         case 'lessThanOrEqual': return `${field}.lte.${numVal(kind, ctype, v)}`;
-        case 'inRange': return `and(${field}.gte.${numVal(kind, ctype, v)},${field}.lte.${numVal(kind, ctype, condition.valueTo)})`;
+        case 'inRange': return `and(${field}.gte.${numVal(kind, ctype, v)},${field}.lte.${numVal(kind, ctype, vTo)})`;
         default: return null;
       }
     case 'date':
@@ -198,7 +201,7 @@ const conditionToOrToken = (condition, content) => {
         }
         case 'greaterThan': return `${field}.gt.${dateVal(v)}`;
         case 'lessThan': return `${field}.lt.${dateVal(v)}`;
-        case 'inRange': return `and(${field}.gte.${dateVal(v)},${field}.lte.${dateVal(condition.valueTo)})`;
+        case 'inRange': return `and(${field}.gte.${dateVal(v)},${field}.lte.${dateVal(vTo)})`;
         default: return null;
       }
     case 'boolean':

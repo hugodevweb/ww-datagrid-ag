@@ -36,13 +36,23 @@
 
         <!-- Value -->
         <template v-if="inputKind(cond) === 'text'">
-          <input class="fb-input fb-value" type="text" :value="cond.value" placeholder="Valeur"
+          <input v-if="!isPlaceholderToken(cond.value)" class="fb-input fb-value" type="text" :value="cond.value" placeholder="Valeur"
             @input="updateValue(i, $event.target.value)" />
+          <span v-else class="fb-input fb-value fb-token">
+            <span class="fb-token-glyph" v-html="glyphHtml(cond.value)"></span>{{ displayName(cond.value) }}
+            <button type="button" class="fb-token-x" @click="updateValue(i, '')" aria-label="Clear">×</button>
+          </span>
+          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateValue(i, $event)" />
         </template>
 
         <template v-else-if="inputKind(cond) === 'number'">
-          <input class="fb-input fb-value" type="number" :value="cond.value" placeholder="Valeur"
+          <input v-if="!isPlaceholderToken(cond.value)" class="fb-input fb-value" type="number" :value="cond.value" placeholder="Valeur"
             @input="updateValue(i, $event.target.value)" />
+          <span v-else class="fb-input fb-value fb-token">
+            <span class="fb-token-glyph" v-html="glyphHtml(cond.value)"></span>{{ displayName(cond.value) }}
+            <button type="button" class="fb-token-x" @click="updateValue(i, '')" aria-label="Clear">×</button>
+          </span>
+          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateValue(i, $event)" />
         </template>
 
         <template v-else-if="inputKind(cond) === 'range-number'">
@@ -53,15 +63,31 @@
         </template>
 
         <template v-else-if="inputKind(cond) === 'date'">
-          <input class="fb-input fb-value" type="date" :value="cond.value"
+          <input v-if="!isPlaceholderToken(cond.value)" class="fb-input fb-value" type="date" :value="cond.value"
             @input="updateValue(i, $event.target.value)" />
+          <span v-else class="fb-input fb-value fb-token">
+            <span class="fb-token-glyph" v-html="glyphHtml(cond.value)"></span>{{ displayName(cond.value) }}
+            <button type="button" class="fb-token-x" @click="updateValue(i, '')" aria-label="Clear">×</button>
+          </span>
+          <PlaceholderMenu :kind="placeholderKind(cond)" @select="updateValue(i, $event)" />
+          <DatePlaceholderMenu @select="updateValue(i, $event)" />
         </template>
 
         <template v-else-if="inputKind(cond) === 'range-date'">
-          <input class="fb-input fb-value-half" type="date" :value="cond.value"
+          <input v-if="!isPlaceholderToken(cond.value)" class="fb-input fb-value-half" type="date" :value="cond.value"
             @input="updateValue(i, $event.target.value)" />
-          <input class="fb-input fb-value-half" type="date" :value="cond.valueTo"
+          <span v-else class="fb-input fb-value-half fb-token">
+            <span class="fb-token-glyph" v-html="glyphHtml(cond.value)"></span>{{ displayName(cond.value) }}
+            <button type="button" class="fb-token-x" @click="updateValue(i, '')" aria-label="Clear">×</button>
+          </span>
+          <DatePlaceholderMenu @select="updateValue(i, $event)" />
+          <input v-if="!isPlaceholderToken(cond.valueTo)" class="fb-input fb-value-half" type="date" :value="cond.valueTo"
             @input="updateValueTo(i, $event.target.value)" />
+          <span v-else class="fb-input fb-value-half fb-token">
+            <span class="fb-token-glyph" v-html="glyphHtml(cond.valueTo)"></span>{{ displayName(cond.valueTo) }}
+            <button type="button" class="fb-token-x" @click="updateValueTo(i, '')" aria-label="Clear">×</button>
+          </span>
+          <DatePlaceholderMenu @select="updateValueTo(i, $event)" />
         </template>
 
         <!-- Select / User / Record — toggle opens the inline picker below the row -->
@@ -114,7 +140,10 @@ import {
   getInputKind,
   normalizeFilterType,
 } from '../utils/convertConditionsToSupabase.js';
+import { isPlaceholderToken, placeholderDisplayName, placeholderGlyphHtml } from '../utils/placeholders.js';
 import FilterValuePicker from './FilterValuePicker.vue';
+import PlaceholderMenu from './PlaceholderMenu.vue';
+import DatePlaceholderMenu from './DatePlaceholderMenu.vue';
 
 // cellDataTypes we never offer in the builder (no meaningful filter):
 // image/action are presentational, and navigation columns are link-only cells
@@ -123,7 +152,7 @@ const NON_FILTERABLE = ['image', 'action', 'navigation'];
 
 export default {
   name: 'FilterBuilder',
-  components: { FilterValuePicker },
+  components: { FilterValuePicker, PlaceholderMenu, DatePlaceholderMenu },
   props: {
     // content.columns — column metadata
     columns: { type: Array, default: () => [] },
@@ -258,10 +287,23 @@ export default {
       const vals = Array.isArray(cond.value) ? cond.value : [];
       if (vals.length === 0) return 'Sélectionner…';
       if (vals.length === 1) {
+        if (isPlaceholderToken(vals[0])) return placeholderDisplayName(vals[0]);
         const match = this.choicesFor(cond).find((c) => c.value === vals[0]);
         if (match) return match.label;
       }
       return `${vals.length} sélectionné(s)`;
+    },
+    isPlaceholderToken(value) {
+      return isPlaceholderToken(value);
+    },
+    displayName(value) {
+      return placeholderDisplayName(value);
+    },
+    glyphHtml(value) {
+      return placeholderGlyphHtml(value);
+    },
+    placeholderKind(cond) {
+      return normalizeFilterType(cond.type);
     },
   },
 };
@@ -347,6 +389,42 @@ export default {
 .fb-field { flex: 1.2; }
 .fb-operator { flex: 1; }
 .fb-value { flex: 1.3; }
+
+/* Inline placeholder token shown in place of a value input */
+.fb-token {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ww-data-grid_filter-accent-color, #2563eb);
+  background: color-mix(in srgb, var(--ww-data-grid_filter-accent-color, #2563eb) 8%, #fff);
+  border-color: color-mix(in srgb, var(--ww-data-grid_filter-accent-color, #2563eb) 35%, transparent);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fb-token-glyph {
+  font-weight: 700;
+  letter-spacing: -1px;
+  color: #6b7280;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  :deep(svg) { width: 15px; height: 15px; }
+}
+.fb-token-x {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  margin-left: auto;
+  padding: 0 2px;
+  opacity: 0.7;
+  &:hover { opacity: 1; }
+}
 .fb-value-half { flex: 0.65; }
 .fb-value-spacer { flex: 1.3; }
 

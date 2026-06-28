@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Grid Engine — Interactive Preview</title>
+
+  <!-- AG Grid Community v34 (matches the component's ag-grid-vue3 ^34.x).
+       This UMD bundle auto-registers all community modules and exposes a
+       global `agGrid` with createGrid + themeQuartz. No build step, no backend. -->
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@34.3.1/dist/ag-grid-community.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #f7f8fa;
+      --panel: #ffffff;
+      --text: #1f2430;
+      --muted: #6b7280;
+      --accent: #4f46e5;
+      --border: #ececec;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+    }
+    .wrap { max-width: 1100px; margin: 0 auto; }
+    .head { margin-bottom: 16px; }
+    .head h1 { font-size: 20px; margin: 0 0 4px; }
+    .head p { margin: 0; color: var(--muted); font-size: 14px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      margin-bottom: 12px;
+    }
+    .toolbar input[type="search"] {
+      flex: 1 1 220px; min-width: 180px;
+      padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px;
+      font-size: 14px; outline: none; background: var(--panel);
+    }
+    .toolbar input[type="search"]:focus { border-color: var(--accent); }
+    .btn {
+      padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--panel); color: var(--text); font-size: 14px;
+      cursor: pointer; transition: background .12s, border-color .12s;
+    }
+    .btn:hover { border-color: var(--accent); }
+    .btn--primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .btn--primary:hover { filter: brightness(1.05); }
+    .count { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+    #grid { width: 100%; height: 520px; }
+
+    /* Custom cell renderers — echo the component's status/select/user cells. */
+    .pill {
+      display: inline-block; padding: 2px 10px; border-radius: 999px;
+      font-size: 12px; font-weight: 600; line-height: 18px;
+    }
+    .user-cell { display: flex; align-items: center; gap: 8px; height: 100%; }
+    .avatar {
+      width: 24px; height: 24px; border-radius: 50%; flex: 0 0 auto;
+      display: flex; align-items: center; justify-content: center;
+      color: #fff; font-size: 11px; font-weight: 600;
+    }
+    .note { margin-top: 12px; color: var(--muted); font-size: 12.5px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <h1>Grid Engine — Interactive Preview</h1>
+      <p>Sort, filter, search, select, and double-click any cell to edit. All changes live in your browser — nothing is saved.</p>
+    </div>
+
+    <div class="toolbar">
+      <input id="search" type="search" placeholder="Quick search…" aria-label="Quick search" />
+      <button class="btn btn--primary" id="add">+ Add row</button>
+      <button class="btn" id="reset">Reset</button>
+      <span class="count" id="count"></span>
+    </div>
+
+    <div id="grid"></div>
+
+    <p class="note">Standalone demo · AG Grid Community · no backend. Embed on a landing page directly or via <code>&lt;iframe&gt;</code>.</p>
+  </div>
+
+  <script>
+    // ---- Mock data (no backend) -------------------------------------------
+    const SEED = [
+      { id: 1, name: "Acme Onboarding",      owner: "Maya Chen",     status: "In progress", priority: "High",   progress: 62, budget: 18500, due: "2026-07-10" },
+      { id: 2, name: "Website Redesign",     owner: "Liam Patel",    status: "In progress", priority: "Medium", progress: 41, budget: 32000, due: "2026-08-02" },
+      { id: 3, name: "Q3 Marketing Push",    owner: "Sofia Rossi",   status: "Planned",     priority: "Low",    progress: 8,  budget: 12000, due: "2026-09-15" },
+      { id: 4, name: "Mobile App v2",        owner: "Noah Williams", status: "Blocked",     priority: "High",   progress: 27, budget: 56000, due: "2026-07-28" },
+      { id: 5, name: "Data Migration",       owner: "Maya Chen",     status: "Done",        priority: "Medium", progress: 100,budget: 9400,  due: "2026-06-01" },
+      { id: 6, name: "Customer Portal",      owner: "Aisha Khan",    status: "In progress", priority: "High",   progress: 73, budget: 41000, due: "2026-07-19" },
+      { id: 7, name: "Billing Integration",  owner: "Liam Patel",    status: "Planned",     priority: "Medium", progress: 0,  budget: 22000, due: "2026-10-05" },
+      { id: 8, name: "Security Audit",       owner: "Noah Williams", status: "Done",        priority: "High",   progress: 100,budget: 15000, due: "2026-05-20" },
+      { id: 9, name: "Analytics Dashboard",  owner: "Sofia Rossi",   status: "In progress", priority: "Low",    progress: 55, budget: 27500, due: "2026-08-22" },
+      { id: 10,name: "API Rate Limiting",    owner: "Aisha Khan",    status: "Blocked",     priority: "Medium", progress: 33, budget: 8000,  due: "2026-07-14" },
+    ];
+    let nextId = SEED.length + 1;
+
+    // ---- Renderers ---------------------------------------------------------
+    const STATUS_COLORS = {
+      "Planned":     ["#eef2ff", "#4338ca"],
+      "In progress": ["#fff7ed", "#c2410c"],
+      "Blocked":     ["#fef2f2", "#b91c1c"],
+      "Done":        ["#ecfdf5", "#047857"],
+    };
+    const PRIORITY_COLORS = {
+      "High":   ["#fef2f2", "#b91c1c"],
+      "Medium": ["#fffbeb", "#b45309"],
+      "Low":    ["#f0f9ff", "#0369a1"],
+    };
+    function pillRenderer(map) {
+      return (p) => {
+        if (p.value == null || p.value === "") return "";
+        const [bg, fg] = map[p.value] || ["#f3f4f6", "#374151"];
+        const el = document.createElement("span");
+        el.className = "pill";
+        el.style.background = bg; el.style.color = fg;
+        el.textContent = p.value;
+        return el;
+      };
+    }
+    const AVATAR_COLORS = ["#4f46e5", "#0891b2", "#db2777", "#ca8a04", "#16a34a", "#9333ea"];
+    function avatarColor(name) {
+      let h = 0; for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+      return AVATAR_COLORS[Math.abs(h) % AVATAR_COLORS.length];
+    }
+    function userRenderer(p) {
+      if (!p.value) return "";
+      const wrap = document.createElement("div"); wrap.className = "user-cell";
+      const av = document.createElement("div"); av.className = "avatar";
+      av.style.background = avatarColor(p.value);
+      av.textContent = p.value.split(" ").map(s => s[0]).join("").slice(0, 2).toUpperCase();
+      const label = document.createElement("span"); label.textContent = p.value;
+      wrap.append(av, label);
+      return wrap;
+    }
+
+    // ---- Theme (mirrors the component's themeQuartz.withParams) ------------
+    const theme = agGrid.themeQuartz.withParams({
+      accentColor: "#4f46e5",
+      headerBackgroundColor: "#fafafb",
+      headerTextColor: "#374151",
+      headerFontWeight: 600,
+      borderColor: "#ececec",
+      wrapperBorderRadius: 10,
+      rowHoverColor: "#f7f8fa",
+      oddRowBackgroundColor: "#fcfcfd",
+      fontSize: 14,
+    });
+
+    // ---- Column definitions ------------------------------------------------
+    const columnDefs = [
+      { field: "name", headerName: "Project", flex: 2, minWidth: 180, editable: true, checkboxSelection: true, headerCheckboxSelection: true },
+      { field: "owner", headerName: "Owner", flex: 1.4, minWidth: 160, editable: true, cellRenderer: userRenderer },
+      { field: "status", headerName: "Status", width: 150, editable: true,
+        cellRenderer: pillRenderer(STATUS_COLORS),
+        cellEditor: "agSelectCellEditor",
+        cellEditorParams: { values: Object.keys(STATUS_COLORS) } },
+      { field: "priority", headerName: "Priority", width: 130, editable: true,
+        cellRenderer: pillRenderer(PRIORITY_COLORS),
+        cellEditor: "agSelectCellEditor",
+        cellEditorParams: { values: Object.keys(PRIORITY_COLORS) } },
+      { field: "progress", headerName: "Progress", width: 120, editable: true,
+        filter: "agNumberColumnFilter",
+        valueParser: p => Math.max(0, Math.min(100, Number(p.newValue) || 0)),
+        valueFormatter: p => p.value == null ? "" : p.value + "%" },
+      { field: "budget", headerName: "Budget", width: 130, editable: true,
+        filter: "agNumberColumnFilter",
+        valueParser: p => Number(String(p.newValue).replace(/[^0-9.]/g, "")) || 0,
+        valueFormatter: p => p.value == null ? "" : "$" + Number(p.value).toLocaleString() },
+      { field: "due", headerName: "Due date", width: 130, editable: true, filter: "agDateColumnFilter" },
+    ];
+
+    // ---- Grid options ------------------------------------------------------
+    const gridOptions = {
+      theme,
+      rowData: SEED.map(r => ({ ...r })),
+      columnDefs,
+      defaultColDef: { sortable: true, filter: true, resizable: true, floatingFilter: true },
+      rowSelection: { mode: "multiRow" },
+      animateRows: true,
+      getRowId: (p) => String(p.data.id),
+      onModelUpdated: updateCount,
+      onSelectionChanged: updateCount,
+    };
+
+    const gridEl = document.getElementById("grid");
+    const api = agGrid.createGrid(gridEl, gridOptions);
+
+    function updateCount() {
+      const total = api.getDisplayedRowCount();
+      const selected = api.getSelectedRows().length;
+      document.getElementById("count").textContent =
+        selected > 0 ? `${selected} selected · ${total} shown` : `${total} rows`;
+    }
+
+    // ---- Toolbar wiring ----------------------------------------------------
+    document.getElementById("search").addEventListener("input", (e) => {
+      api.setGridOption("quickFilterText", e.target.value);
+    });
+    document.getElementById("add").addEventListener("click", () => {
+      const row = { id: nextId++, name: "New project", owner: "Unassigned",
+        status: "Planned", priority: "Medium", progress: 0, budget: 0, due: "2026-12-31" };
+      api.applyTransaction({ add: [row], addIndex: 0 });
+    });
+    document.getElementById("reset").addEventListener("click", () => {
+      api.setGridOption("rowData", SEED.map(r => ({ ...r })));
+      api.setFilterModel(null);
+      api.setGridOption("quickFilterText", "");
+      document.getElementById("search").value = "";
+      nextId = SEED.length + 1;
+    });
+  </script>
+</body>
+</html>

@@ -438,7 +438,8 @@ import { convertConditionsToSupabase } from '../shared/utils/convertConditionsTo
 import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
 import { useRecordsVariable } from '../shared/composables/useRecordsVariable.js';
 import { useResponsive } from '../shared/composables/useResponsive.js';
-import { getTranslations } from '../shared/utils/sharedHelpers.js';
+import { getTranslations, readViewConfiguration } from '../shared/utils/sharedHelpers.js';
+import { getVarByName, setVarByName } from '../shared/utils/wwVariables.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
 import {
   parseEventDate,
@@ -463,15 +464,17 @@ const SLOT_PX = 52; // assumed time-grid card height, used to detect overlaps
 const TIMEGRID_GAP = 8; // minimum vertical gap between stacked time-grid events
 const TIMEFRAMES = ['day', 'week', 'month', 'year', 'custom'];
 
-// Navigation workflow run on event click — same global workflow + parameters as
-// the grid's navigation button. `tab` is the value of a global formula.
-const NAV_WORKFLOW_ID = 'd4ab2a61-2728-4dc3-a144-9fd3d558411e';
-const NAV_TAB_FORMULA_ID = 'ec0f4ece-48ed-4145-b0a3-eb9985f1e4bd';
+// Navigation on event click emits the `navigate` trigger event (wired to the
+// "open record" workflow in the editor). `tab` is the value of the navigation-tab
+// formula, inlined below.
+// Inlined from the former global formula (id ec0f4ece…, whose name is stripped at
+// runtime). References the `recordTab` app variable BY NAME -> duplication-safe.
+const NAV_TAB_FORMULA_CODE = "wwFormulas.getKeyValue(variables['recordTab'],globalContext.page?.['id'])||0";
 
-// Fallback WeWeb Object variable used to persist calendar navigation state when
-// the "Calendar State — Variable ID" setting is left empty (e.g. on component
-// instances placed before that setting existed). Overridden by the setting.
-const DEFAULT_STATE_VAR_ID = '39535f5a-df56-47e4-b54a-8e963e02302f';
+// Fallback WeWeb Object variable (by NAME) used to persist calendar navigation
+// state when the "Calendar State — Variable ID" setting is left empty. Overridden
+// by the setting when the user binds a specific variable id.
+const DEFAULT_STATE_VAR_NAME = 'calendarState';
 
 // Per-instance calendar navigation state (timeframe + anchor), keyed by uid.
 // Module-level so it survives component unmount/remount during SPA page
@@ -494,11 +497,14 @@ export default {
 
     // Merged config — identical pattern to Datagrid.vue / Kanban.vue.
     const cfg = computed(() => {
+      // viewConfiguration is no longer a bindable prop — it is read directly from
+      // a hardcoded WeWeb variable and always overrides any content/baseConfig value.
+      const viewConfiguration = readViewConfiguration();
       const content = props.content;
-      if (!content || typeof content !== 'object') return content ?? {};
+      if (!content || typeof content !== 'object') return { ...(content ?? {}), viewConfiguration };
       const base = content.baseConfig;
       const excludes = content.baseConfigExcludes;
-      if (!base || typeof base !== 'object') return content;
+      if (!base || typeof base !== 'object') return { ...content, viewConfiguration };
       const excludeSet = new Set(Array.isArray(excludes) ? excludes : []);
       excludeSet.add('baseConfig');
       excludeSet.add('baseConfigExcludes');
@@ -506,6 +512,7 @@ export default {
       for (const key of Object.keys(base)) {
         if (!excludeSet.has(key)) merged[key] = base[key];
       }
+      merged.viewConfiguration = viewConfiguration;
       return merged;
     });
 
@@ -799,24 +806,25 @@ export default {
     // can be bound to several calendar instances without them clobbering each
     // other. Unlike NAV_STATE_CACHE (module-level, cleared on full reload), the
     // variable survives reloads and page navigation.
-    const stateVarId = () => cfg.value?.calendarStateVariableId || DEFAULT_STATE_VAR_ID;
+    // When the user binds a specific variable id via the setting, use it (by id);
+    // otherwise fall back to the default `calendarState` variable BY NAME so the
+    // component keeps working after a project duplication (ids change, names don't).
     const readNavStateVar = () => {
-      const varId = stateVarId();
-      if (!varId) return null;
+      const varId = cfg.value?.calendarStateVariableId;
       try {
-        const all = wwLib.wwVariable.getValue(varId);
+        const all = varId ? wwLib.wwVariable.getValue(varId) : getVarByName(DEFAULT_STATE_VAR_NAME);
         const entry = all && typeof all === 'object' ? all[props.uid] : null;
         return entry && typeof entry === 'object' ? entry : null;
       } catch (_) { return null; }
     };
     const writeNavStateVar = (state) => {
-      const varId = stateVarId();
-      if (!varId) return;
+      const varId = cfg.value?.calendarStateVariableId;
       try {
-        const current = wwLib.wwVariable.getValue(varId);
+        const current = varId ? wwLib.wwVariable.getValue(varId) : getVarByName(DEFAULT_STATE_VAR_NAME);
         const next = current && typeof current === 'object' ? { ...current } : {};
         next[props.uid] = state;
-        wwLib.wwVariable.updateValue(varId, next);
+        if (varId) wwLib.wwVariable.updateValue(varId, next);
+        else setVarByName(DEFAULT_STATE_VAR_NAME, next);
       } catch (_) { /* noop */ }
     };
 
@@ -1191,14 +1199,13 @@ export default {
 
       let tab = null;
       try {
-        tab = resolveMappingFormula({ type: 'f', code: `formulas['${NAV_TAB_FORMULA_ID}']()` }, row);
+        tab = resolveMappingFormula({ type: 'f', code: NAV_TAB_FORMULA_CODE }, row);
       } catch (_) { /* noop */ }
 
-      try {
-        wwLib.wwWorkflow.executeGlobal(NAV_WORKFLOW_ID, { tab, id, openNewTab: false });
-      } catch (e) {
-        console.warn('[Calendar] navigation workflow failed:', e?.message || e);
-      }
+      ctx.emit('trigger-event', {
+        name: 'navigate',
+        event: { id, tab, openNewTab: false },
+      });
 
       ctx.emit('trigger-event', {
         name: 'rowClicked',

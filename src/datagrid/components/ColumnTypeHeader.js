@@ -39,6 +39,22 @@ class ColumnTypeHeader {
       const name = String(params.displayName);
       if (this.eText.textContent !== name) this.eText.textContent = name;
     }
+    // Keep the type icon in sync. AG Grid reuses the same header component and
+    // calls refresh() (rather than recreating it) when a column's config
+    // changes — e.g. switching an existing column's type to Email — so the
+    // icon must be re-applied here or it stays stale (the old type's glyph).
+    const icon = params?.icon;
+    if (icon) {
+      if (!this.eIcon) {
+        this.eIcon = document.createElement("span");
+        this.eIcon.className = "cc-col-type-icon";
+        this.eGui.insertBefore(this.eIcon, this.eGui.firstChild);
+      }
+      if (this.eIcon.innerHTML !== icon) this.eIcon.innerHTML = icon;
+    } else if (this.eIcon) {
+      this.eIcon.remove();
+      this.eIcon = null;
+    }
     return true;
   }
 

@@ -370,7 +370,13 @@ export default {
             setTimeout(() => {
                 this.updateDropdownPosition();
             }, 50);
-            
+
+            // Catch Enter/Escape at the document level (capture phase) so they work
+            // regardless of where focus lands. The dropdown is teleported to the body
+            // and focus sits on a <div>, which loses focus easily — without this, the
+            // template's @keydown handlers silently miss and both keys appear dead.
+            this.addKeyboardListener();
+
             // Add click outside listener to close dropdown
             setTimeout(() => {
                 this.addClickOutsideListener();
@@ -384,6 +390,7 @@ export default {
         }
         // Clean up click outside listener
         this.removeClickOutsideListener();
+        this.removeKeyboardListener();
     },
     watch: {
         isEditMode(newVal) {
@@ -450,6 +457,30 @@ export default {
         removeClickOutsideListener() {
             const frontDocument = wwLib?.getFrontDocument?.() || document;
             frontDocument.removeEventListener('mousedown', this.handleClickOutside);
+        },
+        // Document-level Enter/Escape handling (capture phase) so the keys work
+        // even when the teleported dropdown <div> doesn't hold focus. Mirrors the
+        // pattern used by WewebCellRenderer. Only Enter/Escape are intercepted —
+        // arrow keys still reach the dropdown's @keydown handlers for navigation.
+        handleEditorKeydown(event) {
+            if (!this.isEditMode) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                this.cancelEditing();
+            } else if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.selectHighlightedOption();
+            }
+        },
+        addKeyboardListener() {
+            const frontDocument = wwLib?.getFrontDocument?.() || document;
+            frontDocument.addEventListener('keydown', this.handleEditorKeydown, true);
+        },
+        removeKeyboardListener() {
+            const frontDocument = wwLib?.getFrontDocument?.() || document;
+            frontDocument.removeEventListener('keydown', this.handleEditorKeydown, true);
         },
         clearTextSelection() {
             // Clear any text selection that might have occurred from double-click
@@ -548,8 +579,9 @@ export default {
             return cb({ value: this.getValue(), data: this.params?.data });
         },
         stopEditing() {
-            // Remove click outside listener
+            // Remove listeners
             this.removeClickOutsideListener();
+            this.removeKeyboardListener();
             // Call AG Grid's stopEditing if available
             if (this.params?.stopEditing) {
                 this.params.stopEditing();
@@ -557,8 +589,9 @@ export default {
         },
         cancelEditing() {
             this.selectedValue = this.originalValue;
-            // Remove click outside listener
+            // Remove listeners
             this.removeClickOutsideListener();
+            this.removeKeyboardListener();
             // Call AG Grid's stopEditing with cancel flag
             if (this.params?.stopEditing) {
                 this.params.stopEditing(true);

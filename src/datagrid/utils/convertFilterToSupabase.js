@@ -1,4 +1,18 @@
 import { getSupabaseFilterField, findColumnByField, findUserColumn } from './supabaseFieldMappings.js';
+import { resolveValue, resolveValues } from '../../shared/utils/placeholders.js';
+
+// Resolve placeholder tokens (e.g. %CURRENT_USER%) inside a filter entry's value
+// fields. Returns a shallow copy so the stored filter model keeps its raw tokens.
+const resolveFilterEntry = (filter) => {
+  if (!filter || typeof filter !== 'object') return filter;
+  const out = { ...filter };
+  if (Array.isArray(out.values)) out.values = resolveValues(out.values);
+  if ('filter' in out) out.filter = resolveValue(out.filter);
+  if ('filterTo' in out) out.filterTo = resolveValue(out.filterTo);
+  if ('dateFrom' in out) out.dateFrom = resolveValue(out.dateFrom);
+  if ('dateTo' in out) out.dateTo = resolveValue(out.dateTo);
+  return out;
+};
 
 // Convert AG Grid filter model to Supabase filter chain.
 // Pure function — extracted from Datagrid.vue setup() (was lines ~770-1164).
@@ -16,8 +30,10 @@ export const convertFilterToSupabase = (filterModel, query, content, debugLog = 
   let currentQuery = query;
 
   // Process each column filter
-  for (const [columnId, filter] of Object.entries(filterModel)) {
-    if (!filter) continue;
+  for (const [columnId, rawFilter] of Object.entries(filterModel)) {
+    if (!rawFilter) continue;
+    // Resolve placeholder tokens before building the query (model stays untouched).
+    const filter = resolveFilterEntry(rawFilter);
 
     // Get the Supabase field path for this column (supports nested relationships)
     // This will return the supabaseFilterField if set, otherwise columnId

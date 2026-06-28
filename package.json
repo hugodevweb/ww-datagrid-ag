@@ -7,9 +7,13 @@
     },
     "dependencies": {
         "@ag-grid-community/locale": "^34.3.1",
-        "ag-grid-vue3": "^34.3.1"
+        "ag-grid-vue3": "^34.3.1",
+        "country-flag-icons": "^1.5.19",
+        "libphonenumber-js": "^1.12.9"
     },
     "devDependencies": {
-        "@weweb/cli": "^3.8.13"
+        "@vitejs/plugin-vue": "^5.2.4",
+        "@weweb/cli": "^3.8.13",
+        "vite": "^5.4.21"
     }
 }

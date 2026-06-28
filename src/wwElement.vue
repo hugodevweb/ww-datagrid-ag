@@ -31,8 +31,9 @@
 import Datagrid from './datagrid/Datagrid.vue';
 import Kanban from './kanban/Kanban.vue';
 import Calendar from './calendar/Calendar.vue';
+import { getVarByName } from './shared/utils/wwVariables.js';
 
-const VIEW_VARIABLE_ID = '23742aed-c957-4a20-b9ac-df6642c96015';
+const VIEW_VARIABLE_NAME = 'tablesSettings';
 
 // Methods exposed to the WeWeb runtime. Must stay in sync with ww-config.js
 // (every entry in actions[] plus every triggerEvents[].testEvent getter).
@@ -81,7 +82,7 @@ export default {
   computed: {
     viewType() {
       try {
-        const v = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID);
+        const v = getVarByName(VIEW_VARIABLE_NAME);
         return v?.type ?? 'grid';
       } catch (_) {
         return 'grid';

@@ -21,7 +21,7 @@
             </div>
             
             <!-- Selected Users Pills -->
-            <div v-if="selectedUsers.length > 0 || isEmptySelected" class="selected-users-pills">
+            <div v-if="selectedUsers.length > 0 || isEmptySelected || selectedPlaceholders.length > 0" class="selected-users-pills">
                 <div
                     v-if="isEmptySelected"
                     class="user-pill empty-pill"
@@ -30,6 +30,19 @@
                     <button
                         class="pill-remove"
                         @click.stop="toggleEmpty"
+                        type="button"
+                    >×</button>
+                </div>
+                <div
+                    v-for="tok in selectedPlaceholders"
+                    :key="tok"
+                    class="user-pill placeholder-pill"
+                >
+                    <span class="pill-ph-glyph" v-html="glyphHtml(tok)"></span>
+                    <span class="pill-name">{{ displayName(tok) }}</span>
+                    <button
+                        class="pill-remove"
+                        @click.stop="removeUserId(tok)"
                         type="button"
                     >×</button>
                 </div>
@@ -54,6 +67,23 @@
             
             <!-- Users List -->
             <div class="user-list">
+                <!-- Placeholders — insert a runtime token (e.g. %CURRENT_USER%) -->
+                <template v-if="placeholderNames.length && !searchQuery.trim()">
+                    <div
+                        v-for="name in placeholderNames"
+                        :key="'ph-' + name"
+                        class="user-option placeholder-option"
+                        :class="{ 'selected': isPlaceholderSelected(placeholderToken(name)) }"
+                        @click="togglePlaceholder(name)"
+                    >
+                        <div class="placeholder-glyph" v-html="glyphHtml(name)"></div>
+                        <div class="option-info">
+                            <div class="option-name">{{ displayName(name) }}</div>
+                        </div>
+                        <div v-if="isPlaceholderSelected(placeholderToken(name))" class="option-check">✓</div>
+                    </div>
+                    <div class="user-ph-divider"></div>
+                </template>
                 <!-- Empty/No user option -->
                 <div
                     v-if="!searchQuery.trim()"
@@ -128,6 +158,8 @@
 </template>
 
 <script>
+import { getPlaceholderNamesForKind, makeToken, isPlaceholderToken, resolveValues, placeholderDisplayName, placeholderGlyphHtml } from '../../shared/utils/placeholders.js';
+
 export default {
     name: "UserFilterComponent",
     props: {
@@ -176,6 +208,12 @@ export default {
         },
         isEmptySelected() {
             return this.pendingSelection.has('__empty__');
+        },
+        placeholderNames() {
+            return getPlaceholderNamesForKind('user');
+        },
+        selectedPlaceholders() {
+            return this.selectedUserIds.filter((v) => isPlaceholderToken(v));
         },
         // Offset for highlighted index when empty option is shown
         emptyOptionOffset() {
@@ -592,6 +630,28 @@ export default {
             nextSelection.delete(userId);
             this.pendingSelection = nextSelection;
         },
+        placeholderToken(name) {
+            return makeToken(name);
+        },
+        displayName(value) {
+            return placeholderDisplayName(value);
+        },
+        glyphHtml(value) {
+            return placeholderGlyphHtml(value);
+        },
+        isPlaceholderSelected(token) {
+            return this.pendingSelection.has(token);
+        },
+        togglePlaceholder(name) {
+            const token = makeToken(name);
+            const nextSelection = new Set(this.pendingSelection);
+            if (nextSelection.has(token)) {
+                nextSelection.delete(token);
+            } else {
+                nextSelection.add(token);
+            }
+            this.pendingSelection = nextSelection;
+        },
         getUserOptionStyle(user) {
             if (this.isUserIdSelected(user.id) && this.userFocusColor) {
                 return {
@@ -664,21 +724,23 @@ export default {
             if (!this.isFilterActive()) {
                 return true;
             }
+            // Resolve placeholder tokens (e.g. %CURRENT_USER%) to real ids before matching.
+            const selection = new Set(resolveValues(Array.from(this.appliedSelection)));
             const rowValue = this.getRowValue(params);
             const isEmpty = !rowValue || (Array.isArray(rowValue) && rowValue.length === 0);
 
             // If row has no users, check if "no user" filter is selected
             if (isEmpty) {
-                return this.appliedSelection.has('__empty__');
+                return selection.has('__empty__');
             }
 
             // rowValue is now an array of user IDs or a single user ID
             if (Array.isArray(rowValue)) {
                 // Multiple users: check if any of the row's user IDs match selected IDs
-                return rowValue.some(id => this.appliedSelection.has(id));
+                return rowValue.some(id => selection.has(id));
             } else {
                 // Single user: direct match by ID
-                return this.appliedSelection.has(rowValue);
+                return selection.has(rowValue);
             }
         },
         getRowValue(filterParams) {
@@ -921,6 +983,47 @@ export default {
 .empty-pill {
     background: #f0f0f0;
 }
+
+/* Placeholder token UI */
+.user-ph-title {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #999;
+    padding: 4px 8px 2px;
+}
+.user-ph-divider {
+    height: 1px;
+    background: #e0e0e0;
+    margin: 6px 4px;
+}
+.placeholder-option .placeholder-glyph {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-weight: 700;
+    letter-spacing: -1px;
+    color: #6b7280;
+    background: #f0f0f0;
+}
+.placeholder-option .placeholder-glyph :deep(svg) { width: 18px; height: 18px; }
+.placeholder-pill {
+    background: color-mix(in srgb, var(--ww-data-grid_filter-accent-color, #2563eb) 12%, #fff);
+    color: var(--ww-data-grid_filter-accent-color, #2563eb);
+}
+.placeholder-pill .pill-ph-glyph {
+    font-weight: 700;
+    letter-spacing: -1px;
+    margin-right: 2px;
+    color: #6b7280;
+    display: inline-flex;
+    align-items: center;
+}
+.placeholder-pill .pill-ph-glyph :deep(svg) { width: 14px; height: 14px; }
 
 .no-users {
     padding: 20px;

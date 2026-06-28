@@ -336,11 +336,16 @@ export default {
             });
             setTimeout(() => this.updateDropdownPosition(), 50);
             setTimeout(() => this.addClickOutsideListener(), 100);
+            // Catch Enter/Escape at the document level (capture phase) so they work
+            // even if focus moves off the search input. The dropdown is teleported to
+            // the body, so without this fallback the keys can silently miss.
+            this.addKeyboardListener();
             this.fetchRecords();
         }
     },
     beforeUnmount() {
         this.removeClickOutsideListener();
+        this.removeKeyboardListener();
         clearTimeout(this._previewShowTimer);
         clearTimeout(this._previewHideTimer);
     },
@@ -633,13 +638,42 @@ export default {
         // ─── Edit mode lifecycle ─────────────────────────────────────────────
         stopEditing() {
             this.removeClickOutsideListener();
+            this.removeKeyboardListener();
             if (this.params?.stopEditing) this.params.stopEditing();
         },
 
         cancelEditing() {
             this.currentValue = this.originalValue;
             this.removeClickOutsideListener();
+            this.removeKeyboardListener();
             if (this.params?.stopEditing) this.params.stopEditing(true);
+        },
+
+        // Document-level Enter/Escape handling (capture phase) so the keys work
+        // even when the teleported dropdown / search input doesn't hold focus.
+        // Mirrors the pattern used by WewebCellRenderer. Only Enter/Escape are
+        // intercepted — arrow keys still reach the input's @keydown handlers.
+        handleEditorKeydown(event) {
+            if (!this.isEditMode) return;
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
+                this.cancelEditing();
+            } else if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.selectHighlighted();
+            }
+        },
+
+        addKeyboardListener() {
+            const frontDocument = wwLib?.getFrontDocument?.() || document;
+            frontDocument.addEventListener('keydown', this.handleEditorKeydown, true);
+        },
+
+        removeKeyboardListener() {
+            const frontDocument = wwLib?.getFrontDocument?.() || document;
+            frontDocument.removeEventListener('keydown', this.handleEditorKeydown, true);
         },
 
         // ─── Position helpers ─────────────────────────────────────────────────

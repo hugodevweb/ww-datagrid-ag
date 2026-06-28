@@ -252,7 +252,6 @@ export default {
         label: "View State",
         isCollapsible: true,
         properties: [
-          "viewConfiguration",
           "viewEditedVariableId",
           "columnChooserVariableId",
           "calendarStateVariableId",
@@ -297,11 +296,24 @@ export default {
       label: { en: "On Validation Failed" },
       event: {
         field: "",
+        header: "",
         value: null,
         oldValue: null,
         errors: [],
         rowId: null,
         data: null,
+      },
+    },
+    {
+      // Emitted when a navigation button (grid/kanban) or a calendar event is
+      // clicked. Wire this to your "open record" workflow in the editor instead
+      // of hard-coding a workflow id — so it survives project duplication.
+      name: "navigate",
+      label: { en: "On Navigate" },
+      event: {
+        id: "",
+        tab: 0,
+        openNewTab: false,
       },
     },
     {
@@ -441,6 +453,25 @@ export default {
       name: "onRecordCreated",
       label: { en: "On Record Created" },
       event: { record: null, columnId: "", rowId: "" },
+    },
+    {
+      name: "onPhoneChange",
+      label: { en: "On Phone Change" },
+      event: {
+        phoneNumber: "",
+        countryCode: "",
+        countryCallingCode: "",
+        nationalNumber: "",
+        formatInternational: "",
+        formatNational: "",
+        e164: "",
+        type: "",
+        isValid: false,
+        isPossible: false,
+        field: "",
+        rowId: null,
+        row: null,
+      },
     },
     {
       name: "cardMoved",
@@ -1976,6 +2007,8 @@ export default {
                     { value: "select", label: "Select" },
                     { value: "user", label: "User" },
                     { value: "record", label: "Record" },
+                    { value: "phone", label: "Phone" },
+                    { value: "email", label: "Email" },
                     { value: "navigation", label: "Navigation" },
                     { value: "custom", label: "Custom" },
                   ],
@@ -2878,6 +2911,59 @@ export default {
                 hidden: array?.item?.cellDataType !== "record",
                 defaultValue: false,
               },
+              phoneDefaultCountry: {
+                label: "Default Country",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "phone",
+                defaultValue: "FR",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "ISO country code used to parse numbers and pick the default flag (e.g. 'US', 'FR', 'GB').",
+                },
+                propertyHelp: {
+                  tooltip: "Two-letter ISO country code (e.g. 'US', 'FR') used to parse raw numbers and as the editor's default country.",
+                },
+                /* wwEditor:end */
+              },
+              phonePreferredCountries: {
+                label: "Preferred Countries",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "phone",
+                defaultValue: "FR,GB,CA,US,DE",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Comma-separated ISO country codes pinned to the top of the editor's country selector.",
+                },
+                propertyHelp: {
+                  tooltip: "Comma-separated ISO codes (e.g. 'FR,GB,CA,US,DE') shown first in the editor's country dropdown.",
+                },
+                /* wwEditor:end */
+              },
+              phoneDisplayFormat: {
+                label: "Display Format",
+                type: "TextSelect",
+                hidden: array?.item?.cellDataType !== "phone",
+                options: {
+                  options: [
+                    { value: "international", label: "International", default: true },
+                    { value: "national", label: "National" },
+                  ],
+                },
+                defaultValue: "international",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Valid values: international | national",
+                },
+                propertyHelp: {
+                  tooltip: "How the number is shown in the cell. 'International' keeps the stored '+33 6 12 ...' form; 'National' shows the local format.",
+                },
+                /* wwEditor:end */
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -2909,6 +2995,9 @@ export default {
               "recordContextField",
               "recordPreviewFields",
               "allowCreateRecord",
+              "phoneDefaultCountry",
+              "phonePreferredCountries",
+              "phoneDisplayFormat",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",
@@ -3326,22 +3415,6 @@ export default {
       },
       /* wwEditor:end */
     },
-    viewConfiguration: {
-      label: { en: "View Configuration" },
-      type: "RawObject",
-      section: "settings",
-      bindable: true,
-      defaultValue: null,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "object",
-        tooltip: "View configuration object: { sizes: {colId: width}, filters: {}, advancedFilters: { combinator: 'and'|'or', conditions: [{ field, type, operator, value, valueTo? }] }, sorting: [{colId, sort}], columnsOrder: [colId], hiddenColumns: [colId], grouping: { columnId, order, showUnassigned }, kanban: { groupBy: string|null, cardFields: [field], order: [groupValue], showUnassigned: boolean, hiddenGroups: [groupValue] }, calendar: { dateField: string|null, eventFields: [field], colorByField: string|null, defaultView: 'day'|'week'|'month'|'year'|'custom', timeframe: 'day'|'week'|'month'|'year'|'custom', anchorDate: 'YYYY-MM-DD', customStart: 'YYYY-MM-DD'|null, customEnd: 'YYYY-MM-DD'|null, weekStartsOn: 0|1 } }. `defaultView` is the timeframe the calendar opens on (configurable from the in-component settings panel); `timeframe` is the live/navigated timeframe (output only, not a saved edit). The grouping.columnId / kanban.groupBy must reference a select-type column. cardFields / eventFields are capped at 5 fields. calendar.dateField must reference a dateString or dateTime column; calendar.colorByField must reference a select column. kanban.hiddenGroups is the list of group values hidden from the kanban board. Datagrid group collapsed state is tracked separately (per view id) in its own WeWeb variable. Empty values ({} or []) are ignored.",
-      },
-      propertyHelp: {
-        tooltip: "When this configuration changes, all settings will be applied to the grid/kanban/calendar, overriding user modifications. Structure: { sizes: {}, filters: {}, advancedFilters: { combinator, conditions }, sorting: [], columnsOrder: [], hiddenColumns: [], grouping: { columnId, order, showUnassigned }, kanban: { groupBy, cardFields, order, showUnassigned, hiddenGroups }, calendar: { dateField, period, cardFields, gridFields } }. advancedFilters holds the Filter Builder state (a flat AND/OR list of conditions) and is restored into the builder + applied to the grid/query on load. Set grouping.columnId / kanban.groupBy to a select-column field to split records into colored groups. kanban.cardFields is the ordered list of fields shown on each card (max 5). For calendar: dateField must be a dateString/dateTime column, period is one of day/week/month/year, cardFields (max 3) are the fields shown on each calendar item, gridFields (max 8) are the columns of the in-view records table rendered below the calendar. Empty values ({} or []) are gracefully ignored and won't affect the current state.",
-      },
-      /* wwEditor:end */
-    },
     viewEditedVariableId: {
       label: { en: "View Edited — Variable ID" },
       type: "Text",
@@ -3379,7 +3452,9 @@ export default {
       type: "Text",
       section: "settings",
       bindable: true,
-      defaultValue: "39535f5a-df56-47e4-b54a-8e963e02302f",
+      // Empty by default: the component falls back to the `calendarState` app
+      // variable BY NAME (duplication-safe). Bind a specific variable id to override.
+      defaultValue: "",
       /* wwEditor:start */
       bindingValidation: {
         type: "string",

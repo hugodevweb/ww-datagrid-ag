@@ -43,6 +43,11 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   gridApi, debugLog, isGridRendering,
   // From useColumnState (S5):
   _pendingValidationError, _validationFiredForCurrentEdit,
+  // Ref (from Datagrid setup) that is true only during the synchronous window
+  // of a cell editor's DOM `input` event. Used to keep validation silent while
+  // the user is typing so the red border + validationFailed workflow only fire
+  // on submission. Optional — defaults to "never suppress".
+  suppressLiveValidation,
   // From useGrouping (S3):
   isGroupingActive, groupingState, groupGridApis,
   // From useDataFetch (S2):
@@ -261,6 +266,7 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
             name: 'validationFailed',
             event: {
               field: columnId,
+              header: groupingColumnConfig?.headerName || columnId,
               value: event.data?.[columnId],
               oldValue: rawOldValue,
               errors: validationErrors,
@@ -268,15 +274,6 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
               data: event.data,
             },
           });
-          try {
-            wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
-              body: validationErrors.join('\n'),
-              title: `Champ invalide : ${groupingColumnConfig?.headerName || columnId}`,
-              type: 'error',
-            });
-          } catch (e) {
-            console.warn('[CellEdit] toast workflow failed:', e?.message);
-          }
           return;
         }
       }
@@ -559,6 +556,15 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
     // the workflow + toast here directly — deduped per edit session via
     // `_validationFiredForCurrentEdit` (reset in onCellEditingStarted).
     const getValidationErrors = (col, newValue, rowData, params) => {
+      // While the user is actively typing, AG Grid's built-in editors call this
+      // on every keystroke (input → onValueChange → validate). Report no errors
+      // in that window so the cell shows no red border and no validationFailed
+      // workflow fires mid-edit. Submission (Enter / Tab / blur commit) runs
+      // outside any input event, so the flag is false and validation surfaces
+      // normally there (driving invalidEditValueMode + the workflow + toast).
+      if (suppressLiveValidation?.value) {
+        return null;
+      }
       const validationFn = createValidationFunction(col, resolveMappingFormula);
       const errors = validationFn(newValue, rowData);
       if (errors && errors.length > 0) {
@@ -570,6 +576,7 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
             name: 'validationFailed',
             event: {
               field: col?.field,
+              header: col?.headerName || col?.field || '',
               value: newValue,
               oldValue: rowData?.[col?.field],
               errors,
@@ -577,15 +584,6 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
               data: rowData,
             },
           });
-          try {
-            wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
-              body: errors.join('\n'),
-              title: `Champ invalide : ${col?.headerName || col?.field || ''}`,
-              type: 'error',
-            });
-          } catch (e) {
-            console.warn('[validation] toast workflow failed', e);
-          }
         }
       } else {
         _pendingValidationError.value = null;
@@ -965,6 +963,114 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
               return oldVal !== params.newValue;
             },
           };
+        }
+        case "phone": {
+          const defaultCountry = col?.phoneDefaultCountry || "FR";
+          const preferredCountries = col?.phonePreferredCountries || "FR,GB,CA,US,DE";
+          const displayFormat = col?.phoneDisplayFormat || "international";
+
+          // The stored cell value is the formatInternational string, so the
+          // column stays text-like: default text filter and default sort both
+          // operate on that string with no valueGetter/comparator overrides.
+          //
+          // Phone columns must be wide enough for the flag + formatted
+          // international number and the country-selector + number editor, so
+          // enforce a mandatory minimum width that the user cannot shrink past.
+          const PHONE_MIN_WIDTH = 240;
+          return {
+            ...commonProperties,
+            minWidth: Math.max(commonProperties.minWidth || 0, PHONE_MIN_WIDTH),
+            width: commonProperties.width
+              ? Math.max(commonProperties.width, PHONE_MIN_WIDTH)
+              : commonProperties.width,
+            headerName: col?.headerName,
+            field: col?.field,
+            cellRenderer: "PhoneCellRenderer",
+            cellRendererParams: {
+              defaultCountry,
+              displayFormat,
+              // Accent for the number text + popover actions (Call/Copy),
+              // mirroring the email column. Passed explicitly because the
+              // popover is teleported outside the grid root's CSS cascade.
+              accentColor: cfg.value?.navigationIconColor || null,
+            },
+            cellEditor: "PhoneCellEditor",
+            // Inline editor (NOT a popup): it renders inside the cell so it
+            // looks like part of the cell. The country dropdown is teleported
+            // to the document body, so opening it never grows the row height.
+            cellEditorParams: {
+              defaultCountry,
+              preferredCountries,
+              lang: cfg.value?.lang || 'en',
+              getValidationErrors: (params) => {
+                return getValidationErrors(col, params.value, params.data, params);
+              },
+              // Called by the editor on commit with the full phone object.
+              // We forward it through the grid's onPhoneChange trigger so
+              // no-code users can capture countryCode / e164 / isValid / etc.
+              // (only the formatInternational string is written to row data).
+              onPhoneEdit: (phoneData) => {
+                ctx.emit('trigger-event', {
+                  name: 'onPhoneChange',
+                  event: {
+                    ...(phoneData || {}),
+                    field: col?.field,
+                  },
+                });
+              },
+            },
+            editable: col?.editable !== false,
+            sortable: col?.sortable,
+            filter: col?.filter ? 'agTextColumnFilter' : false,
+            valueSetter: getValueSetter(col, (params) => {
+              if (params.newValue !== params.oldValue) {
+                params.data[col?.field] = params.newValue;
+                return true;
+              }
+              return false;
+            }),
+          };
+        }
+        case "email": {
+          // Email behaves like a text column but auto-injects an `email`
+          // validation rule (prepended so user-added rules like `required`
+          // still apply) and uses a hover-popover renderer. Editing stays on
+          // the default text editor so the raw string is editable in place.
+          const emailCol = {
+            ...col,
+            validation: [
+              { type: 'email' },
+              ...(Array.isArray(col?.validation) ? col.validation : []),
+            ],
+          };
+
+          const result = {
+            ...commonProperties,
+            headerName: col?.headerName,
+            field: col?.field,
+            sortable: col?.sortable,
+            filter: col?.filter ? 'agTextColumnFilter' : false,
+            editable: col?.editable,
+            cellRenderer: 'EmailCellRenderer',
+            cellRendererParams: {
+              // Accent for the email text + popover actions. Reuses the grid's
+              // navigation icon color so email styling tracks that theme token.
+              // Passed explicitly (not via CSS var) because the popover is
+              // teleported outside the grid root where the
+              // --ww-data-grid_navigation-iconColor cascade doesn't reach.
+              accentColor: cfg.value?.navigationIconColor || null,
+            },
+          };
+
+          if (col?.editable) {
+            result.cellEditor = 'agTextCellEditor';
+            result.cellEditorParams = {
+              getValidationErrors: (params) =>
+                getValidationErrors(emailCol, params?.value, params?.data, params),
+            };
+          }
+
+          return result;
         }
         default: {
           // Determine the correct filter type based on cellDataType.

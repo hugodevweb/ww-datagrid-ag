@@ -1,6 +1,7 @@
 import { ref, shallowRef, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { findRowNode } from '../utils/rowLookup.js';
 import { getTranslations } from '../../shared/utils/sharedHelpers.js';
+import { getVarByName, setVarByName } from '../../shared/utils/wwVariables.js';
 import { createValidationFunction } from '../utils/columnFactories.js';
 
 // The grouping feature: state, computed views (orderedGroups, groupedRowData),
@@ -76,12 +77,12 @@ export function useGrouping(
   // Group collapsed state lives outside viewConfiguration in a dedicated WeWeb
   // object variable keyed by view id: { [viewId]: [groupValue, ...] }. The view
   // id comes from a separate WeWeb variable that exposes the current view.
-  const VIEW_VARIABLE_ID = '23742aed-c957-4a20-b9ac-df6642c96015';
-  const GROUP_COLLAPSED_VARIABLE_ID = '48f1f1e8-79c5-4adc-8b9f-909c5c75e605';
+  const VIEW_VARIABLE_NAME = 'tablesSettings';
+  const GROUP_COLLAPSED_VARIABLE_NAME = 'groupsStatePerView';
 
   const getCurrentViewId = () => {
     try {
-      const view = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID);
+      const view = getVarByName(VIEW_VARIABLE_NAME);
       return view?.id ?? null;
     } catch (e) {
       return null;
@@ -92,7 +93,7 @@ export function useGrouping(
     const viewId = getCurrentViewId();
     if (!viewId) return [];
     try {
-      const map = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
+      const map = getVarByName(GROUP_COLLAPSED_VARIABLE_NAME);
       if (!map || typeof map !== 'object') return [];
       const arr = map[viewId];
       return Array.isArray(arr) ? [...arr] : [];
@@ -105,10 +106,10 @@ export function useGrouping(
     const viewId = getCurrentViewId();
     if (!viewId) return;
     try {
-      const current = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
+      const current = getVarByName(GROUP_COLLAPSED_VARIABLE_NAME);
       const next = current && typeof current === 'object' ? { ...current } : {};
       next[viewId] = Array.isArray(collapsed) ? [...collapsed] : [];
-      wwLib.wwVariable.updateValue(GROUP_COLLAPSED_VARIABLE_ID, next);
+      setVarByName(GROUP_COLLAPSED_VARIABLE_NAME, next);
     } catch (e) {
       debugLog('[GroupCollapsed] Could not persist collapsed state:', e);
     }
@@ -773,6 +774,7 @@ export function useGrouping(
           name: 'validationFailed',
           event: {
             field: colId,
+            header: groupingColumnConfig?.headerName || colId,
             value: newValue,
             oldValue: normalizedOld,
             errors: validationErrors,
@@ -780,15 +782,6 @@ export function useGrouping(
             data,
           },
         });
-        try {
-          wwLib.wwWorkflow.executeGlobal('1d11d250-421f-4cc5-bb8b-7bb3ad71c34d', {
-            body: validationErrors.join('\n'),
-            title: `Champ invalide : ${groupingColumnConfig?.headerName || colId}`,
-            type: 'error',
-          });
-        } catch (e) {
-          console.warn('[GroupDrag] toast workflow failed:', e?.message);
-        }
         return;
       }
     }
@@ -859,6 +852,29 @@ export function useGrouping(
       // Preview row was already inserted during dragEnter — promote it from
       // ghost to real by stripping the preview class.
       togglePreviewClass(destGroupValue, data, false);
+    }
+
+    // The preview row was rendered during dragEnter while data[colId] still
+    // held the OLD grouping value, so its select cell shows the stale label
+    // (e.g. a row dropped into "Créditeur" still displaying "Débiteur"). Now
+    // that data[colId] holds the new value, force-refresh the row's cells in
+    // the dest grid so SelectCellRenderer.refresh() re-reads params.data and
+    // repaints the badge. Harmless in the non-preview path where the add
+    // already rendered the new value.
+    if (destApi) {
+      try {
+        // Resolve the node id the same way the grid's getRowId prop does
+        // (see togglePreviewClass) so getRowNode finds the dropped row.
+        let rowId = '';
+        try { rowId = String(resolveMappingFormula(cfg.value?.idFormula, data) ?? ''); }
+        catch (_) { rowId = ''; }
+        const destNode = rowId ? destApi.getRowNode(rowId) : null;
+        if (destNode) {
+          destApi.refreshCells({ rowNodes: [destNode], force: true });
+        }
+      } catch (e) {
+        debugLog?.(`[GroupDrag] dest cell refresh failed for "${destGroupValue}":`, e?.message);
+      }
     }
 
     // Carry over the grouping column's `isDirectUpdate` flag so the user's
@@ -1684,9 +1700,9 @@ export function useGrouping(
     () => {
       let viewId = null;
       let mapEntry;
-      try { viewId = wwLib.wwVariable.getValue(VIEW_VARIABLE_ID)?.id ?? null; } catch (e) { viewId = null; }
+      try { viewId = getVarByName(VIEW_VARIABLE_NAME)?.id ?? null; } catch (e) { viewId = null; }
       try {
-        const map = wwLib.wwVariable.getValue(GROUP_COLLAPSED_VARIABLE_ID);
+        const map = getVarByName(GROUP_COLLAPSED_VARIABLE_NAME);
         mapEntry = map && typeof map === 'object' && viewId ? map[viewId] : undefined;
       } catch (e) { mapEntry = undefined; }
       return { viewId, mapEntry };
