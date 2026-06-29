@@ -248,9 +248,16 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
   /**
    * Component action: Refresh a specific row from Supabase
    * @param {string|number} rowId - The ID of the row to refresh
+   * @param {Object} [options]
+   * @param {boolean} [options.addIfMissing=true] - When the row isn't in this
+   *   grid: if true, fetch it from the DB and insert it (default, per-instance
+   *   "Refresh row" action behaviour); if false, skip this grid entirely
+   *   (used by the page-wide row-refresh bus so a broadcast only refreshes
+   *   grids that already hold the row and never inserts it into unrelated grids).
    * @returns {Promise<boolean>} - Returns true if successful, false otherwise
    */
-  refreshRow = async (rowId) => {
+  refreshRow = async (rowId, options = {}) => {
+    const { addIfMissing = true } = options;
     // CRITICAL FIX: Wait for grid to be fully ready before performing refresh operations
     // This prevents error #252 when refreshRow is called before grid is ready
     try {
@@ -269,7 +276,7 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
     if (isGridRendering.value) {
       return new Promise((resolve) => {
         setTimeout(async () => {
-          const result = await refreshRow(rowId);
+          const result = await refreshRow(rowId, options);
           resolve(result);
         }, 100);
       });
@@ -283,6 +290,23 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
     if (rowId === null || rowId === undefined) {
       console.warn("[Datagrid] refreshRow requires a rowId parameter");
       return false;
+    }
+
+    // Broadcast row-refresh (addIfMissing=false): bail before any Supabase fetch
+    // unless this grid already contains the row, so grids that don't own it
+    // neither query for it nor get it inserted.
+    if (!addIfMissing) {
+      let exists = false;
+      if (isGroupingActive.value) {
+        exists = !!findGroupForRowId(rowId);
+      }
+      if (!exists) {
+        exists = !!findRowNode(gridApi.value, rowId, resolveMappingFormula, props.content);
+      }
+      if (!exists) {
+        debugLog(`[Datagrid] Row ${rowId} not in this grid; skipping refresh (addIfMissing=false)`);
+        return false;
+      }
     }
 
     // Extract primary key field from idFormula
@@ -452,6 +476,10 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
         debugLog(`[Datagrid] Row ${rowId} refreshed successfully`);
         return true;
       } else {
+        if (!addIfMissing) {
+          debugLog(`[Datagrid] Row ${rowId} no longer in this grid; skipping add (addIfMissing=false)`);
+          return false;
+        }
         // Row not found in grid but was fetched from DB - add it to the grid
         debugLog(`[Datagrid] Row with id "${rowId}" not found in grid, adding it from database`);
 

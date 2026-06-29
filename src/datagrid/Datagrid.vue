@@ -1507,8 +1507,9 @@ export default {
       }
 
       // Subscribe to the page-wide refresh bus (see forceRefetch above).
-      (wwLib?.getFrontWindow?.() || window)
-        .addEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
+      const win = wwLib?.getFrontWindow?.() || window;
+      win.addEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
+      win.addEventListener(DATAGRID_REFRESH_ROW_EVENT, onGlobalRefreshRow);
     });
 
     // See onMounted: marks live-typing input so validation stays silent until
@@ -1847,6 +1848,29 @@ export default {
       forceRefetch();
     };
 
+    // Single-row variant of the refresh bus: reload one row by id from Supabase
+    // across every grid on the page that holds it. Trigger from a "Run
+    // JavaScript" action:
+    //   wwLib.getFrontWindow().dispatchEvent(
+    //     new CustomEvent('ww-datagrid:refresh-row', { detail: { rowId } }))
+    // A broadcast (no uid) only refreshes grids that already contain the row and
+    // never inserts it elsewhere. Pass a `uid` to target one specific grid,
+    // where the per-instance add-if-missing behaviour still applies.
+    const DATAGRID_REFRESH_ROW_EVENT = 'ww-datagrid:refresh-row';
+
+    const onGlobalRefreshRow = (event) => {
+      const detail = event?.detail || {};
+      const rowId = detail.rowId;
+      if (rowId === null || rowId === undefined) return;
+      const targetUid = detail.uid;
+      if (targetUid) {
+        if (targetUid !== props.uid) return;
+        refreshRow(rowId);
+      } else {
+        refreshRow(rowId, { addIfMissing: false });
+      }
+    };
+
     // Canonicalise an AG Grid filter model into the builder's shape so the two
     // directions can be compared without false diffs (e.g. dateTo:null vs omitted).
     const canonicalModel = (model) =>
@@ -2065,8 +2089,9 @@ export default {
       }
 
       // Unsubscribe from the page-wide refresh bus.
-      (wwLib?.getFrontWindow?.() || window)
-        .removeEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
+      const win = wwLib?.getFrontWindow?.() || window;
+      win.removeEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
+      win.removeEventListener(DATAGRID_REFRESH_ROW_EVENT, onGlobalRefreshRow);
     });
 
     const onBodyScroll = (event) => {
