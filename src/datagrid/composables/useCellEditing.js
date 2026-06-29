@@ -57,6 +57,10 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // Forces `groupedRowData` to re-partition after an in-place mutation of
   // a row's grouping-column value (non-paged-append mode). From useGrouping.
   bumpGroupingDataVersion,
+  // Expands a single group if it's collapsed. Called after a cross-group cell
+  // edit so a row moved INTO a collapsed group reveals where it landed. From
+  // useGrouping.
+  expandGroup,
   // Thunks — useInfiniteScroll runs AFTER this composable, so we resolve
   // its handles lazily. In paged-append mode these mutate the per-group
   // state when a cross-group cell edit moves a row.
@@ -337,7 +341,37 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
         // recomputes and the destination group's rowData prop picks up the
         // row. (Source is already detached via the applyTransaction above.)
         try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
+
+        // The rowData-prop delta alone is NOT reliable for the move: the
+        // freshly-partitioned array only reaches the destination grid on Vue's
+        // next tick, and AG Grid's immutable (getRowId) diff doesn't always
+        // materialise the row that just appeared in another grid's data — so
+        // the edited row vanishes from its source group but never lands in the
+        // destination one. Push it into the destination grid directly, exactly
+        // like the drag-drop and paged-append move paths do, then refresh its
+        // cells so the select badge repaints with the new value. Skipped when
+        // the destination group is collapsed (no grid mounted) — it renders the
+        // row from groupedRowData on expand, and its count badge is already
+        // correct via the bump above.
+        const destApi = groupGridApis.value?.get(destKey);
+        if (destApi && destApi !== event.api) {
+          try { destApi.applyTransaction({ add: [event.data], addIndex: 0 }); }
+          catch (e) { debugLog?.(`[CellEdit] dest add failed for "${destKey}":`, e?.message); }
+          try {
+            let rowId = '';
+            try { rowId = String(resolveMappingFormula(cfg.value?.idFormula, event.data) ?? ''); }
+            catch (_) { rowId = ''; }
+            const destNode = rowId ? destApi.getRowNode(rowId) : null;
+            if (destNode) destApi.refreshCells({ rowNodes: [destNode], force: true });
+          } catch (_) { /* noop */ }
+        }
       }
+
+      // If the destination group is collapsed, expand it so the user sees the
+      // row land in its new group (mirrors the drag-drop move behaviour). The
+      // row is already in the destination's data by now, so this only flips the
+      // collapsed state; it's a no-op when the group is already expanded.
+      try { expandGroup?.(destKey); } catch (_) { /* noop */ }
     }
 
     // For select columns: read the value directly from the data to ensure we get the ID, not the label

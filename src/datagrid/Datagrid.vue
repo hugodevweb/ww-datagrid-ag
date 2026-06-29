@@ -1163,7 +1163,7 @@ export default {
       onGroupColumnResized, onGroupColumnMoved,
       onGroupSelectionChanged, onGroupRowSelected,
       onGroupDragStart, onGroupDragOver, onGroupDrop, onGroupDragEnd,
-      toggleGroupCollapsed, collapseAllGroups, expandAllGroups,
+      toggleGroupCollapsed, collapseAllGroups, expandAllGroups, expandGroup,
       applyGroupingWithLoading, setGroupingColumn, setShowUnassigned,
       writeGroupingToViewConfig,
     } = useGrouping(cfg, props, ctx, resolveMappingFormula, {
@@ -1437,7 +1437,7 @@ export default {
       isGroupingActive, groupingState, groupGridApis,
       isInfiniteScrollEnabled, setUpdatingDataLocally,
       activeCreateColumnField, activeCreateRow, activeCreateRowId,
-      bumpGroupingDataVersion,
+      bumpGroupingDataVersion, expandGroup,
       // Thunks: useInfiniteScroll is created AFTER useCellEditing, so its
       // handles aren't bound yet at construction time. Resolve lazily.
       getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,

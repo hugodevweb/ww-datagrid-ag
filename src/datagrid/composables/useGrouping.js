@@ -1470,6 +1470,27 @@ export function useGrouping(
     updateGroupHorizontalScrollbarMetrics();
   };
 
+  // Expand a single group if it's currently collapsed. Called when a row moves
+  // INTO a group (cell-edit or drag) so the user immediately sees where it
+  // landed. Mirrors the dest-expand half of handleCrossGroupDrop's collapse
+  // cascade. By the time this runs the destination already holds the moved row
+  // (count > 0 — via bumpGroupingDataVersion in local/paginated mode or
+  // addRowToGroupState in paged-append mode), so removing the group from the
+  // persisted collapsed list is enough for orderedGroups to render it open.
+  // No-op when the group isn't collapsed.
+  const expandGroup = (groupValue) => {
+    if (groupValue == null) return;
+    const key = String(groupValue);
+    const collapsedList = Array.isArray(groupingState.value?.collapsed)
+      ? [...groupingState.value.collapsed]
+      : [];
+    const idx = collapsedList.indexOf(key);
+    if (idx < 0) return;
+    collapsedList.splice(idx, 1);
+    writeGroupingToViewConfig({ collapsed: collapsedList });
+    updateGroupHorizontalScrollbarMetrics();
+  };
+
   // Merge a partial grouping update into groupingState and refresh currentConfig.
   // When `collapsed` is part of the update, persist it to the dedicated WeWeb
   // variable (keyed by view id) — collapsed state is no longer part of
@@ -1835,6 +1856,7 @@ export function useGrouping(
     toggleGroupCollapsed,
     collapseAllGroups,
     expandAllGroups,
+    expandGroup,
     // Transition + setters
     applyGroupingWithLoading,
     setGroupingColumn,
