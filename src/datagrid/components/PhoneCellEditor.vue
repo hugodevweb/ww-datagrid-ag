@@ -253,10 +253,10 @@ export default {
         phoneObj = { ...defaultPhoneData, countryCode: country, phoneNumber: raw };
       }
     } else {
-      // Empty cell: prefill the "+<dial code>" so the user sees the "+" and can
-      // type the national part right away; the flag shows the default country.
-      const code = this.callingDigits(country);
-      display = code ? `+${code} ` : "";
+      // Empty cell: start blank so the user can type either a national number
+      // (e.g. "0739323212" for FR) or an international one ("+44 ..."). The flag
+      // shows the default country until a "+<code>" is typed.
+      display = "";
     }
 
     this.selectedCountry = country;
@@ -353,18 +353,27 @@ export default {
       const digitsBeforeCaret = (oldVal.slice(0, caret).match(/\d/g) || []).length;
 
       const digits = onlyDigits(oldVal);
+      const isInternational = oldVal.trimStart().charAt(0) === "+";
 
-      // Auto-switch the country flag from the international number being typed.
-      if (digits) {
-        const detected = this.detectCountry(digits, this.selectedCountry);
-        if (detected) this.selectedCountry = detected;
+      let formatted;
+      if (isInternational) {
+        // International input ("+..."): format with the leading "+" and
+        // auto-detect the country from the dialed code.
+        if (digits) {
+          const detected = this.detectCountry(digits, this.selectedCountry);
+          if (detected) this.selectedCountry = detected;
+        }
+        formatted = this.formatIntl(digits);
+        this.localPhoneData = this.buildPhoneObject(formatted, this.selectedCountry);
+      } else {
+        // National input (e.g. "0739323212" when FR is selected): format for
+        // the selected country and parse it as a national number. The flag
+        // stays on the selected country (no "+" → nothing to auto-detect).
+        formatted = digits ? this.safeFormatIncomplete(digits, this.selectedCountry) : "";
+        this.localPhoneData = this.buildPhoneObject(digits, this.selectedCountry);
       }
 
-      // International display: always rebuild from digits with a leading "+".
-      const formatted = this.formatIntl(digits);
-
       this.displayValue = formatted;
-      this.localPhoneData = this.buildPhoneObject(formatted, this.selectedCountry);
 
       // Controlled input: force the DOM value + restore the caret by digit
       // count so reformatting (inserted spaces/"+") doesn't jump the cursor.
@@ -392,19 +401,27 @@ export default {
     },
     // ---- country selection ----------------------------------------------
     selectCountry(c) {
-      // Swap the international "+<dial code>" prefix, keeping the existing
-      // national significant digits (no trunk prefix → no mangling).
+      // Keep whichever mode the user is in: if the field shows an international
+      // number ("+…") re-prefix it for the new country; otherwise keep the
+      // national format for the new country.
+      const wasIntl = this.displayValue.trimStart().charAt(0) === "+";
       const significant = this.localPhoneData.nationalNumber || "";
       this.selectedCountry = c.code;
       const code = this.callingDigits(c.code);
-      if (significant) {
+
+      if (!significant) {
+        // No number yet — just switch the flag.
+        this.displayValue = wasIntl && code ? `+${code} ` : "";
+        this.localPhoneData = { ...defaultPhoneData, countryCode: c.code };
+      } else if (wasIntl) {
         const formatted = this.formatIntl("+" + code + significant);
         this.displayValue = formatted;
         this.localPhoneData = this.buildPhoneObject(formatted, c.code);
       } else {
-        // No number yet: just show "+<code> " so the user can type the rest.
-        this.displayValue = code ? `+${code} ` : "";
-        this.localPhoneData = { ...defaultPhoneData, countryCode: c.code };
+        // National display for the new country.
+        const obj = this.buildPhoneObject(significant, c.code);
+        this.displayValue = obj.formatNational || this.safeFormatIncomplete(significant, c.code) || significant;
+        this.localPhoneData = obj;
       }
       this.closeDropdown();
       this.$nextTick(() => this.focusInput());
@@ -539,6 +556,13 @@ export default {
     },
     isPopup() {
       return false;
+    },
+    // AG Grid cancel hook. params.stopEditing(true) does NOT cancel — its arg is
+    // `suppressNavigateAfterEdit`, so the typed value would still be committed via
+    // getValue(). Returning true here is the only way to make AG Grid discard the
+    // edit, so Escape actually reverts the phone number instead of saving it.
+    isCancelAfterEnd() {
+      return this._cancelled === true;
     },
     getValidationErrors() {
       const cb = this.params?.getValidationErrors;

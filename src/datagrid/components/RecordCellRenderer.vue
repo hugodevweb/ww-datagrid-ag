@@ -224,6 +224,8 @@ export default {
             teleportTarget: null,
             // Params cache (ag-grid doesn't update prop after refresh)
             _refreshedParams: null,
+            // set by cancelEditing so isCancelAfterEnd() discards the value
+            _cancelled: false,
         };
     },
     computed: {
@@ -380,6 +382,12 @@ export default {
         },
         getValue() {
             return this.currentValue;
+        },
+        // AG Grid cancel hook. params.stopEditing(true) does not cancel (its arg is
+        // suppressNavigateAfterEdit), so returning true here is what makes AG Grid
+        // actually discard the edit when Escape is pressed.
+        isCancelAfterEnd() {
+            return this._cancelled === true;
         },
         // AG Grid editor interface method
         // Called by AG Grid before completing the edit to validate the current value
@@ -643,9 +651,12 @@ export default {
         },
 
         cancelEditing() {
+            this._cancelled = true;
             this.currentValue = this.originalValue;
             this.removeClickOutsideListener();
             this.removeKeyboardListener();
+            // isCancelAfterEnd() (returning _cancelled) makes AG Grid discard the
+            // value — the stopEditing arg is suppressNavigateAfterEdit, not cancel.
             if (this.params?.stopEditing) this.params.stopEditing(true);
         },
 

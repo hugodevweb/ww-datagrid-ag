@@ -96,6 +96,7 @@ export default {
             optionsTimedOut: false, // true after fallback timer — only then do we give up on skeleton
             _skeletonFallbackTimer: null, // timeout to stop skeleton when options never arrive
             _refreshedParams: null, // ag-grid-vue3 does not update the params prop after refresh(); cache manually
+            _cancelled: false, // set by cancelEditing so isCancelAfterEnd() discards the value
         };
     },
     computed: {
@@ -571,6 +572,12 @@ export default {
         getValue() {
             return this.selectedValue;
         },
+        // AG Grid cancel hook. params.stopEditing(true) does not cancel (its arg is
+        // suppressNavigateAfterEdit), so returning true here is what makes AG Grid
+        // actually discard the edit when Escape is pressed.
+        isCancelAfterEnd() {
+            return this._cancelled === true;
+        },
         // AG Grid editor interface method
         // Called by AG Grid before completing the edit to validate the current value
         getValidationErrors() {
@@ -588,11 +595,14 @@ export default {
             }
         },
         cancelEditing() {
+            this._cancelled = true;
             this.selectedValue = this.originalValue;
             // Remove listeners
             this.removeClickOutsideListener();
             this.removeKeyboardListener();
-            // Call AG Grid's stopEditing with cancel flag
+            // Stop editing; isCancelAfterEnd() (returning _cancelled) makes AG Grid
+            // discard the value. The stopEditing arg is suppressNavigateAfterEdit,
+            // NOT a cancel flag, so it can't be relied on to cancel.
             if (this.params?.stopEditing) {
                 this.params.stopEditing(true);
             }

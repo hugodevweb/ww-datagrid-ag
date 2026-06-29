@@ -22,6 +22,7 @@ export default {
     data() {
         return {
             value: null,
+            _cancelled: false, // set by cancelEditing so isCancelAfterEnd() discards the value
         };
     },
     computed: {
@@ -106,9 +107,11 @@ export default {
             return false;
         },
 
-        // Required by AG Grid - check if editing should be cancelled after end
+        // Required by AG Grid - check if editing should be cancelled after end.
+        // params.stopEditing(true) does NOT cancel (its arg is suppressNavigateAfterEdit),
+        // so this hook is what actually makes AG Grid discard the value on Escape.
         isCancelAfterEnd() {
-            return false;
+            return this._cancelled === true;
         },
 
         onInput(event) {
@@ -138,6 +141,7 @@ export default {
         },
 
         cancelEditing() {
+            this._cancelled = true;
             this.value = this.params?.value || null;
             if (this.params?.stopEditing) {
                 this.params.stopEditing(true);
