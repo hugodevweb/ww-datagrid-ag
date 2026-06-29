@@ -29,7 +29,22 @@ export const isDirectAdvancedCondition = (c) =>
 //   gridApi          — shallowRef from useGridApi
 //   debugLog         — from useGridApi
 //   isGridRendering  — ref from useGridApi
-export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering, getAdvancedFilters }) {
+//
+//   Grouping thunks (late-bound — useGrouping is created after useDataFetch in
+//   the orchestrator, so these resolve at call time):
+//     getIsGroupingActive — () => boolean, whether grouping is currently active
+//     getOrderedGroups    — () => Ref<group[]>, the rendered group descriptors
+//     getGroupRowData     — () => (groupValue) => row[], per-group source rows
+//                           (abstracts local / paginated / paged-append modes)
+export function useDataFetch(cfg, props, {
+  gridApi,
+  debugLog,
+  isGridRendering,
+  getAdvancedFilters,
+  getIsGroupingActive,
+  getOrderedGroups,
+  getGroupRowData,
+}) {
   // WeWeb component variables
   const { value: records, setValue: setRecords } =
     wwLib.wwVariable.useComponentVariable({
@@ -431,9 +446,39 @@ export function useDataFetch(cfg, props, { gridApi, debugLog, isGridRendering, g
     }
   };
 
+  // Aggregate every group's rows into a single flat array. In grouped mode the
+  // primary `gridApi` points at just ONE group's grid (the first one promoted in
+  // onGroupGridReady), so the normal forEachNode path would expose a single
+  // group — or nothing, if that group is collapsed/unmounted. Reading each
+  // group's source rows instead is collapse-independent and works across local,
+  // Supabase-paginated, and paged-append modes (groupRowData abstracts the
+  // per-mode source). Groups are mutually exclusive by grouping key, so no row
+  // can appear twice — no dedupe needed.
+  const collectGroupedRecords = () => {
+    const groupsRef = typeof getOrderedGroups === 'function' ? getOrderedGroups() : null;
+    const groups = groupsRef?.value;
+    const getRows = typeof getGroupRowData === 'function' ? getGroupRowData() : null;
+    if (!Array.isArray(groups) || typeof getRows !== 'function') return [];
+    const out = [];
+    for (const group of groups) {
+      const rows = getRows(group?.value);
+      if (Array.isArray(rows) && rows.length > 0) out.push(...rows);
+    }
+    return out;
+  };
+
   // Update records variable from grid API (gets displayed rows)
   // CRITICAL FIX: This function can trigger error #252 if called during render
   const updateRecordsFromGrid = () => {
+    // Grouped mode: aggregate every group's rows so `records` reflects the full
+    // grouped dataset rather than the single grid `gridApi` happens to point at.
+    // Reads source rows (not grid nodes), so it's safe during render and works
+    // even while groups are collapsed.
+    if (typeof getIsGroupingActive === 'function' && getIsGroupingActive()) {
+      setRecords(collectGroupedRecords());
+      return;
+    }
+
     if (!gridApi.value) {
       setRecords([]);
       return;

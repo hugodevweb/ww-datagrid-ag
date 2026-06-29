@@ -309,6 +309,17 @@ export function useViewConfig(cfg, props, ctx, {
   // Track last applied view configuration to detect changes
   const lastAppliedViewConfig = ref(null);
 
+  // One-shot guard for the initial-apply gridReady watcher below. `gridReady`
+  // can cycle false → true AFTER the first apply whenever the grid layout is
+  // torn down and rebuilt — most notably when the user UNGROUPS: the per-group
+  // grids unmount (the last one resets gridReady to false in useGrouping), then
+  // the single grid mounts and onGridReady flips it back to true. Without this
+  // guard, that second transition re-runs applyViewConfiguration against the
+  // SAVED baseline viewConfiguration, which still carries the old
+  // grouping.columnId — silently re-grouping the grid and reverting any other
+  // unsaved view edits. The initial apply must happen exactly once.
+  const hasAppliedInitialViewConfig = ref(false);
+
   // Flag to track when view configuration is being applied programmatically
   // This prevents filter/sort changed events from being triggered during view config changes
   const isApplyingViewConfig = ref(false);
@@ -658,6 +669,11 @@ export function useViewConfig(cfg, props, ctx, {
     () => gridReady.value,
     (ready) => {
       if (!ready || !gridApi.value) return;
+      // Only ever apply the initial view configuration once. Later gridReady
+      // false → true cycles (e.g. ungrouping rebuilds the single grid) must NOT
+      // re-apply the stale baseline — that's what re-grouped the grid.
+      if (hasAppliedInitialViewConfig.value) return;
+      hasAppliedInitialViewConfig.value = true;
       console.log('[viewEdited][datagrid] gridReady fired — initial apply pending');
 
       // Apply initial view configuration when grid is ready

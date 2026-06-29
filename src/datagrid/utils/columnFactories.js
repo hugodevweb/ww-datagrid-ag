@@ -475,7 +475,7 @@ export function createNavigationColumnDef(col, commonProperties, navContext) {
         focusRowId: navContext?.focusRowId?.value ?? null,
         tabValue: navContext?.resolveTab ? navContext.resolveTab() : 0,
         messageCount: navContext?.resolveMessageCount
-          ? navContext.resolveMessageCount(rowData)
+          ? navContext.resolveMessageCount(rowData, rowId)
           : (rowData?.conversation?.messages?.length ?? 0),
         onNavigate: navContext?.onNavigate,
       };

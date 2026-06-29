@@ -314,6 +314,7 @@ import KanbanField from './components/KanbanField.vue';
 import NavigationButtons from './components/NavigationButtons.vue';
 import FilterBuilder from '../shared/components/FilterBuilder.vue';
 import { getTranslations, readViewConfiguration } from '../shared/utils/sharedHelpers.js';
+import { getVarByName } from '../shared/utils/wwVariables.js';
 import { fetchSupabaseDataInfinite } from '../shared/utils/supabaseUtils.js';
 import { convertConditionsToSupabase } from '../shared/utils/convertConditionsToSupabase.js';
 import { useAdvancedFilters } from '../shared/composables/useAdvancedFilters.js';
@@ -389,7 +390,27 @@ export default {
     // Emit the navigate trigger event; wire it to "open record" in the editor.
     const emitNavigate = (payload) =>
       ctx.emit('trigger-event', { name: 'navigate', event: payload });
+    // App variable (array of the focused record's chat messages) read by name.
+    // Reading it inside this computed keeps the count reactive (the reactive bag
+    // auto-unwraps the variable's computed ref — see wwVariables.js), so the
+    // focused card's badge updates in realtime as messages arrive.
+    const RECORD_MESSAGES_VARIABLE_NAME = 'recordMessages';
+    const recordMessagesCount = computed(() => {
+      const v = getVarByName(RECORD_MESSAGES_VARIABLE_NAME);
+      return Array.isArray(v) ? v.length : 0;
+    });
     const getMessageCount = (row) => {
+      // The focused record's badge reflects the live `recordMessages` count;
+      // every other card keeps its per-row formula/fallback count.
+      const focusRowId = navigationFocusRowId.value;
+      const rowId = getRowId(row);
+      if (
+        focusRowId != null && focusRowId !== '' &&
+        rowId != null &&
+        String(focusRowId) === String(rowId)
+      ) {
+        return recordMessagesCount.value;
+      }
       const formula = cfg.value?.navigationMessageCountFormula;
       if (formula) {
         const v = resolveMappingFormula(formula, row);

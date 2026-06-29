@@ -885,6 +885,7 @@ import FilterValuePicker from "../shared/components/FilterValuePicker.vue";
 import PlaceholderMenu from "../shared/components/PlaceholderMenu.vue";
 import DatePlaceholderMenu from "../shared/components/DatePlaceholderMenu.vue";
 import { isPlaceholderToken, placeholderDisplayName, placeholderGlyphHtml } from "../shared/utils/placeholders.js";
+import { getVarByName } from "../shared/utils/wwVariables.js";
 import { useGridApi } from "./composables/useGridApi.js";
 import { useSelection } from "./composables/useSelection.js";
 import { useDataFetch, isDirectAdvancedCondition } from "./composables/useDataFetch.js";
@@ -995,12 +996,34 @@ export default {
       // `recordTab` app variable BY NAME so it survives project duplication.
       code: "wwFormulas.getKeyValue(variables['recordTab'],globalContext.page?.['id'])||0",
     };
+    // App variable (array of the focused record's chat messages) read by name.
+    const RECORD_MESSAGES_VARIABLE_NAME = "recordMessages";
     const navigationFocusRowId = computed(() => cfg.value.focusedRowId);
+    // The focused record's chat badge mirrors the live `recordMessages` app
+    // variable (the open record's message list) so realtime inserts update the
+    // count instantly. Read BY NAME — see wwVariables.js: the reactive bag
+    // auto-unwraps the variable's computed ref, so reading it inside this
+    // computed tracks its deps and the count stays reactive. Referenced by name
+    // (not id) so it survives WeWeb project duplication.
+    const recordMessagesCount = computed(() => {
+      const v = getVarByName(RECORD_MESSAGES_VARIABLE_NAME);
+      return Array.isArray(v) ? v.length : 0;
+    });
     const navContext = {
       focusRowId: navigationFocusRowId,
       resolveTab: () =>
         Number(resolveMappingFormula(NAVIGATION_TAB_FORMULA) ?? 0),
-      resolveMessageCount: (rowData) => {
+      resolveMessageCount: (rowData, rowId) => {
+        // For the focused record, the badge reflects the live `recordMessages`
+        // count; every other row keeps its per-row formula/fallback count.
+        const focusRowId = navigationFocusRowId.value;
+        if (
+          focusRowId != null && focusRowId !== "" &&
+          rowId != null &&
+          String(focusRowId) === String(rowId)
+        ) {
+          return recordMessagesCount.value;
+        }
         const formula = cfg.value.navigationMessageCountFormula;
         if (formula) {
           const override = resolveMappingFormula(formula, rowData);
@@ -1013,11 +1036,11 @@ export default {
         ctx.emit("trigger-event", { name: "navigate", event: payload }),
     };
 
-    // When the focus-row variable changes, refresh only the navigation column
-    // cells in place (no full grid repaint, no Vue remount). The renderer's
-    // refresh() pulls fresh focusRowId / tabValue from cellRendererParams (a
-    // function), so the focus styling moves to the matching row instantly.
-    watch(navigationFocusRowId, () => {
+    // Refresh only the navigation column cells in place (no full grid repaint,
+    // no Vue remount). The renderer's refresh() pulls fresh focusRowId /
+    // tabValue / messageCount from cellRendererParams (a function), so focus
+    // styling and the chat badge update on the matching rows instantly.
+    const refreshNavigationCells = () => {
       if (!gridApi.value) return;
       // Mirror the colId logic in createNavigationColumnDef so refreshCells
       // can locate the column whether or not the user set a `field`.
@@ -1031,7 +1054,13 @@ export default {
           // ignore — grid may be tearing down
         }
       }
-    }, { flush: "post" });
+    };
+    // Move focus styling to the newly focused row.
+    watch(navigationFocusRowId, refreshNavigationCells, { flush: "post" });
+    // Realtime chat badge: when the focused record's `recordMessages` array
+    // changes (e.g. a new message arrives), repaint the nav column so the
+    // focused row's badge reflects the new count.
+    watch(recordMessagesCount, refreshNavigationCells, { flush: "post" });
 
     // Helper to check if a viewConfiguration value is effectively empty
     // Returns true if value is null, undefined, empty object {}, or empty array []
@@ -1080,6 +1109,13 @@ export default {
     } = useDataFetch(cfg, props, {
       gridApi, debugLog, isGridRendering,
       getAdvancedFilters: () => normalizedAdvancedFilters.value,
+      // Late-bound — useGrouping is created after useDataFetch. These let
+      // updateRecordsFromGrid aggregate the per-group row sets so `records`
+      // stays populated in grouped mode (where the single-grid forEachNode
+      // path that normally seeds it can't see every group).
+      getIsGroupingActive: () => isGroupingActive?.value ?? false,
+      getOrderedGroups: () => orderedGroups,
+      getGroupRowData: () => groupRowData,
     });
 
     // DOM container ref for the grid wrapper (used for scroll detection and
@@ -1469,6 +1505,10 @@ export default {
       if (root) {
         root.addEventListener('input', onEditorInputCapture, true);
       }
+
+      // Subscribe to the page-wide refresh bus (see forceRefetch above).
+      (wwLib?.getFrontWindow?.() || window)
+        .addEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
     });
 
     // See onMounted: marks live-typing input so validation stays silent until
@@ -1777,6 +1817,36 @@ export default {
       }
     };
 
+    // ===== Page-wide refresh bus =====
+    // A single workflow can refresh every datagrid on the current page without
+    // binding to a specific instance: each grid listens for the global
+    // 'ww-datagrid:refresh' window event and reloads itself. Listeners are tied
+    // to the mount lifecycle (see onMounted / onBeforeUnmount), so only grids
+    // currently on the page respond. Trigger from a "Run JavaScript" action:
+    //   wwLib.getFrontWindow().dispatchEvent(new CustomEvent('ww-datagrid:refresh'))
+    // Optionally pass { detail: { uid: '<element-uid>' } } to refresh one grid.
+    const DATAGRID_REFRESH_EVENT = 'ww-datagrid:refresh';
+
+    // Reload this grid from its data source. Supabase grids do a true refetch
+    // (reset the dedupe guard so an identical-params reload isn't skipped);
+    // other data sources fall back to a cell re-render.
+    const forceRefetch = () => {
+      if (props.content?.dataSource === 'supabase') {
+        lastFetchParams.value = null;
+        triggerSupabaseRefetch();
+      } else {
+        refreshData();
+      }
+    };
+
+    const onGlobalRefresh = (event) => {
+      // Optional targeting: a `uid` in the event refreshes only that grid
+      // (props.uid is the WeWeb element UID). No uid → refresh every grid.
+      const targetUid = event?.detail?.uid;
+      if (targetUid && targetUid !== props.uid) return;
+      forceRefetch();
+    };
+
     // Canonicalise an AG Grid filter model into the builder's shape so the two
     // directions can be compared without false diffs (e.g. dateTo:null vs omitted).
     const canonicalModel = (model) =>
@@ -1993,6 +2063,10 @@ export default {
       if (root) {
         root.removeEventListener('input', onEditorInputCapture, true);
       }
+
+      // Unsubscribe from the page-wide refresh bus.
+      (wwLib?.getFrontWindow?.() || window)
+        .removeEventListener(DATAGRID_REFRESH_EVENT, onGlobalRefresh);
     });
 
     const onBodyScroll = (event) => {
@@ -2142,12 +2216,21 @@ export default {
       rowDataLength.value = newLength;
       rowDataRef.value = newData;
 
-      // For non-paged-append modes, update records from rowData. In paged-
-      // append mode, AG Grid is the source of truth — pull records from the
-      // grid api after the prop diff has settled.
-      if (!isInfiniteScrollEnabled.value) {
+      // Grouped mode: `records` is aggregated from the per-group row sets (the
+      // top-level rowData is not what the group grids render), so defer to the
+      // grouping-aware updateRecordsFromGrid rather than the flat newData.
+      if (isGroupingActive.value) {
+        nextTick(() => {
+          setTimeout(() => {
+            updateRecordsFromGrid();
+          }, 100);
+        });
+      } else if (!isInfiniteScrollEnabled.value) {
+        // For non-paged-append modes, update records from rowData.
         setRecords(Array.isArray(newData) ? [...newData] : []);
       } else {
+        // Paged-append mode: AG Grid is the source of truth — pull records from
+        // the grid api after the prop diff has settled.
         nextTick(() => {
           setTimeout(() => {
             updateRecordsFromGrid();
@@ -2230,6 +2313,29 @@ export default {
         hasEverRendered.value = true;
       }
     }, { immediate: true }); // Removed deep: true for better performance
+
+    // Grouped mode keeps `records` in sync from the per-group row sets. The
+    // single-grid onGridReady / rowData paths that normally seed `records`
+    // either never run in grouped mode (the single grid isn't mounted) or
+    // can't see the per-group data (paged-append stores each group's rows in
+    // its own state, not the top-level rowData). Watch a cheap signature of the
+    // rendered groups + their row counts and re-aggregate whenever it changes:
+    // initial load, lazy block loads, drag-between-groups, group toggles.
+    const groupedRecordsSignature = computed(() => {
+      if (!isGroupingActive.value) return '';
+      const groups = orderedGroups.value || [];
+      return groups
+        .map((g) => `${g.value}:${(groupRowData(g.value) || []).length}`)
+        .join('|');
+    });
+    watch(
+      groupedRecordsSignature,
+      () => {
+        if (!isGroupingActive.value) return;
+        nextTick(() => updateRecordsFromGrid());
+      },
+      { immediate: true }
+    );
 
     // Detect loading state - show skeleton when grid is not ready or data is not yet rendered
     const isLoading = computed(() => {
