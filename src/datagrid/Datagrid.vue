@@ -1652,6 +1652,11 @@ export default {
       });
     };
     
+    // One-shot guard: refetch the focused row from the data source exactly once
+    // per component lifecycle (on mount). onFirstDataRendered can fire more than
+    // once (e.g. per group grid in grouped mode), so this prevents repeat fetches.
+    let hasAutoRefetchedFocusedRow = false;
+
     // CRITICAL FIX: Track when grid finishes its first data render
     // This helps prevent error #252 by knowing when it's safe to call API methods
     const onFirstDataRendered = () => {
@@ -1663,12 +1668,23 @@ export default {
         // Apply focused row if focusedRowId is set (scroll to row on first render)
         const focusedRowId = cfg.value?.focusedRowId;
         if (focusedRowId !== null && focusedRowId !== undefined && focusedRowId !== '') {
+          // Silently refetch the focused row from the data source on mount so it
+          // shows the freshest values without a visible reload. refreshRow updates
+          // the single row in place (no spinner, no full re-render). Gated to
+          // Supabase (the only source refreshRow supports) and run once per mount.
+          if (!hasAutoRefetchedFocusedRow && props.content?.dataSource === 'supabase') {
+            hasAutoRefetchedFocusedRow = true;
+            Promise.resolve(refreshRow(focusedRowId)).catch((err) => {
+              console.warn('[Datagrid] Auto-refetch of focused row failed:', err);
+            });
+          }
+
           // Use a longer delay to ensure grid is fully ready
           setTimeout(() => {
             if (gridApi.value && !isGridRendering.value) {
               // Find and scroll to the focused row using unified lookup
               let rowNode = findRowNode(gridApi.value, focusedRowId, resolveMappingFormula, props.content);
-              
+
               // Scroll to and focus the row if found
               if (rowNode && rowNode.rowIndex !== null && rowNode.rowIndex !== undefined) {
                 gridApi.value.ensureIndexVisible(rowNode.rowIndex, 'middle');
