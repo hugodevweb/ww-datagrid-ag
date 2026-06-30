@@ -43,6 +43,11 @@ export default {
           label: 'Calendar',
           icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>`,
         },
+        {
+          type: 'related',
+          label: 'Related',
+          icon: `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h12M3 12h12M3 19h7"/><path d="M18 9l3 3-3 3"/></svg>`,
+        },
       ],
     };
   },

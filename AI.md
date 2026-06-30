@@ -212,6 +212,18 @@ A highly customizable data grid/table component that supports features like sort
     pinned: undefined | 'left' | 'right'
   }>` - Column configurations. Each object describe a column of the grid, and some options may depends on the selected type of data. For each object, width can be undefined, if defined its must be a string in the shape of {value}px. Flex will be ignore if width is defined or equal to auto and must be an integer. For custom columns, displayLabelFormula and useDisplayValueForFilterSort allow you to filter/sort by a different value than what's stored (e.g., filter by user name when the field contains user ID). For user columns, userIdFormula allows you to extract user IDs from complex data structures (e.g., nested objects or arrays).`
 
+***Related List Mode:***
+The same element can render as a lighter, standalone **related list** (a parent-filtered list of child records on a record page). It is the same grid engine with all features available; only the editor configuration is simplified. Selected per instance, so multiple related lists can coexist on one page.
+- `viewMode`: `'auto' | 'related'` - Default `'auto'`. Set to `'related'` to turn this instance into a related list (independent of the global Grid/Kanban/Calendar toggle). In related mode the editor hides advanced/long-tail settings and shows only: Mode, Related List, Data Source, Search, Columns, Pagination, Selection, and a small Style section.
+- `relatedForeignKey`: `string` - (Supabase only) The foreign-key column on the child table that references the parent record (e.g. `'organization_id'`). Only shown when `viewMode === 'related'` and `dataSource === 'supabase'`.
+- `relatedParentId`: `any` - (Supabase only) The parent record's id to filter children by. Usually bound to the current page record id. Internally applied as a Supabase filter `WHERE relatedForeignKey = relatedParentId` (appended to `supabaseFilters`); the list refetches when this changes. For local data, bind a pre-filtered array to `rowData` instead.
+- `showHeader`: `boolean` - Default `true`. Show the related-list header bar (title, record count, add button).
+- `headerTitle`: `string` - Title shown in the header bar (bindable).
+- `showRecordCount`: `boolean` - Default `true`. Show the record count next to the title.
+- `showAddButton`: `boolean` - Default `true`. Show an Add button that fires the `onAddNew` event.
+- `addButtonLabel`: `string` - Default `"Add"`. Text on the Add button.
+Note: related-list instances do not inherit the page's shared saved-view configuration (they are standalone).
+
 ***Exposed Variables:***
 - selectedRows: ***READ ONLY*** Array of currently selected rows.
 - filters: ***READ ONLY*** Current filter state as an object containing active filters.
@@ -254,6 +266,7 @@ A highly customizable data grid/table component that supports features like sort
 - filterChanged: Triggered when filters are applied or changed. Payload: filter model object
 - sortChanged: Triggered when sorting is applied or changed. Payload: array of sort configurations
 - scroll: Triggered when the grid is scrolled. Useful for implementing infinite scroll or load-more pagination. Payload: { scrollTop: 0, scrollLeft: 0, scrollHeight: 0, clientHeight: 0, distanceFromBottom: 0, isNearBottom: false, isAtBottom: false, totalRows: 0 }
+- onAddNew: (Related List mode) Triggered when the header bar's Add button is clicked. Wire it to an "open create form/modal" workflow. Payload: { parentId: '', relatedForeignKey: '' }. To open a record, wire the existing `rowClicked` or `navigate` event.
 
 ***Notes:***
 - idFormula always use javascript with context.mapping value "context.mapping..."
