@@ -3573,10 +3573,16 @@ export default {
     will-change: scroll-position;
   }
   
-  // Remove minimum height when using auto height layout
-  // AG Grid sets a 150px minimum height by default for auto height to avoid empty grids
-  // This removes that minimum height as per AG Grid documentation
-  :deep(.ag-center-cols-viewport) {
+  // Shrink AG Grid's empty-grid minimum height, but ONLY in auto-height layout
+  // (where AG otherwise reserves space so an empty grid doesn't look collapsed).
+  // This MUST stay scoped to .ag-layout-auto-height: in normal (fixed-height)
+  // layout AG Grid relies on min-height:100% to stretch .ag-center-cols-viewport
+  // to the full body height. That full-height viewport is the only horizontally
+  // scrollable element, so it's what lets wheel/trackpad horizontal scrolling
+  // work over the empty space BELOW the rows — not just over the rows. Applying
+  // the override unscoped collapses the viewport to the rows' height, leaving the
+  // white space inside the (overflow-x:hidden) body where horizontal scroll dies.
+  :deep(.ag-layout-auto-height .ag-center-cols-viewport) {
     min-height: 75px !important;
   }
   
