@@ -1,4 +1,4 @@
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, watch } from 'vue';
 import {
   fetchSupabaseDataPaginated,
   fetchSupabaseDataInfinite,
@@ -62,6 +62,26 @@ export function useDataFetch(cfg, props, {
       defaultValue: false,
       readonly: true,
     });
+  // Name of the table the grid is currently querying. Mirrors the configured
+  // Supabase table; empty in local ('mapping') mode where there is no backing
+  // table. Tracks props.content directly (the same source the fetch reads),
+  // not the baseConfig-merged cfg, so it reflects what is actually queried.
+  const { setValue: setTable } =
+    wwLib.wwVariable.useComponentVariable({
+      uid: props.uid,
+      name: 'table',
+      type: 'string',
+      defaultValue: '',
+      readonly: true,
+    });
+  watch(
+    () =>
+      props.content?.dataSource === 'supabase'
+        ? props.content?.supabaseTable || ''
+        : '',
+    (val) => setTable(val || ''),
+    { immediate: true }
+  );
 
   // Supabase data state
   const supabaseData = ref([]);

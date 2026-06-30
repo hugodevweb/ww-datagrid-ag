@@ -27,11 +27,30 @@ export function useRecordsVariable(props, { rows, isFetching }) {
       defaultValue: false,
       readonly: true,
     });
+  // Mirror the datagrid's `table` variable (see useDataFetch.js) so the name of
+  // the queried table stays exposed when the kanban/calendar view is active.
+  // Empty in local ('mapping') mode where there is no backing table.
+  const { setValue: setTable } =
+    wwLib.wwVariable.useComponentVariable({
+      uid: props.uid,
+      name: 'table',
+      type: 'string',
+      defaultValue: '',
+      readonly: true,
+    });
 
   watch(
     rows,
     (val) => setRecords(Array.isArray(val) ? [...val] : []),
     { immediate: true, deep: true }
+  );
+  watch(
+    () =>
+      props.content?.dataSource === 'supabase'
+        ? props.content?.supabaseTable || ''
+        : '',
+    (val) => setTable(val || ''),
+    { immediate: true }
   );
   watch(
     isFetching,
