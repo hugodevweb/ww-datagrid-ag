@@ -444,24 +444,31 @@ export function createActionColumnDef(col, commonProperties, onActionTrigger, co
 
 // Fixed width for navigation columns: two 31px icon buttons + 6px gap = 68px of
 // content, plus cell padding. Navigation cells always render the same content, so
-// the column is locked to this width and cannot be resized.
+// the column is locked to this width and cannot be resized. When only one button
+// is shown (navigate-only / chat-only) the column is narrowed to a single button.
 const NAVIGATION_COLUMN_WIDTH = 90;
+const NAVIGATION_COLUMN_WIDTH_SINGLE = 55;
 
 // Navigation column factory — renders a fixed pair of icon buttons (detail + chat)
 // per row via the plain-JS NavigationCellRenderer. cellRendererParams is a
 // function so AG Grid re-evaluates it on each refreshCells, picking up the
 // latest focusRowId / tabValue from navContext without rebuilding the colDef.
 export function createNavigationColumnDef(col, commonProperties, navContext) {
+  // A single-button column (navigate-only / chat-only) needs less width.
+  const width =
+    col?.navigationButtons === "navigate" || col?.navigationButtons === "chat"
+      ? NAVIGATION_COLUMN_WIDTH_SINGLE
+      : NAVIGATION_COLUMN_WIDTH;
   return {
     ...commonProperties,
     // Lock width: override config width / stored view sizes / flex so the column
-    // is exactly NAVIGATION_COLUMN_WIDTH and the user can't resize it. minWidth
+    // is exactly `width` and the user can't resize it. minWidth
     // === maxWidth === width keeps it pinned even through other sizing paths;
     // resizable: false drops the drag handle (overrides defaultColDef.resizable);
     // flex/suppressSizeToFit stop "size columns to fit" from stretching it.
-    width: NAVIGATION_COLUMN_WIDTH,
-    minWidth: NAVIGATION_COLUMN_WIDTH,
-    maxWidth: NAVIGATION_COLUMN_WIDTH,
+    width: width,
+    minWidth: width,
+    maxWidth: width,
     flex: null,
     resizable: false,
     suppressSizeToFit: true,
@@ -470,8 +477,11 @@ export function createNavigationColumnDef(col, commonProperties, navContext) {
     cellRendererParams: (params) => {
       const rowData = params.data;
       const rowId = params.node?.id ?? rowData?.id;
+      // Which buttons to render: "both" (default), "navigate", or "chat".
+      const buttons = col?.navigationButtons || "both";
       return {
         rowId,
+        buttons,
         focusRowId: navContext?.focusRowId?.value ?? null,
         tabValue: navContext?.resolveTab ? navContext.resolveTab() : 0,
         messageCount: navContext?.resolveMessageCount

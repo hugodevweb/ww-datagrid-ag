@@ -579,9 +579,6 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
   // effect (one-shot per edit session, deduped via the
   // `_validationFiredForCurrentEdit` flag).
   const columnDefs = computed(() => {
-    // First, map all columns to their definitions
-    const columnsMap = new Map();
-
     // Run validation rules for a column and, on failure, emit the
     // `validationFailed` trigger event so WeWeb workflows can react.
     // ag-Grid v34 uses this return value (string[] | null) to drive
@@ -1065,6 +1062,63 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
             }),
           };
         }
+        case "link": {
+          // Link column: renders the cell's field value as a styled hyperlink.
+          // The destination defaults to `/{updateTable}/{id}` where updateTable
+          // mirrors the grid's "Supabase Update Table" (falling back to
+          // "Supabase Table") and id comes from the configured id field. Both
+          // the table segment (linkBasePath) and the entire URL (linkUrlFormula,
+          // evaluated per-row) can be overridden.
+          const updateTable =
+            (props.content?.dataSource === "supabase"
+              ? props.content?.supabaseUpdateTable || props.content?.supabaseTable
+              : "") || "";
+          const idField = props.content?.supabaseIdField || "id";
+          const urlFormula = col?.linkUrlFormula;
+
+          const result = {
+            ...commonProperties,
+            headerName: col?.headerName,
+            field: col?.field,
+            sortable: col?.sortable,
+            filter: col?.filter ? "agTextColumnFilter" : false,
+            editable: col?.editable,
+            cellRenderer: "LinkCellRenderer",
+            cellRendererParams: {
+              tableName: updateTable,
+              basePath: col?.linkBasePath || "",
+              idField,
+              openInNewTab: !!col?.linkOpenInNewTab,
+              // Link text color: reuse the SAME token as the email column
+              // (the grid's navigation icon color) so link and email cells share
+              // one text-color source. Passed explicitly (not via a CSS var) so
+              // the color is available before the grid's style cascade lands.
+              accentColor: cfg.value?.navigationIconColor || null,
+              // Per-row full-URL override. Returns "" when no formula is set or
+              // it resolves to empty, so the renderer falls back to the default
+              // `/{table}/{id}` path.
+              resolveUrl: (rowData) => {
+                if (!urlFormula) return "";
+                try {
+                  const v = resolveMappingFormula(urlFormula, rowData);
+                  return v == null ? "" : String(v);
+                } catch (_) {
+                  return "";
+                }
+              },
+            },
+          };
+
+          if (col?.editable) {
+            result.cellEditor = "agTextCellEditor";
+            result.cellEditorParams = {
+              getValidationErrors: (params) =>
+                getValidationErrors(col, params?.value, params?.data, params),
+            };
+          }
+
+          return result;
+        }
         case "email": {
           // Email behaves like a text column but auto-injects an `email`
           // validation rule (prepended so user-added rules like `required`
@@ -1291,46 +1345,13 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
       }
     });
 
-    // Build a map of column definitions by their colId/field for reordering
-    allColumnDefs.forEach((colDef) => {
-      const colId = colDef.colId || colDef.field;
-      if (colId) {
-        columnsMap.set(colId, colDef);
-      }
-    });
-
-    // Reorder columns based on viewConfiguration.columnsOrder if provided with values
-    // Empty array [] or absent key means use default column order from definitions
-    // The distinction between "key absent" vs "key present but empty" is handled
-    // by applyViewConfiguration at runtime for resetting column order
-    let columns;
-    const viewColumnsOrder = cfg.value.viewConfiguration?.columnsOrder;
-    const hasValidColumnsOrder = viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0;
-    if (hasValidColumnsOrder) {
-      const orderedColumns = [];
-      const usedColIds = new Set();
-
-      // First, add columns in the order specified by viewConfiguration.columnsOrder
-      for (const colId of viewColumnsOrder) {
-        if (columnsMap.has(colId)) {
-          orderedColumns.push(columnsMap.get(colId));
-          usedColIds.add(colId);
-        }
-      }
-
-      // Then, add any remaining columns that weren't in viewConfiguration.columnsOrder
-      // (to handle cases where new columns were added to config but not to viewConfiguration.columnsOrder)
-      for (const colDef of allColumnDefs) {
-        const colId = colDef.colId || colDef.field;
-        if (colId && !usedColIds.has(colId)) {
-          orderedColumns.push(colDef);
-        }
-      }
-
-      columns = orderedColumns;
-    } else {
-      columns = allColumnDefs;
-    }
+    // Column order is LOCKED to the hard-coded config order. We intentionally
+    // ignore any persisted `viewConfiguration.columnsOrder` here so the grid
+    // always renders columns in the exact order they are declared in the
+    // `columns` config. Reordering is disabled everywhere (UI drag via
+    // suppressMovableColumns, the column chooser, saved-view restore, and the
+    // group-grid mount re-apply) — this is the single source of truth for order.
+    const columns = allColumnDefs;
 
     // Inject hidden virtual columns for fields referenced in sorting/filters
     // but not present in column definitions (e.g., sort by created_at without showing it)

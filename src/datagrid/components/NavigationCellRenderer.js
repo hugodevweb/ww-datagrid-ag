@@ -134,34 +134,43 @@ class NavigationCellRenderer {
     this.eGui.addEventListener("click", this._stopBubble);
     this.eGui.addEventListener("contextmenu", this._stopBubble);
 
-    this.eDetail = document.createElement("button");
-    this.eDetail.type = "button";
-    this.eDetail.className = "ww-nav-btn ww-nav-btn--detail";
-    this.eDetail.setAttribute("aria-label", "Open details");
-    this.eDetail.innerHTML = ARROW_SQUARE_IN_SVG;
+    // Which buttons to render: "both" (default), "navigate", or "chat".
+    const buttons = params?.buttons || "both";
+    this._buttons = buttons;
+    const showDetail = buttons !== "chat";
+    const showChat = buttons !== "navigate";
 
-    this.eChat = document.createElement("button");
-    this.eChat.type = "button";
-    this.eChat.className = "ww-nav-btn ww-nav-btn--chat";
-    this.eChat.setAttribute("aria-label", "Open chat");
-    this.eChat.innerHTML = CHATS_CIRCLE_SVG;
+    if (showDetail) {
+      this.eDetail = document.createElement("button");
+      this.eDetail.type = "button";
+      this.eDetail.className = "ww-nav-btn ww-nav-btn--detail";
+      this.eDetail.setAttribute("aria-label", "Open details");
+      this.eDetail.innerHTML = ARROW_SQUARE_IN_SVG;
 
-    this.eBadge = document.createElement("span");
-    this.eBadge.className = "ww-nav-badge";
-    this.eChat.appendChild(this.eBadge);
+      this._onDetailClick = (ev) => this._fire("detail", false, ev);
+      this._onDetailContext = (ev) => this._fire("detail", true, ev);
+      this.eDetail.addEventListener("click", this._onDetailClick);
+      this.eDetail.addEventListener("contextmenu", this._onDetailContext);
+      this.eGui.appendChild(this.eDetail);
+    }
 
-    this._onDetailClick = (ev) => this._fire("detail", false, ev);
-    this._onDetailContext = (ev) => this._fire("detail", true, ev);
-    this._onChatClick = (ev) => this._fire("chat", false, ev);
-    this._onChatContext = (ev) => this._fire("chat", true, ev);
+    if (showChat) {
+      this.eChat = document.createElement("button");
+      this.eChat.type = "button";
+      this.eChat.className = "ww-nav-btn ww-nav-btn--chat";
+      this.eChat.setAttribute("aria-label", "Open chat");
+      this.eChat.innerHTML = CHATS_CIRCLE_SVG;
 
-    this.eDetail.addEventListener("click", this._onDetailClick);
-    this.eDetail.addEventListener("contextmenu", this._onDetailContext);
-    this.eChat.addEventListener("click", this._onChatClick);
-    this.eChat.addEventListener("contextmenu", this._onChatContext);
+      this.eBadge = document.createElement("span");
+      this.eBadge.className = "ww-nav-badge";
+      this.eChat.appendChild(this.eBadge);
 
-    this.eGui.appendChild(this.eDetail);
-    this.eGui.appendChild(this.eChat);
+      this._onChatClick = (ev) => this._fire("chat", false, ev);
+      this._onChatContext = (ev) => this._fire("chat", true, ev);
+      this.eChat.addEventListener("click", this._onChatClick);
+      this.eChat.addEventListener("contextmenu", this._onChatContext);
+      this.eGui.appendChild(this.eChat);
+    }
 
     this._applyState();
   }
@@ -171,6 +180,12 @@ class NavigationCellRenderer {
   }
 
   refresh(params) {
+    // If the set of buttons changed (e.g. the config was edited or a bound
+    // value updated), the DOM built in init() is stale — return false so AG
+    // Grid discards this instance and re-creates it with the right buttons.
+    if ((params?.buttons || "both") !== this._buttons) {
+      return false;
+    }
     this.params = params;
     this._applyState();
     return true;
@@ -245,17 +260,20 @@ class NavigationCellRenderer {
 
   _applyState() {
     const p = this.params;
-    if (!p || !this.eDetail || !this.eChat || !this.eBadge) return;
+    if (!p) return;
 
-    const count = Number(p.messageCount) || 0;
-    if (count > 0) {
-      this.eChat.classList.add("ww-nav-btn--chat-active");
-      this.eBadge.textContent = count > 99 ? "99+" : String(count);
-      this.eBadge.classList.add("is-visible");
-    } else {
-      this.eChat.classList.remove("ww-nav-btn--chat-active");
-      this.eBadge.classList.remove("is-visible");
-      this.eBadge.textContent = "";
+    // Chat badge / message count — only relevant when the chat button exists.
+    if (this.eChat && this.eBadge) {
+      const count = Number(p.messageCount) || 0;
+      if (count > 0) {
+        this.eChat.classList.add("ww-nav-btn--chat-active");
+        this.eBadge.textContent = count > 99 ? "99+" : String(count);
+        this.eBadge.classList.add("is-visible");
+      } else {
+        this.eChat.classList.remove("ww-nav-btn--chat-active");
+        this.eBadge.classList.remove("is-visible");
+        this.eBadge.textContent = "";
+      }
     }
 
     const focusRowId = p.focusRowId;
@@ -277,17 +295,18 @@ class NavigationCellRenderer {
 
     // Tab-specific highlight: only the button matching tabValue on the
     // focused row gets styling. The other button keeps its default look.
+    // Buttons may be absent (navigate-only / chat-only), so guard each.
     if (isFocused) {
       if (tabValue === 1) {
-        this.eChat.classList.add("is-focused");
-        this.eDetail.classList.remove("is-focused");
+        this.eChat?.classList.add("is-focused");
+        this.eDetail?.classList.remove("is-focused");
       } else {
-        this.eDetail.classList.add("is-focused");
-        this.eChat.classList.remove("is-focused");
+        this.eDetail?.classList.add("is-focused");
+        this.eChat?.classList.remove("is-focused");
       }
     } else {
-      this.eDetail.classList.remove("is-focused");
-      this.eChat.classList.remove("is-focused");
+      this.eDetail?.classList.remove("is-focused");
+      this.eChat?.classList.remove("is-focused");
     }
   }
 }

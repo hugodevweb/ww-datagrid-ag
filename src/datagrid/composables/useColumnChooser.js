@@ -259,37 +259,10 @@ export function useColumnChooser(cfg, props, ctx, {
     }
   };
 
-  const onChooserDrop = (targetColId) => {
-    const fromColId = chooserDragColId.value;
-    if (!fromColId || fromColId === targetColId) {
-      chooserDragColId.value = null;
-      chooserDragOverColId.value = null;
-      return;
-    }
-    const targetCol = allColumnsList.value.find(c => c.colId === targetColId);
-    if (targetCol?.isLocked) {
-      chooserDragColId.value = null;
-      chooserDragOverColId.value = null;
-      return;
-    }
-    // Reorder chooserColumnOrder
-    const order = [...chooserColumnOrder.value];
-    const fromIdx = order.indexOf(fromColId);
-    const toIdx = order.indexOf(targetColId);
-    if (fromIdx !== -1 && toIdx !== -1) {
-      order.splice(fromIdx, 1);
-      order.splice(toIdx, 0, fromColId);
-      chooserColumnOrder.value = order;
-      // Apply new order to AG Grid
-      if (gridApi.value) {
-        gridApi.value.applyColumnState({
-          state: order.map(colId => ({ colId })),
-          applyOrder: true,
-        });
-      }
-      const updateCurrentConfig = getUpdateCurrentConfig?.();
-      if (updateCurrentConfig) updateCurrentConfig();
-    }
+  const onChooserDrop = (_targetColId) => {
+    // Column order is LOCKED to the hard-coded config order — the chooser can
+    // toggle visibility but can never reorder columns. Just clear the drag state
+    // without applying any reorder.
     chooserDragColId.value = null;
     chooserDragOverColId.value = null;
   };

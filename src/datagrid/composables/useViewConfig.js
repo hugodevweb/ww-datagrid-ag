@@ -476,25 +476,14 @@ export function useViewConfig(cfg, props, ctx, {
           debugLog('[ViewConfiguration] Skipped sorting (key not present, keeping current state)');
         }
 
-        // 3. Apply column order if key is present (even if empty [] - which resets to default order)
-        // Only skip if the key is completely absent from viewConfig
-        if (viewConfig && 'columnsOrder' in viewConfig) {
-          const columnsOrder = viewConfig.columnsOrder;
-          if (isEmptyConfigValue(columnsOrder) || !Array.isArray(columnsOrder)) {
-            // Reset to default column order (from column definitions)
-            const defaultOrder = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col)).map(col => col.getColId()) || [];
-            setColumnOrder([...defaultOrder]);
-            debugLog('[ViewConfiguration] Reset columns order to default:', defaultOrder);
-          } else {
-            gridApi.value.applyColumnState({
-              state: columnsOrder.map((colId) => ({ colId })),
-              applyOrder: true,
-            });
-            setColumnOrder([...columnsOrder]);
-            debugLog('[ViewConfiguration] Applied columns order:', columnsOrder);
-          }
-        } else {
-          debugLog('[ViewConfiguration] Skipped columns order (key not present, keeping current state)');
+        // 3. Column order is LOCKED to the hard-coded config order — a saved
+        // view can never reorder columns. We keep the `columnOrder` variable in
+        // sync with the actual (config) column order for consumers that read it,
+        // but we never apply a persisted order to the grid.
+        {
+          const defaultOrder = gridApi.value.getAllGridColumns()?.filter(col => !isVirtualColumn(col)).map(col => col.getColId()) || [];
+          setColumnOrder([...defaultOrder]);
+          debugLog('[ViewConfiguration] Column order is locked to config; keeping default order:', defaultOrder);
         }
 
         // 4. Apply column sizes if key is present (even if empty {} - which resets to default widths)
@@ -843,20 +832,11 @@ export function useViewConfig(cfg, props, ctx, {
     const state = {
       partialColumnState: true,
     };
-    // NOTE: Filters, sorts, and sizes are applied via watcher when viewConfiguration changes
-    // We only set column order in initialState for AG Grid's initial render
-    // At initialization, both "key absent" and "empty array []" use default column order
-    // The distinction between absent vs empty matters for runtime changes (handled by applyViewConfiguration)
+    // NOTE: Filters, sorts, and sizes are applied via watcher when viewConfiguration changes.
+    // Column order is LOCKED to the hard-coded config order — we intentionally do
+    // NOT seed `state.columnOrder` from a persisted `viewConfiguration.columnsOrder`,
+    // so AG Grid's initial render always uses the columnDefs (config) order.
     const viewConfig = cfg.value?.viewConfiguration;
-    const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
-    const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
-
-    // Only set initial column order if explicitly provided with values
-    if (viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0) {
-      state.columnOrder = {
-        orderedColIds: viewColumnsOrder,
-      };
-    }
     initialState.value = state;
 
     // Seed groupingState from initial viewConfiguration so the component

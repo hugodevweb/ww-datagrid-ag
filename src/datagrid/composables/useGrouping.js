@@ -1113,15 +1113,9 @@ export function useGrouping(
         const state = Object.entries(sizes).map(([colId, width]) => ({ colId, width }));
         params.api.applyColumnState({ state });
       }
-      // Apply column order if available
-      const columnOrder = getColumnOrder?.();
-      const order = Array.isArray(columnOrder?.value) ? columnOrder.value : [];
-      if (order.length > 0) {
-        params.api.applyColumnState({
-          state: order.map(colId => ({ colId })),
-          applyOrder: true,
-        });
-      }
+      // Column order is LOCKED to the hard-coded config order — never re-apply a
+      // persisted order to a freshly-mounted group grid. It renders in the
+      // columnDefs (config) order, which is the single source of truth.
     } catch (e) {
       debugLog('[Grouping] Error applying initial state to new group grid:', e);
     }

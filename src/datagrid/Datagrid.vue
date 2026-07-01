@@ -25,7 +25,7 @@
           : cfg.paginationPageSize
       "
       :paginationPageSizeSelector="paginationPageSizeSelector"
-      :suppressMovableColumns="!cfg.movableColumns"
+      :suppressMovableColumns="true"
       :columnHoverHighlight="cfg.columnHoverHighlight"
       :locale-text="localeText"
       :invalidEditValueMode="invalidEditValueMode"
@@ -135,7 +135,7 @@
               : cfg.paginationPageSize
           "
           :paginationPageSizeSelector="paginationPageSizeSelector"
-          :suppressMovableColumns="!cfg.movableColumns"
+          :suppressMovableColumns="true"
           :columnHoverHighlight="cfg.columnHoverHighlight"
           :locale-text="localeText"
           :invalidEditValueMode="invalidEditValueMode"
@@ -307,20 +307,16 @@
 
             <!-- Column list -->
             <div class="cc-list">
+              <!-- Column order is locked to the hard-coded config, so rows are
+                   not draggable and the reorder handle is intentionally omitted.
+                   The checkbox still toggles column visibility. -->
               <div
                 v-for="col in filteredColumnsList"
                 :key="col.colId"
                 class="cc-row"
                 :class="{
-                  'cc-row--drag-over': chooserDragOverColId === col.colId && chooserDragColId !== col.colId,
-                  'cc-row--dragging': chooserDragColId === col.colId,
                   'cc-row--locked': col.isLocked,
                 }"
-                :draggable="!columnChooserSearch && !col.isLocked"
-                @dragstart="onChooserDragStart(col.colId)"
-                @dragover.prevent="onChooserDragOver(col.colId)"
-                @drop.prevent="onChooserDrop(col.colId)"
-                @dragend="onChooserDragEnd"
               >
                 <label class="cc-checkbox-wrap" :class="{ 'cc-checkbox-wrap--locked': col.isLocked }">
                   <input
@@ -331,13 +327,6 @@
                     @change="toggleColumnVisibility(col.colId)"
                   />
                 </label>
-                <span class="cc-drag-handle" :class="{ 'cc-drag-handle--disabled': !!columnChooserSearch || col.isLocked }">
-                  <svg width="12" height="16" viewBox="0 0 12 16" fill="currentColor">
-                    <circle cx="3" cy="4" r="1.5"/><circle cx="9" cy="4" r="1.5"/>
-                    <circle cx="3" cy="8" r="1.5"/><circle cx="9" cy="8" r="1.5"/>
-                    <circle cx="3" cy="12" r="1.5"/><circle cx="9" cy="12" r="1.5"/>
-                  </svg>
-                </span>
                 <span class="cc-col-name">{{ col.headerName }}</span>
               </div>
               <div v-if="filteredColumnsList.length === 0" class="cc-empty">
@@ -812,6 +801,7 @@ import UserFilterWrapper from "./components/UserFilterWrapper.js";
 import RecordFilterWrapper from "./components/RecordFilterWrapper.js";
 import PhoneCellRenderer from "./components/PhoneCellRenderer.vue";
 import EmailCellRenderer from "./components/EmailCellRenderer.vue";
+import LinkCellRenderer from "./components/LinkCellRenderer.vue";
 import PhoneCellEditor from "./components/PhoneCellEditor.vue";
 import {
   clearAllCaches,
@@ -920,6 +910,7 @@ export default {
     PhoneCellRenderer,
     PhoneCellEditor,
     EmailCellRenderer,
+    LinkCellRenderer,
     UserFilterComponent,
     FilterBuilder,
     FilterValuePicker,
@@ -1647,21 +1638,13 @@ export default {
       isGridRendering.value = true;
       
       const columns = params.api.getAllGridColumns();
-      
-      // Set initial column order from viewConfiguration if provided with values
-      // At grid initialization, we use viewConfiguration.columnsOrder if it has values
-      // Otherwise, use the default order from grid (from column definitions)
-      const viewConfig = cfg.value?.viewConfiguration;
-      const hasColumnsOrderKey = viewConfig && typeof viewConfig === 'object' && 'columnsOrder' in viewConfig;
-      const viewColumnsOrder = hasColumnsOrderKey ? viewConfig.columnsOrder : undefined;
-      
-      if (viewColumnsOrder && Array.isArray(viewColumnsOrder) && viewColumnsOrder.length > 0) {
-        setColumnOrder([...viewColumnsOrder]);
-      } else {
-        // Use default order from grid (no explicit order in viewConfiguration)
-        // Filter out virtual columns (sort/filter-only) from the default order
-        setColumnOrder(columns.filter(col => !isVirtualColumn(col)).map((col) => col.getColId()));
-      }
+
+      // Column order is LOCKED to the hard-coded config order — the grid always
+      // renders columns in their columnDefs (config) order and a persisted
+      // `viewConfiguration.columnsOrder` is never applied. Seed the exposed
+      // `columnOrder` variable from the actual grid order so it faithfully
+      // reflects the config order. Virtual (sort/filter-only) columns excluded.
+      setColumnOrder(columns.filter(col => !isVirtualColumn(col)).map((col) => col.getColId()));
       
       // Update records from grid after grid is ready
       nextTick(() => {
@@ -2869,6 +2852,7 @@ export default {
       PhoneCellRenderer,
       PhoneCellEditor,
       EmailCellRenderer,
+      LinkCellRenderer,
     }));
 
     // Per-group rowClassRules. Each per-group grid passes its own groupValue
@@ -3555,6 +3539,27 @@ export default {
   max-width: 100%;
   max-height: 100%;
 
+  // Auto-layout (domLayout="autoHeight"): the grid sizes to its own content
+  // and the WeWeb wrapper is meant to grow with it. WeWeb wraps the component
+  // in a flex column, so with the base `min-height: 0` above a flex parent that
+  // resolves to a small/zero height shrinks .ww-datagrid down to it — AG Grid's
+  // .ag-root-wrapper still computes its true height but then overflows an
+  // invisible 0-height box. That is the "auto height is always 0px" bug: the
+  // grid renders at 0 while its content is intact underneath.
+  //
+  // Floor the min-height at the content size so the flex parent can no longer
+  // collapse us below the grid. This mirrors the min-height:200px floor that
+  // fixed layout gets from the `style` computed (useColumnState). max-content is
+  // used deliberately: `flex-shrink:0` and `min-height:auto` do NOT help here
+  // because .ag-root-wrapper is overflow:hidden and contributes 0 to the flex
+  // min-content size, and `height/max-height:*-content` clamp to the parent's
+  // definite (0) height instead of the content. min-height wins over the
+  // max-height:100% cap above, which is correct in auto mode — the component is
+  // meant to grow to its content and let the WeWeb wrapper/page scroll.
+  &.ww-datagrid--auto-layout {
+    min-height: max-content;
+  }
+
   // Fix horizontal scroll alignment between header and body
   // Optimize scroll containers for better synchronization
   :deep(.ag-header-viewport),
@@ -3585,7 +3590,21 @@ export default {
   :deep(.ag-layout-auto-height .ag-center-cols-viewport) {
     min-height: 75px !important;
   }
-  
+
+  // Empty single-grid in auto-height: AG Grid renders the noRowsOverlay
+  // ("No Rows To Show" / localized) but with autoHeight the body collapses
+  // toward 0, so the message — and the column header above it — can end up
+  // clipped or invisible. Floor the body at exactly one row height whenever
+  // the no-rows overlay wrapper is in the DOM so the header stays visible and
+  // there is a row-tall band for the message. Scoped via :has() so it only
+  // fires when empty; non-empty grids keep hugging their rows (and the 75px
+  // rule above still governs the horizontal-scroll floor for short grids).
+  // Mirrors the grouped-mode empty-group rule further down.
+  :deep(.ag-root-wrapper.ag-layout-auto-height:has(.ag-overlay-no-rows-wrapper)) .ag-body-viewport,
+  :deep(.ag-root-wrapper.ag-layout-auto-height:has(.ag-overlay-no-rows-wrapper)) .ag-center-cols-viewport {
+    min-height: var(--ww-data-grid_row-height, 40px) !important;
+  }
+
   // Improve virtualization for large datasets
   :deep(.ag-center-cols-container) {
     min-height: 0 !important;

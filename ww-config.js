@@ -107,6 +107,13 @@ const config = {
         ],
       },
       {
+        label: "Link",
+        isCollapsible: true,
+        properties: [
+          "linkColor",
+        ],
+      },
+      {
         label: "Record Pill",
         isCollapsible: true,
         properties: [
@@ -1524,6 +1531,26 @@ const config = {
       defaultValue: "#ffffff",
     },
 
+    // ---- Link column styling -----------------------------------------------
+    // The link column text color now reuses the email/navigation icon color
+    // (cfg.navigationIconColor) — see useCellEditing.js — so link and email
+    // cells share one text-color source. This standalone "Link Color" control
+    // is therefore unused and hidden. Kept defined for backward compatibility
+    // with existing content. (Function `hidden`, not boolean, so the
+    // simplified-mode `hideInSimplifiedMode` wrapper keeps it hidden in ALL
+    // modes rather than only simplified mode.)
+    linkColor: {
+      label: "Link Color",
+      type: "Color",
+      options: { nullable: true },
+      responsive: true,
+      bindable: true,
+      states: true,
+      classes: true,
+      defaultValue: "#2563eb",
+      hidden: () => true,
+    },
+
     recordPillAccentColor: {
       label: "Accent Color",
       type: "Color",
@@ -2045,6 +2072,7 @@ const config = {
                     { value: "record", label: "Record" },
                     { value: "phone", label: "Phone" },
                     { value: "email", label: "Email" },
+                    { value: "link", label: "Link" },
                     { value: "navigation", label: "Navigation" },
                     { value: "custom", label: "Custom" },
                   ],
@@ -2065,6 +2093,30 @@ const config = {
                 hidden:
                   array?.item?.cellDataType === "action" ||
                   array?.item?.cellDataType === "navigation",
+              },
+              navigationButtons: {
+                label: { en: "Buttons" },
+                type: "TextSelect",
+                options: {
+                  options: [
+                    { value: "both", label: "Navigate + Chat", default: true },
+                    { value: "navigate", label: "Navigate only" },
+                    { value: "chat", label: "Chat only" },
+                  ],
+                },
+                defaultValue: "both",
+                hidden: array?.item?.cellDataType !== "navigation",
+                bindable: true,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Which buttons to show in the navigation column: both | navigate | chat",
+                },
+                propertyHelp: {
+                  tooltip:
+                    "Choose whether the navigation column shows both the navigate and chat buttons, or only one of them.",
+                },
+                /* wwEditor:end */
               },
               supabaseFilterField: {
                 label: { en: "Supabase Filter Field" },
@@ -3000,6 +3052,52 @@ const config = {
                 },
                 /* wwEditor:end */
               },
+              linkBasePath: {
+                label: "Link Base Path",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "link",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Overrides the {table} segment of the /{table}/{id} link.",
+                },
+                propertyHelp: {
+                  tooltip:
+                    "Optional. The path segment the link points to, e.g. 'companies' → /companies/{id}. Leave empty to use the grid's Supabase Update Table (falling back to the Supabase Table). Absolute URLs (https://…) are used as-is.",
+                },
+                /* wwEditor:end */
+              },
+              linkUrlFormula: {
+                label: "Link URL Override",
+                type: "Formula",
+                hidden: array?.item?.cellDataType !== "link",
+                options: (content) => ({
+                  template: wwLib.wwUtils.getDataFromCollection(content.rowData)?.[0] ?? null,
+                }),
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip:
+                    "Optional per-row formula returning the full destination URL. When it resolves to a non-empty value it replaces the default /{table}/{id} link entirely (e.g. '/companies/' + context.mapping?.company_id).",
+                },
+                /* wwEditor:end */
+              },
+              linkOpenInNewTab: {
+                label: "Open in New Tab",
+                type: "OnOff",
+                defaultValue: false,
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "link",
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "boolean",
+                  tooltip: "Open the link in a new browser tab.",
+                },
+                propertyHelp: {
+                  tooltip: "When on, the link opens in a new tab (target=_blank).",
+                },
+                /* wwEditor:end */
+              },
             },
             propertiesOrder: [
               "headerName",
@@ -3034,6 +3132,9 @@ const config = {
               "phoneDefaultCountry",
               "phonePreferredCountries",
               "phoneDisplayFormat",
+              "linkBasePath",
+              "linkUrlFormula",
+              "linkOpenInNewTab",
               "useCustomLabel",
               "displayLabelFormula",
               "useDisplayValueForFilterSort",
@@ -3283,15 +3384,23 @@ const config = {
       },
       /* wwEditor:end */
     },
+    // Column order is intentionally LOCKED to the hard-coded `columns` config —
+    // columns can never be reordered (no UI drag, no chooser reorder, no saved-
+    // view / persisted-order restore). This toggle is kept for backward
+    // compatibility with existing content but is hidden and has no effect.
     movableColumns: {
       label: { en: "Movable Columns" },
       type: "OnOff",
       section: "settings",
       bindable: true,
+      // Function (not boolean) so the simplified-mode `hideInSimplifiedMode`
+      // wrapper — which ORs a clause onto any existing function predicate —
+      // keeps this hidden in ALL modes instead of only simplified mode.
+      hidden: () => true,
       /* wwEditor:start */
       bindingValidation: {
         type: "boolean",
-        tooltip: "Enable or disable movable columns",
+        tooltip: "Deprecated: column order is locked to the config and cannot be changed.",
       },
       /* wwEditor:end */
     },
@@ -3944,6 +4053,8 @@ hideInSimplifiedMode(config, [
   "navigationButtonFocusBackground", "navigationIconColor", "navigationBorderColor",
   "navigationFocusBorderColor", "navigationChatActiveBackground",
   "navigationBadgeBackground", "navigationBadgeTextColor",
+  // Link column
+  "linkColor",
   // Record pill
   "recordPillAccentColor", "recordPillBackgroundColor", "recordPillBorderColor",
   "recordPillTextPrimaryColor", "recordPillTextSecondaryColor",
