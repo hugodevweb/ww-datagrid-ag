@@ -945,15 +945,10 @@ export default {
 
     // Merged config: baseConfig keys override per-instance content (same logic as Options API cfg)
     const cfg = computed(() => {
-      const content = props.content;
       // viewConfiguration is no longer a bindable prop — it is read directly from
       // a hardcoded WeWeb variable and always overrides any content/baseConfig value.
-      // Exception: standalone "related list" instances (viewMode === 'related') must
-      // NOT inherit the page grid's shared saved view (grouping/filters/sort/sizes),
-      // so they read their own per-instance viewConfiguration (defaulting to empty).
-      const viewConfiguration = content?.viewMode === 'related'
-        ? (content?.viewConfiguration ?? {})
-        : readViewConfiguration();
+      const viewConfiguration = readViewConfiguration();
+      const content = props.content;
       if (!content || typeof content !== 'object') return { ...(content ?? {}), viewConfiguration };
       const base = content.baseConfig;
       const excludes = content.baseConfigExcludes;
@@ -2610,12 +2605,7 @@ export default {
 
     // Watch for Supabase configuration changes
     watch(
-      // supabaseFilters is included so changing the manual filter set re-queries
-      // Supabase. In particular the related-list parent filter
-      // (relatedForeignKey = relatedParentId) is injected as a supabaseFilters `eq`
-      // entry by wwElement.vue, and supabaseFilters is intentionally NOT part of
-      // createFetchKey — so without this watch a parent-id change alone would not refetch.
-      () => [props.content?.supabaseTable, props.content?.supabaseQuery, props.content?.supabaseFilters],
+      () => [props.content?.supabaseTable, props.content?.supabaseQuery],
       (newValues, oldValues) => {
         // Only fetch if values actually changed (skip if oldValues is undefined on first run)
         if (oldValues && JSON.stringify(newValues) === JSON.stringify(oldValues)) {

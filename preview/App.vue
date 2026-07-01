@@ -20,7 +20,6 @@
       <!-- Mirrors wwElement.vue: pick the view component from the view type. -->
       <KanbanView v-if="view === 'kanban'" />
       <CalendarView v-else-if="view === 'calendar'" />
-      <RelatedListView v-else-if="view === 'related'" />
       <GridView v-else />
     </div>
 
@@ -39,12 +38,11 @@ import ViewTabs from './components/ViewTabs.vue';
 import GridView from './components/GridView.vue';
 import KanbanView from './components/KanbanView.vue';
 import CalendarView from './components/CalendarView.vue';
-import RelatedListView from './components/RelatedListView.vue';
 import { viewStore, setView, resetRows } from './store.js';
 
 export default {
   name: 'App',
-  components: { ViewTabs, GridView, KanbanView, CalendarView, RelatedListView },
+  components: { ViewTabs, GridView, KanbanView, CalendarView },
   computed: {
     view() {
       return viewStore.type;

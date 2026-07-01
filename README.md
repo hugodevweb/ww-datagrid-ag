@@ -2,21 +2,11 @@
 
 A powerful data grid component using ag-grid-vue3 that provides enterprise-grade table functionality.
 
-## Related List mode
+## Simplified mode
 
-The same element can render as a lighter **related list** — a compact, standalone list of child records (Salesforce-style) shown on a record page, e.g. "Contacts where `account_id` = the current account".
+The element has a per-instance **View Mode** switch (`viewMode`):
 
-It is the *same grid engine* (all features stay available at runtime); only the editor configuration is simplified.
+- **Standard (full config)** — the default; exposes the complete configuration.
+- **Simplified** — renders the same grid with all features intact at runtime, but the editor hides advanced/long-tail settings (grouping, kanban/calendar, infinite scroll, column chooser, advanced filter builder, view-state variables, editing/performance/localization knobs, and most styling sections). The panel is reduced to the essentials: **Mode → Data Source → Search → Columns → Pagination → Selection**, plus a small Style section.
 
-- Set **View Mode → Related List (simplified)** on the element. This is a per-instance switch (property `viewMode: 'related'`), independent of the global Grid/Kanban/Calendar view toggle, so multiple related lists can live on one page, each bound to a different parent record.
-- **Data source:**
-  - *Supabase* — set **Parent Foreign Key** (`relatedForeignKey`, the FK column on the child table) and bind **Parent Id** (`relatedParentId`, usually the current page's record id). Internally this is applied as a Supabase filter `WHERE <relatedForeignKey> = <relatedParentId>` (appended to any manual filters), and the list refetches when the parent id changes.
-  - *Local* — bind a pre-filtered array to **Data** (`rowData`) as usual.
-- **Header bar** — optional `showHeader` with `headerTitle`, a record count (`showRecordCount`), and an Add button (`showAddButton` / `addButtonLabel`) that fires the **On Add New** (`onAddNew`) event with `{ parentId, relatedForeignKey }`.
-- **Open a record** — wire the existing **On Row Clicked** (`rowClicked`) or **On Navigate** (`navigate`) event.
-
-In related mode the editor hides advanced/long-tail settings (grouping, kanban/calendar, infinite scroll, column chooser, advanced filter builder, view-state variables, and most styling sections), leaving a curated panel: **Mode → Related List → Data Source → Search → Columns → Pagination → Selection** (plus a small Style section). Standalone view state: related lists do not inherit the page's shared saved-view configuration.
-
-### Local preview
-
-`preview/` is a standalone Vite harness (port 5180) of the views. The **Related** tab demonstrates the related-list header + a parent-filtered child list. Run it with `npx vite --config preview/vite.config.js` (requires `npm install` first).
+Use Simplified for a cleaner, easier-to-configure grid without losing any runtime capability. It changes only the editor panel, not behavior — switching back to Standard restores every knob (the values still apply while hidden).

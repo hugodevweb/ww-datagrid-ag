@@ -146,19 +146,6 @@ const config = {
         properties: ["viewMode"],
       },
       {
-        label: "Related List",
-        isCollapsible: true,
-        properties: [
-          "relatedForeignKey",
-          "relatedParentId",
-          "showHeader",
-          "headerTitle",
-          "showRecordCount",
-          "showAddButton",
-          "addButtonLabel",
-        ],
-      },
-      {
         label: "Base Configuration",
         isCollapsible: true,
         properties: ["baseConfig", "baseConfigExcludes"],
@@ -473,14 +460,6 @@ const config = {
       event: { record: null, columnId: "", rowId: "" },
     },
     {
-      // Fired by the related-list header's "Add" button. Wire it to an "open
-      // create form / modal" workflow; the payload carries the parent context so
-      // the new child record can be pre-scoped to the parent.
-      name: "onAddNew",
-      label: { en: "On Add New" },
-      event: { parentId: "", relatedForeignKey: "" },
-    },
-    {
       name: "onPhoneChange",
       label: { en: "On Phone Change" },
       event: {
@@ -736,12 +715,11 @@ const config = {
       },
     },
 
-    // ---- Related list mode -------------------------------------------------
-    // Per-instance switch that turns this element into a lighter "related list":
-    // the full grid engine with a simplified editor panel (see hideInRelatedMode
-    // at the bottom of this file) plus a parent-filter + header bar. Selection is
-    // per instance (NOT the global tablesSettings.type), so multiple related
-    // lists can live on one page, each bound to its own parent record.
+    // ---- Simplified mode ---------------------------------------------------
+    // Per-instance switch. In "Simplified" mode the grid engine and all features
+    // stay available at runtime, but the editor hides advanced/long-tail config
+    // (see hideInSimplifiedMode at the bottom of this file) to present a clean,
+    // easier-to-configure settings panel. Both modes render the same grid.
     viewMode: {
       label: { en: "View Mode" },
       type: "TextSelect",
@@ -751,141 +729,19 @@ const config = {
       options: {
         options: [
           { value: "auto", label: "Standard (full config)", default: true },
-          { value: "related", label: "Related List (simplified)" },
+          { value: "simplified", label: "Simplified" },
         ],
       },
       /* wwEditor:start */
       bindingValidation: {
         type: "string",
-        enum: ["auto", "related"],
+        enum: ["auto", "simplified"],
         tooltip:
-          "Editor mode: 'auto' exposes the full grid configuration; 'related' shows a simplified related-list panel (parent-filtered child records with a header bar).",
+          "Editor mode: 'auto' exposes the full grid configuration; 'simplified' hides advanced settings for a cleaner, easier-to-configure panel. Both render the same grid at runtime.",
       },
       propertyHelp: {
         tooltip:
-          "Switch this element into Related List mode. The grid engine and all features stay available at runtime, but the editor hides advanced configuration and shows only data source, parent filter, columns, basic selection, a pagination toggle, search, a small style section, and the header bar.",
-      },
-      /* wwEditor:end */
-    },
-    relatedForeignKey: {
-      label: { en: "Parent Foreign Key" },
-      type: "Text",
-      section: "settings",
-      bindable: true,
-      defaultValue: "",
-      hidden: (content) =>
-        content?.viewMode !== "related" || content?.dataSource !== "supabase",
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "string",
-        tooltip:
-          "Foreign-key column on the child table that points to the parent record (e.g. 'organization_id', 'project_id').",
-      },
-      propertyHelp: {
-        tooltip:
-          "The column on this (child) table that references the parent record's id. Combined with 'Parent Id' it becomes an equality filter on the Supabase query: WHERE <Parent Foreign Key> = <Parent Id>.",
-      },
-      /* wwEditor:end */
-    },
-    relatedParentId: {
-      label: { en: "Parent Id" },
-      type: "Text",
-      section: "settings",
-      bindable: true,
-      defaultValue: "",
-      hidden: (content) =>
-        content?.viewMode !== "related" || content?.dataSource !== "supabase",
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "any",
-        tooltip:
-          "Id value of the parent record to filter children by. Usually bound to the current page's record id (e.g. context.page.parameters.id).",
-      },
-      propertyHelp: {
-        tooltip:
-          "Value matched against the Parent Foreign Key column. Bind this to the parent record's id (route param, parent variable, etc.). When empty, no parent filter is applied. Accepts string, number, or uuid.",
-      },
-      /* wwEditor:end */
-    },
-    showHeader: {
-      label: { en: "Show Header Bar" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: true,
-      hidden: (content) => content?.viewMode !== "related",
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip:
-          "Show or hide the related-list header bar (title, record count, add button).",
-      },
-      /* wwEditor:end */
-    },
-    headerTitle: {
-      label: { en: "Header Title" },
-      type: "Text",
-      section: "settings",
-      bindable: true,
-      defaultValue: "Related records",
-      hidden: (content) =>
-        content?.viewMode !== "related" || !content?.showHeader,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "string",
-        tooltip: "Title text shown in the related-list header bar.",
-      },
-      propertyHelp: {
-        tooltip:
-          "Label shown at the top of the related list (e.g. 'Contacts', 'Line items'). Bindable so it can reflect the parent record.",
-      },
-      /* wwEditor:end */
-    },
-    showRecordCount: {
-      label: { en: "Show Record Count" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: true,
-      hidden: (content) =>
-        content?.viewMode !== "related" || !content?.showHeader,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip: "Show the number of related records next to the title.",
-      },
-      /* wwEditor:end */
-    },
-    showAddButton: {
-      label: { en: "Show Add Button" },
-      type: "OnOff",
-      section: "settings",
-      bindable: true,
-      defaultValue: true,
-      hidden: (content) =>
-        content?.viewMode !== "related" || !content?.showHeader,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "boolean",
-        tooltip:
-          "Show an 'Add' button in the header bar that fires the On Add New event.",
-      },
-      /* wwEditor:end */
-    },
-    addButtonLabel: {
-      label: { en: "Add Button Label" },
-      type: "Text",
-      section: "settings",
-      bindable: true,
-      defaultValue: "Add",
-      hidden: (content) =>
-        content?.viewMode !== "related" ||
-        !content?.showHeader ||
-        !content?.showAddButton,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: "string",
-        tooltip: "Text shown on the header Add button.",
+          "Switch this element into Simplified mode. The grid engine and all features stay available at runtime, but the editor hides advanced configuration (grouping, infinite scroll, column chooser, advanced filters, view-state variables, and most styling) and shows only the essentials.",
       },
       /* wwEditor:end */
     },
@@ -4022,35 +3878,36 @@ const config = {
 
 /* wwEditor:start */
 // ---------------------------------------------------------------------------
-// Related-list mode — simplified configuration surface.
-// The "related list" view (content.viewMode === 'related') reuses the full grid
-// engine but should expose only a small, curated set of settings. Rather than
-// hand-editing ~30 `hidden` predicates, we OR a `viewMode === 'related'` clause
-// into each listed property's predicate here (preserving any existing one). A
-// customSettingsPropertiesOrder / customStylePropertiesOrder section's header
-// only renders when ≥1 of its properties is visible, so emptying these advanced
-// sections makes their headers disappear, leaving the clean related-list panel:
-//   Settings: Mode → Related List → Data Source → Search → Columns → Pagination → Selection
+// Simplified mode — reduced configuration surface.
+// When content.viewMode === 'simplified' the grid engine and all features stay
+// available at runtime, but the editor should expose only a small, curated set
+// of settings. Rather than hand-editing ~30 `hidden` predicates, we OR a
+// `viewMode === 'simplified'` clause into each listed property's predicate here
+// (preserving any existing one). A customSettingsPropertiesOrder /
+// customStylePropertiesOrder section's header only renders when ≥1 of its
+// properties is visible, so emptying these advanced sections makes their headers
+// disappear, leaving a clean panel:
+//   Settings: Mode → Data Source → Search → Columns → Pagination → Selection
 //   Style:    General → Header → Row → Column → Cell → Selection
 // Engine-critical props (dataSource, idFormula, columns, supabase*, rowData) are
 // intentionally NOT in these lists and stay visible.
-const hideInRelatedMode = (cfg, names) => {
+const hideInSimplifiedMode = (cfg, names) => {
   for (const name of names) {
     const prop = cfg.properties?.[name];
     if (!prop) continue;
     const prev = typeof prop.hidden === "function" ? prop.hidden : null;
     prop.hidden = (content, sidepanelContent, boundProps) =>
-      content?.viewMode === "related" ||
+      content?.viewMode === "simplified" ||
       (prev ? prev(content, sidepanelContent, boundProps) : false);
   }
 };
 
-// Advanced SETTINGS properties hidden in related mode.
-hideInRelatedMode(config, [
+// Advanced SETTINGS properties hidden in simplified mode.
+hideInSimplifiedMode(config, [
   // Base config / presets
   "baseConfig", "baseConfigExcludes",
-  // Server-side data knobs not needed for a parent-filtered list
-  "supabaseFilters", "supabaseUpdateTable", "calendarMaxRows",
+  // Advanced server-side write / calendar knobs (supabaseFilters stays visible)
+  "supabaseUpdateTable", "calendarMaxRows",
   // Infinite scroll internals
   "enableInfiniteScroll", "infiniteBlockSize",
   // Advanced filter builder
@@ -4074,8 +3931,8 @@ hideInRelatedMode(config, [
   "lang", "localeText", "enableDebugLogs",
 ]);
 
-// Long-tail STYLE properties hidden in related mode (keep General/Header/Row/Column/Cell/Selection).
-hideInRelatedMode(config, [
+// Long-tail STYLE properties hidden in simplified mode (keep General/Header/Row/Column/Cell/Selection).
+hideInSimplifiedMode(config, [
   // Menu
   "menuTextColor", "menuBackgroundColor",
   // Action button
