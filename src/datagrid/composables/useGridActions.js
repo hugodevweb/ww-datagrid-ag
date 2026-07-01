@@ -21,6 +21,16 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
   waitForGridReady, waitForRowInGridLocal,
   // From useGrouping (S3):
   isGroupingActive, groupGridApis, findGroupForRowId,
+  // Cross-group move for refreshRow: when an external update changes a row's
+  // grouping-column value, refreshRow must physically move the row between the
+  // per-group grids (mirrors useCellEditing.onCellValueChanged /
+  // useGrouping.handleCrossGroupDrop). UNASSIGNED_GROUP/groupingState identify
+  // the destination group; the paged-append helpers keep per-group state +
+  // badge counts in sync; expandGroup reveals a collapsed destination.
+  UNASSIGNED_GROUP, groupingState, groupInfiniteCounts,
+  bumpGroupingDataVersion, expandGroup, isInfiniteScrollEnabled,
+  getAddRowToGroupState, getRemoveRowFromGroupState,
+  getScheduleRefreshGroupCounts, getStampGroupMutation,
   // From useDataFetch (S2):
   removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
   supabaseData, supabaseTotalCount,
@@ -245,6 +255,90 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
     });
   };
 
+  // Reconcile the cached supabaseData entry (the object `groupedRowData`
+  // partitions on) with a freshly-fetched row, in place. refreshRow's `data`
+  // is a NEW object, but the per-group grids render the objects held in
+  // supabaseData; without updating that reference a `bumpGroupingDataVersion`
+  // re-partition would drop the row back into its old group with stale values.
+  // Mirrors setData semantics: remove keys the fresh row no longer has, then
+  // copy every fresh field over. Returns the canonical cached object, or null
+  // when it isn't found (non-supabase / paged-append modes don't use it).
+  const reconcileCachedRow = (rowId, data) => {
+    if (!supabaseData || !Array.isArray(supabaseData.value)) return null;
+    const canonical = supabaseData.value.find(
+      (row) => String(resolveMappingFormula(cfg.value.idFormula, row)) === String(rowId)
+    );
+    if (!canonical) return null;
+    Object.keys(canonical).forEach((key) => {
+      if (!Object.prototype.hasOwnProperty.call(data, key)) delete canonical[key];
+    });
+    Object.assign(canonical, data);
+    return canonical;
+  };
+
+  // Move a row between per-group grids after an external update changed its
+  // grouping-column value. Called from refreshRow. Mirrors the cross-group
+  // logic in useCellEditing.onCellValueChanged (mounted-dest) and
+  // useGrouping.handleCrossGroupDrop (collapsed-dest), adapted for a
+  // freshly-fetched row object.
+  const moveRowBetweenGroups = (rowId, data, sourceKey, destKey, sourceApi) => {
+    const destApi = groupGridApis.value?.get(destKey);
+
+    if (isInfiniteScrollEnabled?.value) {
+      // Paged-append: per-group state (matched by stable row id) is the source
+      // of truth. Remove from source, add to a mounted dest, and keep badge
+      // counts optimistically correct for a collapsed dest.
+      try { sourceApi.applyTransaction({ remove: [data] }); }
+      catch (e) { debugLog(`[Datagrid] refreshRow source remove failed for "${sourceKey}":`, e?.message); }
+      try { getRemoveRowFromGroupState?.()?.(sourceKey, data); } catch (_) { /* noop */ }
+
+      if (destApi && destApi !== sourceApi) {
+        try { getAddRowToGroupState?.()?.(destKey, data); } catch (_) { /* noop */ }
+        try { destApi.applyTransaction({ add: [data], addIndex: 0 }); }
+        catch (e) { debugLog(`[Datagrid] refreshRow dest add failed for "${destKey}":`, e?.message); }
+      } else if (!destApi) {
+        // Dest collapsed — DON'T addRowToGroupState (it sets loaded:true, which
+        // would make the next expand skip the server fetch and show only this
+        // one optimistic row). Bump the badge count; the expand below mounts
+        // the grid and fetches fresh from the server (already includes the
+        // externally-updated row).
+        const counts = new Map(groupInfiniteCounts.value);
+        const cur = counts.get(destKey);
+        counts.set(destKey, (typeof cur === 'number' ? cur : 0) + 1);
+        groupInfiniteCounts.value = counts;
+        try { getStampGroupMutation?.()?.(destKey); } catch (_) { /* noop */ }
+      }
+
+      // Refresh counts from the server once the caller's write has had time to
+      // land (matches the 1.5s delay the cell-edit / drag paths use).
+      setTimeout(() => {
+        try { getScheduleRefreshGroupCounts?.()?.(); } catch (_) { /* noop */ }
+      }, 1500);
+    } else {
+      // Non-paged (supabase client-side): reconcile the cached object the grids
+      // partition on, re-partition, then push the row into a mounted dest grid.
+      const canonical = reconcileCachedRow(rowId, data) || data;
+      try { sourceApi.applyTransaction({ remove: [canonical] }); }
+      catch (e) { debugLog(`[Datagrid] refreshRow source remove failed for "${sourceKey}":`, e?.message); }
+      try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
+
+      if (destApi && destApi !== sourceApi) {
+        try { destApi.applyTransaction({ add: [canonical], addIndex: 0 }); }
+        catch (e) { debugLog(`[Datagrid] refreshRow dest add failed for "${destKey}":`, e?.message); }
+        try {
+          const destNode = destApi.getRowNode(String(rowId));
+          if (destNode) destApi.refreshCells({ rowNodes: [destNode], force: true });
+        } catch (_) { /* noop */ }
+      }
+      // Collapsed dest (no destApi): the re-partition already put the row in
+      // its data; expandGroup below mounts the grid, which renders it.
+    }
+
+    // Reveal the destination if it was collapsed so the user sees where the
+    // row landed (no-op when already expanded).
+    try { expandGroup?.(destKey); } catch (_) { /* noop */ }
+  };
+
   /**
    * Component action: Refresh a specific row from Supabase
    * @param {string|number} rowId - The ID of the row to refresh
@@ -355,8 +449,11 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
       // Fall back to the primary gridApi for single-grid mode.
       let targetApi = gridApi.value;
       let rowNode = null;
+      // Hoisted so the cross-group-move check below can read found.groupValue
+      // (the source group key) after the row has been located.
+      let found = null;
       if (isGroupingActive.value) {
-        const found = findGroupForRowId(rowId);
+        found = findGroupForRowId(rowId);
         if (found) {
           targetApi = found.api;
           rowNode = found.node;
@@ -367,6 +464,27 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
       }
 
       if (rowNode) {
+        // Cross-group move: in grouped mode each group is a separate grid. If
+        // the externally-updated row now belongs to a different group than the
+        // one it currently sits in, refreshing its data in place would leave it
+        // stranded in the old group (values update, but the row never moves).
+        // Physically move it between the per-group grids instead. Guarded on
+        // `found` (row located via findGroupForRowId) so we know the source key.
+        if (isGroupingActive.value && found) {
+          const groupColId = groupingState.value?.columnId;
+          if (groupColId) {
+            const normalizeGroupKey = (v) =>
+              (v === null || v === undefined || v === '' ? UNASSIGNED_GROUP : String(v));
+            const sourceKey = found.groupValue;
+            const destKey = normalizeGroupKey(data?.[groupColId]);
+            if (String(destKey) !== String(sourceKey)) {
+              moveRowBetweenGroups(rowId, data, sourceKey, destKey, targetApi);
+              debugLog(`[Datagrid] Row ${rowId} refreshed and moved from group "${sourceKey}" to "${destKey}"`);
+              return true;
+            }
+          }
+        }
+
         const getColumnId = (column) => {
           if (!column) return null;
           if (typeof column.getColId === 'function') return column.getColId();
@@ -923,8 +1041,23 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
       return;
     }
 
-    // Use unified row lookup utility
-    let rowNode = findRowNode(gridApi.value, focusedRowId, resolveMappingFormula, props.content);
+    // Resolve the row AND the grid api that owns it. In grouped mode each group
+    // is a separate ag-grid with its own row model; the focused row may live in
+    // any of them, so scroll / focus / redraw must run against that grid's api
+    // — not the primary `gridApi` (which only holds one group's rows). Using
+    // the primary api is why focus styling landed on the wrong grid or not at
+    // all when grouping was active.
+    let targetApi = gridApi.value;
+    let rowNode = null;
+    if (isGroupingActive.value) {
+      const found = findGroupForRowId(focusedRowId);
+      if (found) {
+        targetApi = found.api;
+        rowNode = found.node;
+      }
+    } else {
+      rowNode = findRowNode(gridApi.value, focusedRowId, resolveMappingFormula, props.content);
+    }
 
     // If row not found, it might be filtered out or not loaded yet (infinite scroll)
     if (!rowNode || !rowNode.data) {
@@ -937,19 +1070,19 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
       const rowIndex = rowNode.rowIndex;
       if (rowIndex !== null && rowIndex !== undefined) {
         // Scroll to center the row
-        gridApi.value.ensureIndexVisible(rowIndex, 'middle');
+        targetApi.ensureIndexVisible(rowIndex, 'middle');
 
         // Set focus on the first column
         nextTick(() => {
-          if (!gridApi.value) return;
+          if (!targetApi) return;
 
-          const allColumns = gridApi.value.getAllGridColumns();
+          const allColumns = targetApi.getAllGridColumns();
           if (allColumns && allColumns.length > 0) {
             const firstColumnId = allColumns[0].getColId();
 
             setTimeout(() => {
-              if (gridApi.value) {
-                gridApi.value.setFocusedCell(rowIndex, firstColumnId);
+              if (targetApi) {
+                targetApi.setFocusedCell(rowIndex, firstColumnId);
 
                 // Add custom action focus class
                 nextTick(() => {
@@ -969,7 +1102,7 @@ export function useGridActions(cfg, props, ctx, resolveMappingFormula, {
 
     // Redraw the row to ensure styles are applied (rowStyle will check focusedRowId)
     if (rowNode) {
-      gridApi.value.redrawRows({ rowNodes: [rowNode] });
+      targetApi.redrawRows({ rowNodes: [rowNode] });
     }
   };
 

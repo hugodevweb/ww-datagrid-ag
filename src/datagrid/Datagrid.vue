@@ -1469,6 +1469,15 @@ export default {
       gridApi, debugLog, isGridRendering,
       waitForGridReady, waitForRowInGridLocal,
       isGroupingActive, groupGridApis, findGroupForRowId,
+      // Cross-group move for refreshRow (external update changed the grouping
+      // value → physically move the row between per-group grids).
+      UNASSIGNED_GROUP, groupingState, groupInfiniteCounts,
+      bumpGroupingDataVersion, expandGroup, isInfiniteScrollEnabled,
+      // Thunks: useInfiniteScroll is created AFTER useGridActions.
+      getAddRowToGroupState: () => addRowToGroupState,
+      getRemoveRowFromGroupState: () => removeRowFromGroupState,
+      getScheduleRefreshGroupCounts: () => scheduleRefreshGroupCounts,
+      getStampGroupMutation: () => stampGroupMutation,
       removedRowIds, cleanupRemovedIds, setUpdatingDataLocally,
       supabaseData, supabaseTotalCount,
       waitForSupabaseInstance,
@@ -2532,16 +2541,46 @@ export default {
         // Defer execution to avoid conflicts with grid rendering
         setTimeout(async () => {
           if (!gridApi.value || isGridRendering.value) return;
-          
-          // Collect only the affected row nodes (old focused + new focused)
-          const rowNodesToRedraw = [];
-          
+
+          // In grouped mode each group is a SEPARATE ag-grid with its own row
+          // model. A node can only be redrawn by the api that owns it — calling
+          // redrawRows on the wrong grid's api is a silent no-op. So we resolve
+          // each affected row to the grid that actually holds it, then batch the
+          // redraws per owning api. Doing this on the single primary `gridApi`
+          // (as before) is why focus styling stuck on stale rows or never
+          // appeared when the focused row lived in a non-primary group grid.
+          const grouped = isGroupingActive.value;
+
+          // Locate a row → { api, node } across whichever grid contains it.
+          const locate = (rowId) => {
+            if (grouped) {
+              const found = findGroupForRowId(rowId);
+              return found ? { api: found.api, node: found.node } : null;
+            }
+            const node = findRowNodeById(rowId);
+            return node ? { api: gridApi.value, node } : null;
+          };
+
+          // Map<api, node[]> so each grid redraws only the nodes it owns.
+          const redrawsByApi = new Map();
+          const queueRedraw = (api, node) => {
+            if (!api || !node) return;
+            let nodes = redrawsByApi.get(api);
+            if (!nodes) { nodes = []; redrawsByApi.set(api, nodes); }
+            if (!nodes.includes(node)) nodes.push(node);
+          };
+          const flushRedraws = () => {
+            redrawsByApi.forEach((nodes, api) => {
+              try { api.redrawRows({ rowNodes: nodes }); } catch (_) { /* noop */ }
+            });
+          };
+
           // Find the previously focused row node to remove its styling
           if (normalizedOld !== null && normalizedOld !== undefined) {
-            const oldNode = findRowNodeById(normalizedOld);
-            if (oldNode) rowNodesToRedraw.push(oldNode);
+            const oldLoc = locate(normalizedOld);
+            if (oldLoc) queueRedraw(oldLoc.api, oldLoc.node);
           }
-          
+
           // Clear focus if new value is null/undefined/empty
           if (normalizedNew === null || normalizedNew === undefined) {
             // Clear any custom action focus class from all cells
@@ -2549,24 +2588,26 @@ export default {
               const focusedCells = gridContainerRef.value.querySelectorAll('.ag-cell-action-focus');
               focusedCells.forEach(cell => cell.classList.remove('ag-cell-action-focus'));
             }
-            gridApi.value.clearFocusedCell();
-            // Only redraw the previously focused row to remove its styling
-            if (rowNodesToRedraw.length > 0) {
-              gridApi.value.redrawRows({ rowNodes: rowNodesToRedraw });
+            // Clear the focused cell on every mounted grid (grouped) or the
+            // single grid.
+            if (grouped) {
+              groupGridApis.value.forEach((api) => {
+                try { api.clearFocusedCell(); } catch (_) { /* noop */ }
+              });
+            } else {
+              gridApi.value.clearFocusedCell();
             }
+            // Only redraw the previously focused row to remove its styling
+            flushRedraws();
             return;
           }
-          
+
           // Find the newly focused row node to apply styling
-          const newNode = findRowNodeById(normalizedNew);
-          if (newNode && !rowNodesToRedraw.includes(newNode)) {
-            rowNodesToRedraw.push(newNode);
-          }
-          
+          const newLoc = locate(normalizedNew);
+          if (newLoc) queueRedraw(newLoc.api, newLoc.node);
+
           // Only redraw the affected rows (old + new focused), not the entire grid
-          if (rowNodesToRedraw.length > 0) {
-            gridApi.value.redrawRows({ rowNodes: rowNodesToRedraw });
-          }
+          flushRedraws();
         }, 100);
       },
       { immediate: false }
