@@ -2277,7 +2277,19 @@ export default {
         // In paged-append mode, AG Grid's prop diff handles add/remove on its
         // own — bypass the bulk update transaction (which would re-emit row
         // mutations for every loaded row on every append).
-        if ((isArrayChange || isLengthChange) && !isInfiniteScrollEnabled.value) {
+        //
+        // Grouped mode is excluded too: there is no single grid to target —
+        // `gridApi.value` is just the arbitrary "primary" group grid, and each
+        // group is already driven reactively by its `:rowData="groupRowData()"`
+        // prop (immutable-diffed by getRowId). Worse, `applyTransaction({ update })`
+        // REPLACES that grid's `node.data` with the shallow `clonedRows` below,
+        // disconnecting those nodes from the `supabaseData`/`groupingSourceRows`
+        // objects. A subsequent grouping-column cell edit then mutates the clone
+        // while `bumpGroupingDataVersion()` re-partitions the still-original
+        // `supabaseData` row — so the moved row re-partitions back into its old
+        // group and reappears in the source (created in the new group but never
+        // removed from the previous). Let the per-group prop diff own updates.
+        if ((isArrayChange || isLengthChange) && !isInfiniteScrollEnabled.value && !isGroupingActive.value) {
           nextTick(() => {
             const hasActiveEditor = typeof gridApi.value?.getEditingCells === 'function' &&
               gridApi.value.getEditingCells().length > 0;

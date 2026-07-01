@@ -62,10 +62,12 @@ export function useDataFetch(cfg, props, {
       defaultValue: false,
       readonly: true,
     });
-  // Name of the table the grid is currently querying. Mirrors the configured
-  // Supabase table; empty in local ('mapping') mode where there is no backing
-  // table. Tracks props.content directly (the same source the fetch reads),
-  // not the baseConfig-merged cfg, so it reflects what is actually queried.
+  // Name of the table the grid writes UPDATEs against. Resolves the same way
+  // the write paths do (kanban/calendar updateRowInSupabase): prefer
+  // supabaseUpdateTable (set when supabaseTable is a non-updatable view),
+  // falling back to supabaseTable itself. Empty in local ('mapping') mode where
+  // there is no backing table. Tracks props.content directly (the same source
+  // the writes read), not the baseConfig-merged cfg.
   const { setValue: setTable } =
     wwLib.wwVariable.useComponentVariable({
       uid: props.uid,
@@ -75,10 +77,12 @@ export function useDataFetch(cfg, props, {
       readonly: true,
     });
   watch(
-    () =>
-      props.content?.dataSource === 'supabase'
-        ? props.content?.supabaseTable || ''
-        : '',
+    () => {
+      if (props.content?.dataSource !== 'supabase') return '';
+      const updateTable = (props.content?.supabaseUpdateTable || '').trim();
+      const queryTable = (props.content?.supabaseTable || '').trim();
+      return updateTable || queryTable;
+    },
     (val) => setTable(val || ''),
     { immediate: true }
   );

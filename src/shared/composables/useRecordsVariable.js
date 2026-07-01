@@ -28,8 +28,9 @@ export function useRecordsVariable(props, { rows, isFetching }) {
       readonly: true,
     });
   // Mirror the datagrid's `table` variable (see useDataFetch.js) so the name of
-  // the queried table stays exposed when the kanban/calendar view is active.
-  // Empty in local ('mapping') mode where there is no backing table.
+  // the UPDATE table stays exposed when the kanban/calendar view is active.
+  // Resolved like updateRowInSupabase: supabaseUpdateTable (when supabaseTable
+  // is a view) falling back to supabaseTable. Empty in local ('mapping') mode.
   const { setValue: setTable } =
     wwLib.wwVariable.useComponentVariable({
       uid: props.uid,
@@ -45,10 +46,12 @@ export function useRecordsVariable(props, { rows, isFetching }) {
     { immediate: true, deep: true }
   );
   watch(
-    () =>
-      props.content?.dataSource === 'supabase'
-        ? props.content?.supabaseTable || ''
-        : '',
+    () => {
+      if (props.content?.dataSource !== 'supabase') return '';
+      const updateTable = (props.content?.supabaseUpdateTable || '').trim();
+      const queryTable = (props.content?.supabaseTable || '').trim();
+      return updateTable || queryTable;
+    },
     (val) => setTable(val || ''),
     { immediate: true }
   );
