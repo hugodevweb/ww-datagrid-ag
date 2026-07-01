@@ -102,6 +102,8 @@ export default {
         contextField: col.recordContextField || '',
         previewFields: col.recordPreviewFields || [],
         allowCreate: false,
+        autoNavigate: col.recordAutoNavigate !== false,
+        navigatePath: col.recordNavigatePath || '',
         getSupabaseInstance: () => (typeof wwLib !== 'undefined' ? wwLib?.wwPlugins?.supabase?.instance : null),
         onCreateClick: () => {},
         onRecordNavigate: () => {},

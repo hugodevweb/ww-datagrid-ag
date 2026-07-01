@@ -934,6 +934,8 @@ export function useCellEditing(cfg, props, ctx, resolveMappingFormula, {
             contextField: col?.recordContextField || '',
             previewFields: col?.recordPreviewFields || [],
             allowCreate: col?.allowCreateRecord || false,
+            autoNavigate: col?.recordAutoNavigate !== false,
+            navigatePath: col?.recordNavigatePath || '',
             enableDebugLogs: !!cfg.value?.enableDebugLogs,
             getSupabaseInstance: () => wwLib.wwPlugins.supabase?.instance,
             onCreateClick: (createCtx) => {

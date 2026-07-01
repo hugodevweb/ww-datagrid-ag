@@ -2911,6 +2911,32 @@ export default {
                 hidden: array?.item?.cellDataType !== "record",
                 defaultValue: false,
               },
+              recordAutoNavigate: {
+                label: "Auto Navigate",
+                type: "OnOff",
+                hidden: array?.item?.cellDataType !== "record",
+                defaultValue: true,
+                /* wwEditor:start */
+                propertyHelp: {
+                  tooltip: "When enabled, clicking the record chip's open button navigates directly to /{table}/{id} (e.g. /companies/45sqd5qsd654qsddsq4) without needing a workflow. The On Record Navigation event still fires.",
+                },
+                /* wwEditor:end */
+              },
+              recordNavigatePath: {
+                label: "Navigate Path",
+                type: "Text",
+                bindable: true,
+                hidden: array?.item?.cellDataType !== "record" || array?.item?.recordAutoNavigate === false,
+                /* wwEditor:start */
+                bindingValidation: {
+                  type: "string",
+                  tooltip: "Custom path pattern with {{table}} and {{id}} placeholders, e.g. '/crm/{{table}}/{{id}}'.",
+                },
+                propertyHelp: {
+                  tooltip: "Optional custom path pattern. Use {{table}} and {{id}} placeholders (e.g. '/crm/{{table}}/{{id}}'). Leave empty for the default /{table}/{id}.",
+                },
+                /* wwEditor:end */
+              },
               phoneDefaultCountry: {
                 label: "Default Country",
                 type: "Text",
@@ -2995,6 +3021,8 @@ export default {
               "recordContextField",
               "recordPreviewFields",
               "allowCreateRecord",
+              "recordAutoNavigate",
+              "recordNavigatePath",
               "phoneDefaultCountry",
               "phonePreferredCountries",
               "phoneDisplayFormat",

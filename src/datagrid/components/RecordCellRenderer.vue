@@ -257,6 +257,13 @@ export default {
         allowCreate() {
             return !!(this.activeParams?.allowCreate || this.activeParams?.colDef?.cellRendererParams?.allowCreate);
         },
+        autoNavigate() {
+            const v = this.activeParams?.autoNavigate ?? this.activeParams?.colDef?.cellRendererParams?.autoNavigate;
+            return v !== false;
+        },
+        navigatePath() {
+            return this.activeParams?.navigatePath || this.activeParams?.colDef?.cellRendererParams?.navigatePath || '';
+        },
         currentRecord() {
             if (this.currentValue == null) return null;
             return this.allRecords.find(r => r[this.valueField] === this.currentValue) || null;
@@ -589,6 +596,17 @@ export default {
 
         // ─── Navigation trigger ──────────────────────────────────────────────
         onNavigate() {
+            // Built-in navigation: go to /{table}/{id} (or the custom path
+            // pattern) without requiring a workflow on onRecordNavigation.
+            if (this.autoNavigate && this.tableName && this.currentValue != null) {
+                const path = this.navigatePath
+                    ? this.navigatePath
+                          .replace(/\{\{\s*table\s*\}\}/g, this.tableName)
+                          .replace(/\{\{\s*id\s*\}\}/g, String(this.currentValue))
+                    : `/${this.tableName}/${this.currentValue}`;
+                this.debugLog('Auto navigate', { path });
+                wwLib?.wwApp?.goTo?.(path);
+            }
             const onRecordNavigate = this.activeParams?.onRecordNavigate;
             if (onRecordNavigate) {
                 onRecordNavigate({
