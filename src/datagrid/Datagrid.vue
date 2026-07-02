@@ -2322,6 +2322,98 @@ export default {
       }
     }, { immediate: true }); // Removed deep: true for better performance
 
+    // ---------------------------------------------------------------------
+    // Local ('mapping') data — in-place mutation safety net.
+    //
+    // The primary rowData watcher above is intentionally shallow (deep-watching
+    // large / streamed datasets on every tick is costly, hence the note above).
+    // It reacts to *reference* changes of the bound array, which is what WeWeb
+    // usually produces. But when the bound data is mutated in place — same array
+    // reference, e.g. an "Update variable" that rewrites a row's field — neither
+    // the shallow watcher nor AG Grid's rowData-prop diff sees a change, so the
+    // grid keeps rendering the old values.
+    //
+    // Deep-watch the raw local source (scoped to mapping mode so Supabase /
+    // infinite-scroll data is never deep traversed) and, for genuine in-place
+    // mutations, push the changed rows into the grid and force a re-render.
+    // Reference swaps are left to the shallow watcher above so the work isn't
+    // done twice.
+    const lastLocalRowDataRef = ref(null);
+    watch(
+      () =>
+        props.content?.dataSource === "supabase"
+          ? null
+          : props.content?.rowData,
+      (src) => {
+        if (props.content?.dataSource === "supabase" || isInfiniteScrollEnabled.value) return;
+        if (isUpdatingDataLocally.value) return;
+
+        const refChanged = src !== lastLocalRowDataRef.value;
+        lastLocalRowDataRef.value = src;
+        // Reference swaps are already handled by the shallow rowData watcher.
+        if (refChanged) return;
+
+        const data = Array.isArray(rowData.value) ? rowData.value : [];
+
+        // Keep the `records` variable in sync with the mutated data.
+        if (isGroupingActive.value) {
+          // Grouped mode renders per-group partitions of the source; bump the
+          // partition version so they recompute, then re-aggregate records.
+          try { bumpGroupingDataVersion?.(); } catch (_) { /* noop */ }
+          nextTick(() => setTimeout(() => updateRecordsFromGrid(), 100));
+        } else {
+          setRecords([...data]);
+        }
+
+        if (!gridReady.value || isGridRendering.value) return;
+
+        nextTick(() => {
+          const hasActiveEditor =
+            gridApi.value &&
+            typeof gridApi.value.getEditingCells === "function" &&
+            gridApi.value.getEditingCells().length > 0;
+          if (hasActiveEditor) return;
+
+          // Grouped mode: refresh every mounted group grid so the in-place
+          // change repaints (the recomputed partitions reuse the same row
+          // objects, so AG Grid's immutable diff alone wouldn't refresh cells).
+          if (isGroupingActive.value) {
+            try {
+              groupGridApis?.value?.forEach((api) => {
+                try { api?.refreshCells?.({ force: true }); } catch (_) { /* noop */ }
+              });
+            } catch (_) { /* noop */ }
+            return;
+          }
+
+          if (!gridApi.value) return;
+          // Clone so AG Grid sees fresh row-object references (covers the case
+          // where a slot was replaced with a new object), then force a repaint.
+          if (data.length > 0) {
+            gridApiQueue.enqueue(
+              () => {
+                if (gridApi.value) {
+                  const clonedRows = data.map((row) => ({ ...row }));
+                  return gridApi.value.applyTransaction({ update: clonedRows });
+                }
+              },
+              {
+                priority: 0,
+                description: "applyTransaction for in-place rowData mutation",
+                condition: () => !!gridApi.value,
+              }
+            );
+          }
+          gridApiUtils.refreshCells(gridApi.value, { force: true }).catch((error) => {
+            console.warn("[Datagrid] Error during in-place rowData refresh:", error);
+          });
+        });
+      },
+      // immediate: seed lastLocalRowDataRef with the mounted reference so the
+      // first in-place mutation is caught (that run exits early at refChanged).
+      { deep: true, immediate: true }
+    );
+
     // Grouped mode keeps `records` in sync from the per-group row sets. The
     // single-grid onGridReady / rowData paths that normally seed `records`
     // either never run in grouped mode (the single grid isn't mounted) or
@@ -2629,6 +2721,27 @@ export default {
             fetchSupabaseData(currentPage, pageSize, filterModel, sortModel, searchValue);
           }
         }
+      }
+    );
+
+    // Watch for Supabase "Manual Filters" (supabaseFilters) changes.
+    //
+    // Each filter row's `value` is bindable, so when a bound filter value (or a
+    // field / operator) changes the query must be re-run. Nothing else watched
+    // supabaseFilters, so the grid kept showing rows from the previous filter
+    // value. Serialize to catch deep edits, then reuse the same refetch path as
+    // the global refresh bus (handles pagination, infinite scroll and grouped
+    // modes). lastFetchParams is reset because the dedupe fetch key does not
+    // include manual filters — without the reset an otherwise-identical fetch
+    // would be skipped.
+    watch(
+      () => JSON.stringify(props.content?.supabaseFilters ?? []),
+      (newVal, oldVal) => {
+        if (oldVal === undefined || newVal === oldVal) return;
+        if (isUpdatingDataLocally.value) return;
+        if (props.content?.dataSource !== "supabase" || !gridApi.value) return;
+        lastFetchParams.value = null;
+        triggerSupabaseRefetch();
       }
     );
 
